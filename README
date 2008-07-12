@@ -1,0 +1,123 @@
+ipt_NETFLOW linux 2.6 kernel module by <abc@telekom.ru> -- 11 Feb 2008
+
+================
+= INSTALLATION =
+================
+
+1. Besides kernel you will need iptables/netfilter source matching your
+     installation or just fresh install from there: ftp://ftp.netfilter.org/pub/iptables/snapshot/
+   I have this: ftp://ftp.netfilter.org/pub/iptables/snapshot/iptables-1.3.7-20070329.tar.bz2
+   Unpack it somewhere.
+
+2. Edit these Makefile variables:
+
+IPTDIR = ../iptables-1.3.7-20070329
+IPTABLES_VERSION = 1.3.7-20070329
+
+   Point them to right place and set to right version of unpacked iptables
+     source.
+
+3. make; make install; depmod
+
+Troubleshooting:
+   1) Sometimes you will want to add CC=gcc-3 to make command.
+   Example: make CC=gcc-3.3
+
+4. After this point you should be able to load module
+     and use -j NETFLOW target in your iptables.
+
+
+===========
+= RUNNING =
+===========
+
+1. You can load module by insmod like this:
+   # insmod ipt_NETFLOW.ko destination=127.0.0.1:2055 debug=1
+
+   Or if properly installed (make install; depmod) by this:
+   # modprobe ipt_NETFLOW destination=127.0.0.1:2055
+
+   See, you may add options in insmod/modprobe command line, or add
+     them in /etc/ to modules.conf or modprobe.conf like thus:
+   options ipt_NETFLOW destination=127.0.0.1:2055
+
+2. Statistics is in /proc/net/stat/ipt_netflow
+   To view slab statistics: grep ipt_netflow /proc/slabinfo
+
+3. You can view parameters and control them via sysctl, example:
+   # sysctl -w net.netflow.hashsize=32768
+
+4. Example of directing all traffic into module:
+   # iptables -A FORWARD -j NETFLOW
+   # iptables -A INPUT -j NETFLOW
+   # iptables -A OUTPUT -j NETFLOW
+
+
+===========
+= OPTIONS =
+===========
+
+   destination=127.0.0.1:2055
+     - where to export netflow, to this ip address
+       You will see this connection in netstat like this:
+       udp 0 0 127.0.0.1:32772 127.0.0.1:2055 ESTABLISHED 
+
+   destination=127.0.0.1:2055,192.0.0.1:2055
+     - mirror flows to two (can be more) addresses,
+       separate addresses with comma.
+
+   inactive_timeout=15
+     - export flow after it's inactive 15 seconds. Default value is 15.
+
+   active_timeout=1800
+     - export flow after it's active 1800 seconds (30 minutes). Default value is 1800.
+
+   debug=0
+     - debug level (none).
+
+   sndbuf=number
+     - size of output socket buffer in bytes. Recommend you to put
+       higher value if you experience netflow packet drops (can be
+       seen in statistics as 'sock: fail' number.)
+       Default value is system default.
+
+   hashsize=number
+     - Hash table bucket size. Used for performance tuning.
+       Abstractly speaking, it should be two times bigger than flows
+       you usually have, but not need to.
+       Default is system memory dependent small enough value.
+
+   maxflows=2000000
+     - Maximum number of flows to account. It's here to prevent DOS. After
+       this limit reached new flows will not be accounted. Default is
+       2000000, zero is unlimited.
+
+   aggregation=string..
+     - Few aggregation rules (or some say they are rule.)
+
+     Buffer for aggregation string 1024 bytes, and sysctl limit it
+       to ~700 bytes, so don't write there a lot.
+     Rules worked in definition order for each packet, so don't
+       write them a lot again.
+     Rules applied to both directions (dst and src).
+     Rules tried until first match, but for netmask and port
+        aggregations separately.
+     Delimit them with commas.
+
+     Rules are of two kinds: for netmask aggregation
+        and port aggregation:
+
+     a) Netmask aggregation example: 192.0.0.0/8=16
+     Which mean to strip addresses matching subnet 192.0.0.0/8 to /16.
+
+     b) Port aggregation example: 80-89=80
+     Which mean to replace ports from 80 to 89 with 80.
+
+     Full example:
+        aggregation=192.0.0.0/8=16,10.0.0.0/8=16,80-89=80,3128=80
+        
+
+=========
+= VOILA =
+=========
+
