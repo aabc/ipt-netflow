@@ -139,7 +139,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		   peakflows,
 		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
 		   maxflows,
-		   (nr_flows * sizeof(struct ipt_netflow)) >> 10);
+		   (unsigned int)((nr_flows * sizeof(struct ipt_netflow)) >> 10));
 
 	for_each_possible_cpu(cpu) {
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
@@ -162,7 +162,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 
 	seq_printf(seq, "Hash: size %u (mem %uK), metric %d. Timeout: active %d, inactive %d\n",
 		   ipt_netflow_hash_size, 
-		   (ipt_netflow_hash_size * sizeof(struct hlist_head)) >> 10,
+		   (unsigned int)((ipt_netflow_hash_size * sizeof(struct hlist_head)) >> 10),
 		   found? (searched + found) / found : 0,
 		   active_timeout,
 		   inactive_timeout);
@@ -314,7 +314,7 @@ static int aggregation_procctl(ctl_table *ctl, int write, struct file *filp,
 	int ret;
 
 	if (debug > 1)
-		printk(KERN_INFO "aggregation_procctl (%d) %u %llu\n", write, *lenp, *fpos);
+		printk(KERN_INFO "aggregation_procctl (%d) %u %llu\n", write, (unsigned int)(*lenp), *fpos);
 	ret = proc_dostring(ctl, write, filp, buffer, lenp, fpos);
 	if (ret >= 0 && write) {
 		add_aggregation(aggregation_buf);
