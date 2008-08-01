@@ -32,7 +32,7 @@
 #include <linux/sysctl.h>
 #endif
 
-#define IPT_NETFLOW_VERSION "1.0"
+#define IPT_NETFLOW_VERSION "1.1"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("<abc@telekom.ru>");
@@ -283,11 +283,13 @@ static int sndbuf_procctl(ctl_table *ctl, int write, struct file *filp,
 	struct ipt_netflow_sock *usock;
        
 	read_lock_bh(&sock_lock);
+	if (list_empty(&usock_list)) {
+		read_unlock_bh(&sock_lock);
+		return -ENOENT;
+	}
 	usock = list_first_entry(&usock_list, struct ipt_netflow_sock, list);
-	sndbuf = usock? usock->sock->sk->sk_sndbuf : 0;
+	sndbuf = usock->sock->sk->sk_sndbuf;
 	read_unlock_bh(&sock_lock);
-	if (!usock)
-		return -EPERM;
 
 	ctl->data = &sndbuf;
 	ret = proc_dointvec(ctl, write, filp, buffer, lenp, fpos);
