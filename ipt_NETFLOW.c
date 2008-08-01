@@ -1162,13 +1162,23 @@ static struct ipt_target ipt_netflow_reg = {
 	.family		= AF_INET,
 #ifndef RAW_PROMISC_HACK
 	.table		= "filter",
+#ifndef NF_IP_LOCAL_IN /* 2.6.25 */
+	.hooks		= (1 << NF_INET_LOCAL_IN) | (1 << NF_INET_FORWARD) |
+				(1 << NF_INET_LOCAL_OUT),
+#else
 	.hooks		= (1 << NF_IP_LOCAL_IN) | (1 << NF_IP_FORWARD) |
 				(1 << NF_IP_LOCAL_OUT),
+#endif /* NF_IP_LOCAL_IN */
 #else
 	.table          = "raw",
+#ifndef NF_IP_LOCAL_IN
+	.hooks          = (1 << NF_INET_LOCAL_IN) | (1 << NF_INET_FORWARD) |
+				(1 << NF_INET_LOCAL_OUT) | (1 << NF_INET_PRE_ROUTING),
+#else
 	.hooks          = (1 << NF_IP_LOCAL_IN) | (1 << NF_IP_FORWARD) |
 				(1 << NF_IP_LOCAL_OUT) | (1 << NF_IP_PRE_ROUTING),
-#endif
+#endif /* NF_IP_LOCAL_IN */
+#endif /* !RAW_PROMISC_HACK */
 	.me		= THIS_MODULE
 };
 
