@@ -10,7 +10,6 @@
 #include <linux/vmalloc.h>
 #include <linux/seq_file.h>
 #include <linux/random.h>
-#include <linux/sysctl.h>
 #include <linux/ip.h>
 #include <linux/udp.h>
 #include <linux/icmp.h>
@@ -28,6 +27,9 @@
 #include "ipt_NETFLOW.h"
 #ifdef CONFIG_BRIDGE_NETFILTER
 #include <linux/netfilter_bridge.h>
+#endif
+#ifdef CONFIG_SYSCTL
+#include <linux/sysctl.h>
 #endif
 
 #define IPT_NETFLOW_VERSION "1.0"
@@ -330,21 +332,8 @@ static int aggregation_procctl(ctl_table *ctl, int write, struct file *filp,
 
 static struct ctl_table_header *netflow_sysctl_header;
 
-#define NET_NETFLOW 33
-enum {
-	NETFLOW_ACTIVE_TIMEOUT = 1,
-	NETFLOW_INACTIVE_TIMEOUT,
-	NETFLOW_DEBUG,
-	NETFLOW_HASHSIZE,
-	NETFLOW_SNDBUF,
-	NETFLOW_DESTINATION,
-	NETFLOW_AGGREGATION,
-	NETFLOW_MAXFLOWS,
-};
-
 static struct ctl_table netflow_sysctl_table[] = {
 	{
-		.ctl_name	= NETFLOW_ACTIVE_TIMEOUT,
 		.procname	= "active_timeout",
 		.mode		= 0644,
 		.data		= &active_timeout,
@@ -352,7 +341,6 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		.ctl_name	= NETFLOW_INACTIVE_TIMEOUT,
 		.procname	= "inactive_timeout",
 		.mode		= 0644,
 		.data		= &inactive_timeout,
@@ -360,7 +348,6 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		.ctl_name	= NETFLOW_DEBUG,
 		.procname	= "debug",
 		.mode		= 0644,
 		.data		= &debug,
@@ -368,7 +355,6 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		.ctl_name	= NETFLOW_HASHSIZE,
 		.procname	= "hashsize",
 		.mode		= 0644,
 		.data		= &ipt_netflow_hash_size,
@@ -376,14 +362,12 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &hsize_procctl,
 	},
 	{
-		.ctl_name	= NETFLOW_SNDBUF,
 		.procname	= "sndbuf",
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &sndbuf_procctl,
 	},
 	{
-		.ctl_name	= NETFLOW_DESTINATION,
 		.procname	= "destination",
 		.mode		= 0644,
 		.data		= &destination_buf,
@@ -391,7 +375,6 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &destination_procctl,
 	},
 	{
-		.ctl_name	= NETFLOW_AGGREGATION,
 		.procname	= "aggregation",
 		.mode		= 0644,
 		.data		= &aggregation_buf,
@@ -399,7 +382,6 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &aggregation_procctl,
 	},
 	{
-		.ctl_name	= NETFLOW_MAXFLOWS,
 		.procname	= "maxflows",
 		.mode		= 0644,
 		.data		= &maxflows,
@@ -408,9 +390,10 @@ static struct ctl_table netflow_sysctl_table[] = {
 	},
 	{ .ctl_name = 0 }
 };
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
 static struct ctl_table netflow_sysctl_root[] = {
 	{
-		.ctl_name	= NET_NETFLOW,
 		.procname	= "netflow",
 		.mode		= 0555,
 		.child		= netflow_sysctl_table,
@@ -427,7 +410,14 @@ static struct ctl_table netflow_net_table[] = {
 	},
 	{ .ctl_name = 0 }
 };
-#endif
+#else /* 2.6.25 */
+static struct ctl_path netflow_sysctl_path[] = {
+	{ .procname = "net", .ctl_name = CTL_NET },
+	{ .procname = "netflow" },
+	{ }
+};
+#endif /* 2.6.25 */
+#endif /* CONFIG_SYSCTL */
 
 /* socket code */
 static void sk_error_report(struct sock *sk)
@@ -1233,11 +1223,15 @@ static int __init ipt_netflow_init(void)
 #endif
 
 #ifdef CONFIG_SYSCTL
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
 	netflow_sysctl_header = register_sysctl_table(netflow_net_table
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,21)
 						      , 0 /* insert_at_head */
 #endif
 						      );
+#else /* 2.6.25 */
+	netflow_sysctl_header = register_sysctl_paths(netflow_sysctl_path, netflow_sysctl_table);
+#endif
 	if (!netflow_sysctl_header) {
 		printk(KERN_ERR "netflow: can't register to sysctl\n");
 		goto err_free_proc_stat;
