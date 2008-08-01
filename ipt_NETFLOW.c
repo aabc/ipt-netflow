@@ -149,7 +149,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		   maxflows,
 		   (unsigned int)((nr_flows * sizeof(struct ipt_netflow)) >> 10));
 
-	for_each_possible_cpu(cpu) {
+	for_each_present_cpu(cpu) {
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
 
 		searched += st->searched;
@@ -180,7 +180,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 
 	seq_printf(seq, "cpu#  stat: <search found, trunc frag alloc maxflows>, sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
 
-	if (num_possible_cpus() > 1)
+	if (num_present_cpus() > 1)
 		seq_printf(seq, "Total stat: %6u %6u, %4u %4u %4u %4u, sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
 			   searched, found, truncated, frags, alloc_err, maxflows_err,
 			   send_success, send_failed, sock_errors,
@@ -188,7 +188,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 			   (unsigned long long)pkt_total, (unsigned long long)traf_total >> 20,
 			   (unsigned long long)pkt_drop, (unsigned long long)traf_drop >> 10);
 
-	for_each_possible_cpu(cpu) {
+	for_each_present_cpu(cpu) {
 		struct ipt_netflow_stat *st;
 
 		st = &per_cpu(ipt_netflow_stat, cpu);
@@ -934,7 +934,7 @@ static void rate_timer_calc(unsigned long dummy)
 	u64 traf_total = 0;
 	int cpu;
 
-	for_each_possible_cpu(cpu) {
+	for_each_present_cpu(cpu) {
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
 
 		pkt_total += st->pkt_total;
