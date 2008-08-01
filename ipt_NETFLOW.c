@@ -118,6 +118,12 @@ static inline int mask2bits(__be32 mask) {
 	return n;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
+#define INIT_NET(x) x
+#else
+#define INIT_NET(x) init_net.x
+#endif
+
 #ifdef CONFIG_PROC_FS
 /* procfs statistics /proc/net/stat/ipt_netflow */
 static int nf_seq_show(struct seq_file *seq, void *v)
@@ -957,7 +963,12 @@ static void rate_timer_calc(unsigned long dummy)
 }
 
 /* packet receiver */
-static unsigned int netflow_target(struct sk_buff **pskb,
+static unsigned int netflow_target(
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
+			   struct sk_buff **pskb,
+#else
+			   struct sk_buff *skb,
+#endif
 			   const struct net_device *if_in,
 			   const struct net_device *if_out,
 			   unsigned int hooknum,
@@ -972,7 +983,9 @@ static unsigned int netflow_target(struct sk_buff **pskb,
 #endif
 
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
 	struct sk_buff *skb = *pskb;
+#endif
 	struct iphdr _iph, *iph;
 	struct ipt_netflow_tuple tuple;
 	struct ipt_netflow *nf;
@@ -1199,7 +1212,7 @@ static int __init ipt_netflow_init(void)
 	}
 
 #ifdef CONFIG_PROC_FS
-	proc_stat = create_proc_entry("ipt_netflow", S_IRUGO, proc_net_stat);
+	proc_stat = create_proc_entry("ipt_netflow", S_IRUGO, INIT_NET(proc_net_stat));
 	if (!proc_stat) {
 		printk(KERN_ERR "Unable to create /proc/net/stat/ipt_netflow entry\n");
 		goto err_free_netflow_slab;
@@ -1262,7 +1275,7 @@ err_free_sysctl:
 err_free_proc_stat:
 #endif
 #ifdef CONFIG_PROC_FS
-	remove_proc_entry("ipt_netflow", proc_net_stat);
+	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
 err_free_netflow_slab:
 #endif  
 	kmem_cache_destroy(ipt_netflow_cachep);
@@ -1288,7 +1301,7 @@ static void __exit ipt_netflow_fini(void)
 	unregister_sysctl_table(netflow_sysctl_header);
 #endif
 #ifdef CONFIG_PROC_FS
-	remove_proc_entry("ipt_netflow", proc_net_stat);
+	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
 #endif
 
 	netflow_scan_inactive_timeout(0); /* flush cache and pdu */
