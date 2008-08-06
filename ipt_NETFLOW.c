@@ -4,6 +4,8 @@
  *
  */
 
+//#define RAW_PROMISC_HACK
+
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/proc_fs.h>

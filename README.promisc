@@ -1,0 +1,57 @@
+Hello,
+
+If you wish to account with netflow module traffic mirrored on switch you may follow this example:
+
+
+1. Patch your kernel with `raw_promisc.patch' to enable raw table to see promisc traffic.
+
+ # cd /usr/src/linux
+ # patch -p1 < ~/ipt_netflow/raw_promisc.patch
+
+ Then recompile and reinstall patched kernel.
+
+2. For example you mirroring traffic on your Cisco switch to 47th vlan:
+
+ # interface FastEthernet0/32
+ # description this port with vlan 47
+ # switchport trunk encapsulation dot1q
+ # switchport mode trunk
+ # !
+ # interface FastEthernet0/33
+ # port monitor FastEthernet0/32
+ # !
+
+3. Enable promisc mode on interface to actually see the packets:
+
+ # /sbin/ifconfig eth1 promisc
+
+4. Configure vlan on your linux box:
+
+ # /sbin/vconfig add eth1 47
+ # /sbin/ifconfig eth1.47 up
+
+5. Recompile ipt_netflow module with #define RAW_PROMISC_HACK uncommented:
+
+ Find this line in ipt_NETFLOW.c (should be line 7):
+
+//#define RAW_PROMISC_HACK
+
+ And remove two slashes at beginning of the line, so it become like this:
+
+#define RAW_PROMISC_HACK
+
+ Re-compile module:
+
+ # make clean all install
+
+6. Load ipt_netflow module:
+
+ # /sbin/modprobe ipt_NETFLOW hashsize=160000 destination=127.0.0.1:9800
+
+7. Direct all packets from 47th vlan to ipt_netflow module:
+
+ # /sbin/iptables -A PREROUTING -t raw -i eth1.47 -j NETFLOW
+
+
+Voila.
+
