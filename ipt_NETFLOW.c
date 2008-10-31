@@ -800,6 +800,7 @@ init_netflow(struct ipt_netflow_tuple *tuple,
 static void netflow_export_pdu(void)
 {
 	struct timeval tv;
+	int pdusize;
 
 	if (!pdu.nr_records)
 		return;
@@ -818,10 +819,12 @@ static void netflow_export_pdu(void)
 
 	pdu.seq = htonl(ntohl(pdu.seq) + pdu.nr_records);
 
+	pdusize = sizeof(pdu) - (NETFLOW5_RECORDS_MAX - pdu.nr_records) * sizeof(struct netflow5_record);
+
 	/* especially fix nr_records before export */
 	pdu.nr_records	= htons(pdu.nr_records);
 
-	if (netflow_send_pdu(&pdu, sizeof(pdu)) == 0) {
+	if (netflow_send_pdu(&pdu, pdusize) == 0) {
 		int i;
 
 		/* not least one send succeded, account stat for dropped packets */
