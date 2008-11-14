@@ -34,11 +34,12 @@
 #include <linux/sysctl.h>
 #endif
 
-#define IPT_NETFLOW_VERSION "1.1"
+#define IPT_NETFLOW_VERSION "1.2"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("<abc@telekom.ru>");
 MODULE_DESCRIPTION("iptables NETFLOW target module");
+MODULE_VERSION(IPT_NETFLOW_VERSION);
 
 #define DST_SIZE 256
 static char destination_buf[DST_SIZE] = "127.0.0.1:2055";
@@ -95,7 +96,8 @@ static DEFINE_RWLOCK(ipt_netflow_lock);
 
 static struct netflow5_pdu pdu;
 static __be32 pdu_ts_mod;
-static struct timer_list idle_timer;
+static void netflow_work_fn(struct work_struct *work);
+static DECLARE_DELAYED_WORK(netflow_work, netflow_work_fn);
 static struct timer_list rate_timer;
 
 #define TCP_FIN_RST 0x05
@@ -144,7 +146,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	int snum = 0;
 	int peak = (jiffies - peakflows_at) / HZ;
 
-	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago, limit %u), mem %uK\n",
+	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago, maxflows %u), mem %uK\n",
 		   nr_flows,
 		   peakflows,
 		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
@@ -182,44 +184,47 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 
 	seq_printf(seq, "cpu#  stat: <search found, trunc frag alloc maxflows>, sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
 
-	if (num_present_cpus() > 1)
-		seq_printf(seq, "Total stat: %6u %6u, %4u %4u %4u %4u, sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
-			   searched, found, truncated, frags, alloc_err, maxflows_err,
-			   send_success, send_failed, sock_errors,
-			   (unsigned long long)exported_size >> 10,
-			   (unsigned long long)pkt_total, (unsigned long long)traf_total >> 20,
-			   (unsigned long long)pkt_drop, (unsigned long long)traf_drop >> 10);
+	seq_printf(seq, "Total stat: %6u %6u, %4u %4u %4u %4u, sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
+		   searched, found, truncated, frags, alloc_err, maxflows_err,
+		   send_success, send_failed, sock_errors,
+		   (unsigned long long)exported_size >> 10,
+		   (unsigned long long)pkt_total, (unsigned long long)traf_total >> 20,
+		   (unsigned long long)pkt_drop, (unsigned long long)traf_drop >> 10);
 
-	for_each_present_cpu(cpu) {
-		struct ipt_netflow_stat *st;
+	if (num_present_cpus() > 1) {
+		for_each_present_cpu(cpu) {
+			struct ipt_netflow_stat *st;
 
-		st = &per_cpu(ipt_netflow_stat, cpu);
-		seq_printf(seq, "cpu%u  stat: %6u %6u, %4u %4u %4u %4u, sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
-			   cpu,
-			   st->searched, st->found, st->truncated, st->frags, st->alloc_err, st->maxflows_err,
-			   st->send_success, st->send_failed, st->sock_errors,
-			   (unsigned long long)st->exported_size >> 10,
-			   (unsigned long long)st->pkt_total, (unsigned long long)st->traf_total >> 20,
-			   (unsigned long long)st->pkt_drop, (unsigned long long)st->traf_drop >> 10);
+			st = &per_cpu(ipt_netflow_stat, cpu);
+			seq_printf(seq, "cpu%u  stat: %6u %6u, %4u %4u %4u %4u, sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
+				   cpu,
+				   st->searched, st->found, st->truncated, st->frags, st->alloc_err, st->maxflows_err,
+				   st->send_success, st->send_failed, st->sock_errors,
+				   (unsigned long long)st->exported_size >> 10,
+				   (unsigned long long)st->pkt_total, (unsigned long long)st->traf_total >> 20,
+				   (unsigned long long)st->pkt_drop, (unsigned long long)st->traf_drop >> 10);
+		}
 	}
 
-	read_lock_bh(&sock_lock);
+	read_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
 		struct sock *sk = usock->sock->sk;
 
-		seq_printf(seq, "sock%d: %u.%u.%u.%u:%u, wmem %u, sndbuf %u, wmem_queued %u\n",
+		seq_printf(seq, "sock%d: %u.%u.%u.%u:%u, sndbuf %u, filled %u, peak %u; err: sndbuf reached %u, other %u\n",
 			   snum,
 			   usock->ipaddr >> 24,
 			   (usock->ipaddr >> 16) & 255,
 			   (usock->ipaddr >> 8) & 255,
 			   usock->ipaddr & 255,
 			   usock->port,
-			   atomic_read(&sk->sk_wmem_alloc),
 			   sk->sk_sndbuf,
-			   sk->sk_wmem_queued);
+			   atomic_read(&sk->sk_wmem_alloc),
+			   atomic_read(&usock->wmem_peak),
+			   atomic_read(&usock->err_full),
+			   atomic_read(&usock->err_other));
 		snum++;
 	}
-	read_unlock_bh(&sock_lock);
+	read_unlock(&sock_lock);
 
 	read_lock_bh(&ipt_netflow_lock);
 	snum = 0;
@@ -284,14 +289,14 @@ static int sndbuf_procctl(ctl_table *ctl, int write, struct file *filp,
 	int ret;
 	struct ipt_netflow_sock *usock;
        
-	read_lock_bh(&sock_lock);
+	read_lock(&sock_lock);
 	if (list_empty(&usock_list)) {
-		read_unlock_bh(&sock_lock);
+		read_unlock(&sock_lock);
 		return -ENOENT;
 	}
 	usock = list_first_entry(&usock_list, struct ipt_netflow_sock, list);
 	sndbuf = usock->sock->sk->sk_sndbuf;
-	read_unlock_bh(&sock_lock);
+	read_unlock(&sock_lock);
 
 	ctl->data = &sndbuf;
 	ret = proc_dointvec(ctl, write, filp, buffer, lenp, fpos);
@@ -299,11 +304,11 @@ static int sndbuf_procctl(ctl_table *ctl, int write, struct file *filp,
 		return ret;
 	if (sndbuf < SOCK_MIN_SNDBUF)
 		sndbuf = SOCK_MIN_SNDBUF;
-	write_lock_bh(&sock_lock);
+	write_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
 		usock->sock->sk->sk_sndbuf = sndbuf;
 	}
-	write_unlock_bh(&sock_lock);
+	write_unlock(&sock_lock);
 	return ret;
 }
 
@@ -445,28 +450,34 @@ static int netflow_send_pdu(void *buffer, int len)
 	int snum = 0;
 	struct ipt_netflow_sock *usock;
 
-	read_lock_bh(&sock_lock);
+	read_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
 		if (debug)
-			printk(KERN_INFO "netflow_send_pdu: sendmsg(%d, %d) [%u %u %u]\n",
+			printk(KERN_INFO "netflow_send_pdu: sendmsg(%d, %d) [%u %u]\n",
 			       snum,
 			       len,
 			       atomic_read(&usock->sock->sk->sk_wmem_alloc),
-			       usock->sock->sk->sk_wmem_queued,
 			       usock->sock->sk->sk_sndbuf);
 		ret = kernel_sendmsg(usock->sock, &msg, &iov, 1, (size_t)len);
 		if (ret < 0) {
 			printk(KERN_ERR "netflow_send_pdu: kernel_sendmsg (%d) error %d, %d, %d\n",
 			       snum, ret, usock->sock->sk->sk_err, usock->sock->sk->sk_err_soft);
 			NETFLOW_STAT_INC(send_failed);
+			if (ret == -EAGAIN)
+				atomic_inc(&usock->err_full);
+			else
+				atomic_inc(&usock->err_other);
 		} else {
+			unsigned int wmem = atomic_read(&usock->sock->sk->sk_wmem_alloc);
+			if (wmem > atomic_read(&usock->wmem_peak))
+				atomic_set(&usock->wmem_peak, wmem);
 			NETFLOW_STAT_INC(send_success);
 			NETFLOW_STAT_ADD(exported_size, ret);
 			retok++;
 		}
 		snum++;
 	}
-	read_unlock_bh(&sock_lock);
+	read_unlock(&sock_lock);
 	return retok;
 }
 
@@ -484,17 +495,17 @@ static void usock_free(struct ipt_netflow_sock *usock)
 
 static void destination_fini(void)
 {
-	write_lock_bh(&sock_lock);
+	write_lock(&sock_lock);
 	while (!list_empty(&usock_list)) {
 		struct ipt_netflow_sock *usock;
 
 		usock = list_entry(usock_list.next, struct ipt_netflow_sock, list);
 		list_del(&usock->list);
-		write_unlock_bh(&sock_lock);
+		write_unlock(&sock_lock);
 		usock_free(usock);
-		write_lock_bh(&sock_lock);
+		write_lock(&sock_lock);
 	}
-	write_unlock_bh(&sock_lock);
+	write_unlock(&sock_lock);
 }
 
 static void add_usock(struct ipt_netflow_sock *usock)
@@ -507,12 +518,12 @@ static void add_usock(struct ipt_netflow_sock *usock)
 		return;
 	}
 
-	write_lock_bh(&sock_lock);
+	write_lock(&sock_lock);
 	/* don't need duplicated sockets */
 	list_for_each_entry(sk, &usock_list, list) {
 		if (sk->ipaddr == usock->ipaddr &&
 		    sk->port == usock->port) {
-			write_unlock_bh(&sock_lock);
+			write_unlock(&sock_lock);
 			usock_free(usock);
 			return;
 		}
@@ -522,7 +533,7 @@ static void add_usock(struct ipt_netflow_sock *usock)
 	       HIPQUAD(usock->ipaddr),
 	       usock->port,
 	       usock->sock);
-	write_unlock_bh(&sock_lock);
+	write_unlock(&sock_lock);
 }
 
 static struct socket *usock_alloc(__be32 ipaddr, unsigned short port)
@@ -577,6 +588,9 @@ static int add_destinations(char *ptr)
 			usock->ipaddr = ntohl(*(__be32 *)ip);
 			usock->port = port;
 			usock->sock = usock_alloc(usock->ipaddr, port);
+			atomic_set(&usock->wmem_peak, 0);
+			atomic_set(&usock->err_full, 0);
+			atomic_set(&usock->err_other, 0);
 			add_usock(usock);
 		} else
 			break;
@@ -818,8 +832,7 @@ static void netflow_export_pdu(void)
 	//pdu.padding	= 0;
 
 	pdu.seq = htonl(ntohl(pdu.seq) + pdu.nr_records);
-
-	pdusize = sizeof(pdu) - (NETFLOW5_RECORDS_MAX - pdu.nr_records) * sizeof(struct netflow5_record);
+	pdusize = NETFLOW5_HEADER_SIZE + sizeof(struct netflow5_record) * pdu.nr_records;
 
 	/* especially fix nr_records before export */
 	pdu.nr_records	= htons(pdu.nr_records);
@@ -828,7 +841,7 @@ static void netflow_export_pdu(void)
 		int i;
 
 		/* not least one send succeded, account stat for dropped packets */
-		pdu.nr_records  = ntohs(pdu.nr_records); // recover nr_records
+		pdu.nr_records = ntohs(pdu.nr_records); // recover nr_records
 		for (i = 0; i < pdu.nr_records; i++) {
 			struct netflow5_record *rec = &pdu.flow[i];
 
@@ -839,7 +852,6 @@ static void netflow_export_pdu(void)
 
 	pdu.nr_records	= 0;
 }
-
 
 static void netflow_export_flow(struct ipt_netflow *nf)
 {
@@ -923,10 +935,10 @@ static void netflow_scan_inactive_timeout(long timeout)
 		netflow_export_pdu();
 }
 
-static void idle_timer_check(unsigned long dummy)
+static void netflow_work_fn(struct work_struct *dummy)
 {
 	netflow_scan_inactive_timeout(inactive_timeout);
-	mod_timer(&idle_timer, jiffies + (HZ / 10));
+	schedule_delayed_work(&netflow_work, HZ / 10);
 }
 
 #define RATESHIFT 2
@@ -995,12 +1007,7 @@ static unsigned int netflow_target(
 
 	if (iph == NULL) {
 		NETFLOW_STAT_INC(truncated);
-		return IPT_CONTINUE;
-	}
-
-	if (iph->frag_off & htons(IP_OFFSET)) {
-		/* don't account but count frags */
-		NETFLOW_STAT_INC(frags);
+		NETFLOW_STAT_INC(pkt_drop);
 		return IPT_CONTINUE;
 	}
 
@@ -1015,8 +1022,11 @@ static unsigned int netflow_target(
 	s_mask		= 0;
 	d_mask		= 0;
 
-	switch (tuple.protocol) {
-		case IPPROTO_TCP: {
+	if (iph->frag_off & htons(IP_OFFSET))
+		NETFLOW_STAT_INC(frags);
+	else {
+		switch (tuple.protocol) {
+		    case IPPROTO_TCP: {
 			struct tcphdr _hdr, *hp;
 
 			if ((hp = skb_header_pointer(skb, iph->ihl * 4, 14, &_hdr))) {
@@ -1025,8 +1035,8 @@ static unsigned int netflow_target(
 				tcp_flags = (u_int8_t)(ntohl(tcp_flag_word(hp)) >> 16);
 			}
 			break;
-		}
-		case IPPROTO_UDP: {
+		    }
+		    case IPPROTO_UDP: {
 			struct udphdr _hdr, *hp;
 
 			if ((hp = skb_header_pointer(skb, iph->ihl * 4, 4, &_hdr))) {
@@ -1034,22 +1044,23 @@ static unsigned int netflow_target(
 				tuple.d_port = hp->dest;
 			}
 			break;
-		}
-		case IPPROTO_ICMP: {
+		    }
+		    case IPPROTO_ICMP: {
 			struct icmphdr _hdr, *hp;
 
 			if ((hp = skb_header_pointer(skb, iph->ihl * 4, 2, &_hdr)))
 				tuple.d_port = (hp->type << 8) | hp->code;
 			break;
-		}
-		case IPPROTO_IGMP: {
+		    }
+		    case IPPROTO_IGMP: {
 			struct igmphdr *_hdr, *hp;
 
 			if ((hp = skb_header_pointer(skb, iph->ihl * 4, 1, &_hdr)))
 				tuple.d_port = hp->type;
+			}
 			break;
-		}
-	}
+	       	}
+	} /* not fragmented */
 
 	write_lock_bh(&ipt_netflow_lock);
 
@@ -1259,8 +1270,7 @@ static int __init ipt_netflow_init(void)
 	}
 	add_aggregation(aggregation);
 
-	setup_timer(&idle_timer, idle_timer_check, 0);
-	mod_timer(&idle_timer, jiffies + (HZ / 10));
+	schedule_delayed_work(&netflow_work, HZ / 10);
 	setup_timer(&rate_timer, rate_timer_calc, 0);
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
 
@@ -1273,7 +1283,8 @@ static int __init ipt_netflow_init(void)
 	return 0;
 
 err_stop_timer:
-	del_timer_sync(&idle_timer);
+	cancel_delayed_work(&netflow_work);
+	flush_scheduled_work();
 	del_timer_sync(&rate_timer);
 	destination_fini();
 
@@ -1301,7 +1312,8 @@ static void __exit ipt_netflow_fini(void)
 	printk(KERN_INFO "ipt_netflow unloading..\n");
 
 	xt_unregister_target(&ipt_netflow_reg);
-	del_timer_sync(&idle_timer);
+	cancel_delayed_work(&netflow_work);
+	flush_scheduled_work();
 	del_timer_sync(&rate_timer);
 
 	write_lock_bh(&ipt_netflow_lock);

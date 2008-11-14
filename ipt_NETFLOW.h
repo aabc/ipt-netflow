@@ -10,7 +10,6 @@
 
 #define NETFLOW5_RECORDS_MAX 30
 
-
 struct netflow5_record {
 	__be32		s_addr;
 	__be32		d_addr;
@@ -47,6 +46,7 @@ struct netflow5_pdu {
 	__u16			padding;
 	struct netflow5_record	flow[NETFLOW5_RECORDS_MAX];
 };
+#define NETFLOW5_HEADER_SIZE (sizeof(struct netflow5_pdu) - NETFLOW5_RECORDS_MAX * sizeof(struct netflow5_record))
 
 /* hashed data which identify unique flow */
 struct ipt_netflow_tuple {
@@ -96,6 +96,9 @@ struct ipt_netflow_sock {
 	struct socket *sock;
 	__be32 ipaddr;
 	unsigned short port;
+	atomic_t wmem_peak;	// sk_wmem_alloc peak value
+	atomic_t err_full;	// socket filled error
+	atomic_t err_other;	// other socket errors
 };
 
 struct netflow_aggr_n {
