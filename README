@@ -23,6 +23,9 @@ Troubleshooting:
    1) Sometimes you will want to add CC=gcc-3 to make command.
    Example: make CC=gcc-3.3
 
+   2) Compile module with actual kernel source compiled.
+   I.e. first compile kernel and boot into it, and then compile module.
+
 4. After this point you should be able to load module
      and use -j NETFLOW target in your iptables.
 
@@ -88,7 +91,7 @@ Troubleshooting:
        Default is system memory dependent small enough value.
 
    maxflows=2000000
-     - Maximum number of flows to account. It's here to prevent DOS. After
+     - Maximum number of flows to account. It's here to prevent DOS attacks. After
        this limit reached new flows will not be accounted. Default is
        2000000, zero is unlimited.
 
@@ -116,6 +119,114 @@ Troubleshooting:
      Full example:
         aggregation=192.0.0.0/8=16,10.0.0.0/8=16,80-89=80,3128=80
         
+====================
+= HOW TO READ STAT =
+====================
+
+  Statistics is your friend to fine tune and understand netflow module performance.
+
+  To see stat:
+  # cat /proc/net/stat/ipt_netflow
+
+  How to interpret the data:
+
+> Flows: active 5187 (peak 83905 reached 0d0h1m ago, maxflows 2000000), mem 283K
+
+  active X: currently active flows in memory cache.
+    - recommended to set hash table size to twice of average of this value.
+  peak X reached Y ago, maxflows Z: peak value of active flows.
+    - all flows above maxflows limit must be dropped.
+    - you can control maxflows limit by sysctl net.netflow.maxflows variable.
+  mem XK: how much kilobytes of memory currently taken by active flows.
+    - one active flow taking 56 bytes of memory.
+    - there is system limit on cache size too.
+
+> Hash: size 8192 (mem 32K), metric 122. Timeout: active 1800, inactive 15
+
+  Hash: size X: current hash size/limit.
+    - you can control this by sysctl net.netflow.hashsize variable.
+    - increasing this value can significantly reduce CPU load.
+    - default value is not optimal for performance.
+    - optimal value is twice of average of active flows.
+  mem XK: how much memory occupied by hash table.
+    - hash table is fixed size by nature, taking 4 bytes per entry.
+  metric X: how optimal is your hash table used.
+    - lesser value is more optimal hash table use, min is 1.
+    - this is average value calculated by (searches / found).
+    - this is not precise at all and not dynamic, just a hint.
+  Timeout: active X: how much seconds to wait before exporting active flow.
+    - same as sysctl net.netflow.active_timeout variable.
+  inactive X: how much seconds to wait before exporting inactive flow.
+    - same as sysctl net.netflow.inactive_timeout variable.
+
+> Rate: 202448 bits/sec, 83 packets/sec; 1 min: 668463 bps, 930 pps; 5 min: 329039 bps, 483 pps
+
+  - Module throughput values for 1 second, 1 minute, and 5 minutes.
+
+> cpu#  stat: <search found, trunc frag alloc maxflows>, sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>
+> cpu0  stat: 756144   6221,    0    0    0    0, sock:   4983 928 0, 7124 K, traffic: 188765, 14 MB, drop: 27863, 1142 K
+
+  cpu#: this is Total and per CPU statistics for:
+  stat: <search found, trunc frag alloc maxflows>: internal stat for:
+  search found: hash table searched and found counters (32bit).
+  trunc: how much truncated packets is ignored
+    - these are that possible don't have valid IP header.
+    - accounted in drop packets counter but not in drop bytes.
+  frag: how much fragmented packets have seen.
+    - kernel always defragments INPUT/OUTPUT chains for us.
+    - these packets are not ignored but not reassembled either, so:
+    - if there is no enough data in fragment (ex. tcp ports) it is considered zero.
+  alloc: how much cache memory allocations is failed.
+    - packets ignored and accounted in drop stat.
+    - probably increase system memory if this ever happen.
+  maxflows: how much packets ignored on maxflows (maximum active flows reached).
+    - packets ignored and accounted in drop stat.
+    - you can control maxflows limit by sysctl net.netflow.maxflows variable.
+
+  sock: <ok fail cberr, bytes>: table of exporting stats for:
+  ok: how much Netflow PDUs are exported (i.e. UDP packets sent by module).
+  fail: how much socket errors (i.e. packets failed to be sent).
+    - packets dropped and their internal statistics cumulatively accounted in drop stat.
+  cberr: how much connection refused ICMP errors we got from export target.
+    - probably you not launched collector software on destination,
+    - or specified wrong destination address.
+    - flows lost in this fashion is not possible to account in drop stat.
+    - these are ICMP errors, and would look like this in tcpdump:
+      05:04:09.281247 IP alice.19440 > bob.2055: UDP, length 120
+      05:04:09.281405 IP bob > alice: ICMP bob udp port 2055 unreachable, length 156
+  bytes: how much kilobytes of exporting data successfully sent by the module.
+
+  traffic: <pkt, bytes>: how much traffic is accounted.
+  pkt, bytes: sum of packets/megabytes accounted by module.
+    - flows that failed to be exported (on socket error) is accounted here too.
+
+  drop: <pkt, bytes>: how much of traffic is not accounted.
+  pkt, bytes: sum of packets/kilobytes we are lost/dropped.
+    - reasons they are dropped and accounted here:
+      truncated/fragmented packets,
+      packet is for new flow but failed to allocate memory for it,
+      packet is for new flow but maxflows is already reached,
+      all flows in export packets that got socket error.
+
+> sock0: 10.0.0.2:2055, sndbuf 106496, filled 0, peak 106848; err: sndbuf reached 928, other 0
+
+  sockX: per destination stats for:
+  X.X.X.X:Y: destination ip address and port.
+    - controlled by sysctl net.netflow.destination variable.
+  sndbuf X: how much data socket can hold in buffers.
+    - controlled by sysctl net.netflow.sndbuf variable.
+    - if you have packet drops due to sndbuf reached (error -11) increase this value.
+  filled X: how much data in socket buffers right now.
+  peak X: peak value of how much data in socket buffers was.
+    - you will be interested to keep it below sndbuf value.
+  err: how much packets are dropped due to errors.
+    - all flows from them will be accounted in drop stat.
+  sndbuf reached X: how much packets dropped due to sndbuf being too small (error -11).
+  other X: dropped due to other possible errors.
+
+> aggr0: ...
+  aggrX: aggregation rulesets.
+    - controlled by sysctl net.netflow.aggregation variable.
 
 =========
 = VOILA =
