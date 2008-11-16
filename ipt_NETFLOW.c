@@ -34,7 +34,7 @@
 #include <linux/sysctl.h>
 #endif
 
-#define IPT_NETFLOW_VERSION "1.2"
+#define IPT_NETFLOW_VERSION "1.3"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("<abc@telekom.ru>");
@@ -83,16 +83,16 @@ static DEFINE_PER_CPU(struct ipt_netflow_stat, ipt_netflow_stat);
 static LIST_HEAD(usock_list);
 static DEFINE_RWLOCK(sock_lock);
 
-static int netflow_shutdown;
 static unsigned int ipt_netflow_hash_rnd;
 struct hlist_head *ipt_netflow_hash __read_mostly; /* hash table memory */
 static unsigned int ipt_netflow_hash_size __read_mostly = 0;
 static LIST_HEAD(ipt_netflow_list); /* all flows */
 static LIST_HEAD(aggr_n_list);
 static LIST_HEAD(aggr_p_list);
+static DEFINE_RWLOCK(aggr_lock);
 static struct kmem_cache *ipt_netflow_cachep __read_mostly; /* ipt_netflow memory */
 static atomic_t ipt_netflow_count = ATOMIC_INIT(0);
-static DEFINE_RWLOCK(ipt_netflow_lock);
+static DEFINE_SPINLOCK(ipt_netflow_lock);
 
 static struct netflow5_pdu pdu;
 static __be32 pdu_ts_mod;
@@ -179,7 +179,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		   active_timeout,
 		   inactive_timeout);
 
-	seq_printf(seq, "Rate: %llu bits/sec, %llu packets/sec; 1 min: %llu bps, %llu pps; 5 min: %llu bps, %llu pps\n",
+	seq_printf(seq, "Rate: %llu bits/sec, %llu packets/sec; Avg 1 min: %llu bps, %llu pps; 5 min: %llu bps, %llu pps\n",
 		   sec_brate, sec_prate, min_brate, min_prate, min5_brate, min5_prate);
 
 	seq_printf(seq, "cpu#  stat: <search found, trunc frag alloc maxflows>, sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
@@ -226,7 +226,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	}
 	read_unlock(&sock_lock);
 
-	read_lock_bh(&ipt_netflow_lock);
+	read_lock_bh(&aggr_lock);
 	snum = 0;
 	list_for_each_entry(aggr_n, &aggr_n_list, list) {
 		seq_printf(seq, "aggr#%d net: match %u.%u.%u.%u/%d strip %d\n",
@@ -245,7 +245,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 			   aggr_p->aggr_port);
 		snum++;
 	}
-	read_unlock_bh(&ipt_netflow_lock);
+	read_unlock_bh(&aggr_lock);
 	return 0;
 }
 
@@ -602,17 +602,17 @@ static int add_destinations(char *ptr)
 
 static void aggregation_fini(struct list_head *list)
 {
-	write_lock_bh(&ipt_netflow_lock);
+	write_lock_bh(&aggr_lock);
 	while (!list_empty(list)) {
 		struct netflow_aggr_n *aggr; /* match netflow_aggr_p too */
 
 		aggr = list_entry(list->next, struct netflow_aggr_n, list);
 		list_del(&aggr->list);
-		write_unlock_bh(&ipt_netflow_lock);
+		write_unlock_bh(&aggr_lock);
 		vfree(aggr);
-		write_lock_bh(&ipt_netflow_lock);
+		write_lock_bh(&aggr_lock);
 	}
-	write_unlock_bh(&ipt_netflow_lock);
+	write_unlock_bh(&aggr_lock);
 }
 
 static int add_aggregation(char *ptr)
@@ -672,7 +672,7 @@ static int add_aggregation(char *ptr)
 	}
 
 	/* swap lists */
-	write_lock_bh(&ipt_netflow_lock);
+	write_lock_bh(&aggr_lock);
 	list_for_each_entry_safe(aggr, tmp, &aggr_n_list, list)
 		list_move(&aggr->list, &old_aggr_list);
 	list_for_each_entry_safe(aggr, tmp, &aggr_p_list, list)
@@ -682,7 +682,7 @@ static int add_aggregation(char *ptr)
 		list_move_tail(&aggr->list, &aggr_n_list);
 	list_for_each_entry_safe(aggr, tmp, &new_aggr_p_list, list)
 		list_move_tail(&aggr->list, &aggr_p_list);
-	write_unlock_bh(&ipt_netflow_lock);
+	write_unlock_bh(&aggr_lock);
 	aggregation_fini(&old_aggr_list);
 	return 0;
 }
@@ -743,7 +743,7 @@ static int set_hashsize(int new_size)
 	get_random_bytes(&rnd, 4);
 
 	/* rehash */
-	write_lock_bh(&ipt_netflow_lock);
+	spin_lock_bh(&ipt_netflow_lock);
 	old_hash = ipt_netflow_hash;
 	ipt_netflow_hash = new_hash;
 	ipt_netflow_hash_size = new_size;
@@ -755,7 +755,7 @@ static int set_hashsize(int new_size)
 		 * so it's good */
 		hlist_add_head(&nf->hlist, &new_hash[hash]);
 	}
-	write_unlock_bh(&ipt_netflow_lock);
+	spin_unlock_bh(&ipt_netflow_lock);
 
 	vfree(old_hash);
 
@@ -907,7 +907,7 @@ static void netflow_scan_inactive_timeout(long timeout)
 	long i_timeout = timeout * HZ;
 	long a_timeout = active_timeout * HZ;
 
-	write_lock_bh(&ipt_netflow_lock);
+	spin_lock_bh(&ipt_netflow_lock);
 	while (!list_empty(&ipt_netflow_list)) {
 		struct ipt_netflow *nf;
 	       
@@ -918,16 +918,16 @@ static void netflow_scan_inactive_timeout(long timeout)
 		    active_needs_export(nf, a_timeout)) {
 			hlist_del(&nf->hlist);
 			list_del(&nf->list);
-			write_unlock_bh(&ipt_netflow_lock);
+			spin_unlock_bh(&ipt_netflow_lock);
 			netflow_export_flow(nf);
-			write_lock_bh(&ipt_netflow_lock);
+			spin_lock_bh(&ipt_netflow_lock);
 		} else {
 			/* all flows which need to be exported is always at the tail
 			 * so if no more exportable flows we can break */
 			break;
 		}
 	}
-	write_unlock_bh(&ipt_netflow_lock);
+	spin_unlock_bh(&ipt_netflow_lock);
 
 	/* flush flows stored in pdu if there no new flows for too long */
 	/* Note: using >= to allow flow purge on zero timeout */
@@ -943,6 +943,11 @@ static void netflow_work_fn(struct work_struct *dummy)
 
 #define RATESHIFT 2
 #define SAMPLERATE (RATESHIFT*RATESHIFT)
+#define NUMSAMPLES(minutes) (minutes * 60 / SAMPLERATE)
+#define _A(v, m) (v) * (1024 * 2 / (NUMSAMPLES(m) + 1)) >> 10
+// x * (1024 / y) >> 10 is because I can not just divide long long integer
+#define CALC_RATE(ewma, cur, minutes) ewma += _A(cur - ewma, minutes)
+// calculate EWMA throughput rate for whole module
 static void rate_timer_calc(unsigned long dummy)
 {
 	static u64 old_pkt_total = 0;
@@ -959,13 +964,13 @@ static void rate_timer_calc(unsigned long dummy)
 	}
 
 	sec_prate = (pkt_total - old_pkt_total) >> RATESHIFT;
-	min5_prate = sec_prate + (((min5_prate - sec_prate) * 1010) >> 10);
-	min_prate = sec_prate + (((min_prate - sec_prate) * 957) >> 10);
+	CALC_RATE(min5_prate, sec_prate, 5);
+	CALC_RATE(min_prate, sec_prate, 1);
 	old_pkt_total = pkt_total;
 
 	sec_brate = ((traf_total - old_traf_total) * 8) >> RATESHIFT;
-	min5_brate = sec_brate + (((min5_brate - sec_brate) * 1010) >> 10);
-	min_brate = sec_brate + (((min_brate - sec_brate) * 957) >> 10);
+	CALC_RATE(min5_brate, sec_brate, 5);
+	CALC_RATE(min_brate, sec_brate, 1);
 	old_traf_total = traf_total;
 
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
@@ -1062,15 +1067,8 @@ static unsigned int netflow_target(
 	       	}
 	} /* not fragmented */
 
-	write_lock_bh(&ipt_netflow_lock);
-
-	/* on module shutdown */
-	if (netflow_shutdown) {
-		write_unlock_bh(&ipt_netflow_lock);
-		return IPT_CONTINUE;
-	}
-
 	/* aggregate networks */
+	read_lock_bh(&aggr_lock);
 	list_for_each_entry(aggr_n, &aggr_n_list, list)
 		if ((ntohl(tuple.s_addr) & aggr_n->mask) == aggr_n->addr) {
 			tuple.s_addr &= htonl(aggr_n->aggr_mask);
@@ -1098,7 +1096,9 @@ static unsigned int netflow_target(
 			tuple.d_port = htons(aggr_p->aggr_port);
 			break;
 		}
+	read_unlock_bh(&aggr_lock);
 
+	spin_lock_bh(&ipt_netflow_lock);
 	/* record */
 	nf = ipt_netflow_find(&tuple);
 	if (!nf) {
@@ -1107,7 +1107,7 @@ static unsigned int netflow_target(
 			NETFLOW_STAT_INC(maxflows_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, ntohs(iph->tot_len));
-			write_unlock_bh(&ipt_netflow_lock);
+			spin_unlock_bh(&ipt_netflow_lock);
 			return IPT_CONTINUE;
 		}
 
@@ -1116,7 +1116,7 @@ static unsigned int netflow_target(
 			NETFLOW_STAT_INC(alloc_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, ntohs(iph->tot_len));
-			write_unlock_bh(&ipt_netflow_lock);
+			spin_unlock_bh(&ipt_netflow_lock);
 			return IPT_CONTINUE;
 		}
 
@@ -1159,7 +1159,7 @@ static unsigned int netflow_target(
 		 * limited size). But yes, this is disputable. */
 	}
 
-	write_unlock_bh(&ipt_netflow_lock);
+	spin_unlock_bh(&ipt_netflow_lock);
 
 	return IPT_CONTINUE;
 }
@@ -1316,9 +1316,7 @@ static void __exit ipt_netflow_fini(void)
 	flush_scheduled_work();
 	del_timer_sync(&rate_timer);
 
-	write_lock_bh(&ipt_netflow_lock);
-	netflow_shutdown = 1;
-	write_unlock_bh(&ipt_netflow_lock);
+	synchronize_sched();
 
 #ifdef CONFIG_SYSCTL
 	unregister_sysctl_table(netflow_sysctl_header);
