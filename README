@@ -134,14 +134,12 @@ Troubleshooting:
 
   active X: currently active flows in memory cache.
     - recommended to set hash table size to twice of average of this value.
-  peak X reached Y ago, maxflows Z: peak value of active flows.
-    - all flows above maxflows limit must be dropped.
-    - you can control maxflows limit by sysctl net.netflow.maxflows variable.
+  peak X reached Y ago: peak value of active flows.
   mem XK: how much kilobytes of memory currently taken by active flows.
     - one active flow taking 56 bytes of memory.
     - there is system limit on cache size too.
 
-> Hash: size 8192 (mem 32K), metric 122. Timeout: active 1800, inactive 15
+> Hash: size 8192 (mem 32K), metric 1.0, 1.0, 1.0, 1.0. MemTraf: 1420 pkt, 364 K (pdu 0, 0).
 
   Hash: size X: current hash size/limit.
     - you can control this by sysctl net.netflow.hashsize variable.
@@ -150,25 +148,36 @@ Troubleshooting:
     - optimal value is twice of average of active flows.
   mem XK: how much memory occupied by hash table.
     - hash table is fixed size by nature, taking 4 bytes per entry.
-  metric X: how optimal is your hash table used.
-    - lesser value is more optimal hash table use, min is 1.
-    - this is average value calculated by (searches / found).
-    - this is not precise at all and not dynamic, just a hint.
+  metric X, X, X, X: how optimal is your hash table being used.
+    - lesser value mean more optimal hash table use, min is 1.0.
+    - this is moving average (EWMA) of hash table access divided
+      by match rate (searches / matches) for 4sec, and 1, 5, 15 minutes.
+      Sort of hash table load average.
+  MemTraf: X pkt, X K: how much traffic accounted for flows that are in memory.
+    - these flows that are residing in internal hash table.
+  pdu X, X: how much traffic in flows preparing to be exported.
+    - it is included already in aforementioned MemTraf total.
+
+> Timeout: active 1800, inactive 15. Maxflows 2000000
+
   Timeout: active X: how much seconds to wait before exporting active flow.
     - same as sysctl net.netflow.active_timeout variable.
   inactive X: how much seconds to wait before exporting inactive flow.
     - same as sysctl net.netflow.inactive_timeout variable.
+  Maxflows 2000000: maxflows limit.
+    - all flows above maxflows limit must be dropped.
+    - you can control maxflows limit by sysctl net.netflow.maxflows variable.
 
 > Rate: 202448 bits/sec, 83 packets/sec; 1 min: 668463 bps, 930 pps; 5 min: 329039 bps, 483 pps
 
   - Module throughput values for 1 second, 1 minute, and 5 minutes.
 
-> cpu#  stat: <search found, trunc frag alloc maxflows>, sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>
-> cpu0  stat: 756144   6221,    0    0    0    0, sock:   4983 928 0, 7124 K, traffic: 188765, 14 MB, drop: 27863, 1142 K
+> cpu#  stat: <search found new, trunc frag alloc maxflows>, sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>
+> cpu0  stat: 980540  10473 180600,    0    0    0    0, sock:   4983 928 0, 7124 K, traffic: 188765, 14 MB, drop: 27863, 1142 K
 
   cpu#: this is Total and per CPU statistics for:
-  stat: <search found, trunc frag alloc maxflows>: internal stat for:
-  search found: hash table searched and found counters (32bit).
+  stat: <search found new, trunc frag alloc maxflows>: internal stat for:
+  search found new: hash table searched, found, and not found counters.
   trunc: how much truncated packets is ignored
     - these are that possible don't have valid IP header.
     - accounted in drop packets counter but not in drop bytes.

@@ -121,8 +121,9 @@ struct netflow_aggr_p {
 
 /* statistics */
 struct ipt_netflow_stat {
-	unsigned int searched;		// hash stat
-	unsigned int found;		// hash stat
+	u64 searched;			// hash stat
+	u64 found;			// hash stat
+	u64 notfound;			// hash stat
 	unsigned int truncated;		// packets stat
 	unsigned int frags;		// packets stat
 	unsigned int alloc_err;		// failed to allocate flow mem

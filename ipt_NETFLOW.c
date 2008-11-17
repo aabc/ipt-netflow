@@ -95,7 +95,7 @@ static atomic_t ipt_netflow_count = ATOMIC_INIT(0);
 static DEFINE_SPINLOCK(ipt_netflow_lock);
 
 static DEFINE_SPINLOCK(pdu_lock);
-static long long pdu_packets = 0L, pdu_traf = 0L;
+static long long pdu_packets = 0, pdu_traf = 0;
 static struct netflow5_pdu pdu;
 static __be32 pdu_ts_mod;
 static void netflow_work_fn(struct work_struct *work);
@@ -104,9 +104,10 @@ static struct timer_list rate_timer;
 
 #define TCP_FIN_RST 0x05
 
-static long long sec_prate = 0L, sec_brate = 0L;
-static long long min_prate = 0L, min_brate = 0L;
-static long long min5_prate = 0L, min5_brate = 0L;
+static long long sec_prate = 0, sec_brate = 0;
+static long long min_prate = 0, min_brate = 0;
+static long long min5_prate = 0, min5_brate = 0;
+static unsigned int metric = 10, min15_metric = 10, min5_metric = 10, min_metric = 10; /* hash metrics */
 
 static int set_hashsize(int new_size);
 static void destination_fini(void);
@@ -138,7 +139,8 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 {
 	unsigned int nr_flows = atomic_read(&ipt_netflow_count);
 	int cpu;
-	unsigned int searched = 0, found = 0, truncated = 0, frags = 0, alloc_err = 0, maxflows_err = 0;
+	unsigned long long searched = 0, found = 0, notfound = 0;
+	unsigned int truncated = 0, frags = 0, alloc_err = 0, maxflows_err = 0;
 	unsigned int sock_errors = 0, send_failed = 0, send_success = 0;
 	unsigned long long pkt_total = 0, traf_total = 0, exported_size = 0;
 	unsigned long long pkt_drop = 0, traf_drop = 0;
@@ -160,6 +162,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 
 		searched += st->searched;
 		found += st->found;
+		notfound += st->notfound;
 		truncated += st->truncated;
 		frags += st->frags;
 		alloc_err += st->alloc_err;
@@ -176,10 +179,14 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		traf_out += st->traf_out;
 	}
 
-	seq_printf(seq, "Hash: size %u (mem %uK), metric %d. MemTraf: %llu pkt, %llu K (pdu %llu, %llu).\n",
+#define FFLOAT(x, prec) (int)(x) / prec, (int)(x) % prec
+	seq_printf(seq, "Hash: size %u (mem %uK), metric %d.%d, %d.%d, %d.%d, %d.%d. MemTraf: %llu pkt, %llu K (pdu %llu, %llu).\n",
 		   ipt_netflow_hash_size, 
 		   (unsigned int)((ipt_netflow_hash_size * sizeof(struct hlist_head)) >> 10),
-		   found? (searched + found) / found : 0,
+		   FFLOAT(metric, 10),
+		   FFLOAT(min_metric, 10),
+		   FFLOAT(min5_metric, 10),
+		   FFLOAT(min15_metric, 10),
 		   pkt_total - pkt_out + pdu_packets,
 		   (traf_total - traf_out + pdu_traf) >> 10,
 		   pdu_packets,
@@ -193,10 +200,13 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "Rate: %llu bits/sec, %llu packets/sec; Avg 1 min: %llu bps, %llu pps; 5 min: %llu bps, %llu pps\n",
 		   sec_brate, sec_prate, min_brate, min_prate, min5_brate, min5_prate);
 
-	seq_printf(seq, "cpu#  stat: <search found, trunc frag alloc maxflows>, sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
+	seq_printf(seq, "cpu#  stat: <search found new, trunc frag alloc maxflows>, sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
 
-	seq_printf(seq, "Total stat: %6u %6u, %4u %4u %4u %4u, sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
-		   searched, found, truncated, frags, alloc_err, maxflows_err,
+	seq_printf(seq, "Total stat: %6llu %6llu %6llu, %4u %4u %4u %4u, sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
+		   (unsigned long long)searched,
+		   (unsigned long long)found,
+		   (unsigned long long)notfound,
+		   truncated, frags, alloc_err, maxflows_err,
 		   send_success, send_failed, sock_errors,
 		   (unsigned long long)exported_size >> 10,
 		   (unsigned long long)pkt_total, (unsigned long long)traf_total >> 20,
@@ -207,9 +217,12 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 			struct ipt_netflow_stat *st;
 
 			st = &per_cpu(ipt_netflow_stat, cpu);
-			seq_printf(seq, "cpu%u  stat: %6u %6u, %4u %4u %4u %4u, sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
+			seq_printf(seq, "cpu%u  stat: %6llu %6llu %6llu, %4u %4u %4u %4u, sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
 				   cpu,
-				   st->searched, st->found, st->truncated, st->frags, st->alloc_err, st->maxflows_err,
+				   (unsigned long long)st->searched,
+				   (unsigned long long)st->found,
+				   (unsigned long long)st->notfound,
+				   st->truncated, st->frags, st->alloc_err, st->maxflows_err,
 				   st->send_success, st->send_failed, st->sock_errors,
 				   (unsigned long long)st->exported_size >> 10,
 				   (unsigned long long)st->pkt_total, (unsigned long long)st->traf_total >> 20,
@@ -718,6 +731,7 @@ ipt_netflow_find(const struct ipt_netflow_tuple *tuple)
 		}
 		NETFLOW_STAT_INC(searched);
 	}
+	NETFLOW_STAT_INC(notfound);
 	return NULL;
 }
 
@@ -854,8 +868,8 @@ static void __netflow_export_pdu(void)
 	}
 
 	pdu.nr_records	= 0;
-	pdu_packets = 0L;
-	pdu_traf = 0L;
+	pdu_packets = 0;
+	pdu_traf = 0;
 }
 
 static void netflow_export_flow(struct ipt_netflow *nf)
@@ -965,6 +979,13 @@ static void rate_timer_calc(unsigned long dummy)
 {
 	static u64 old_pkt_total = 0;
 	static u64 old_traf_total = 0;
+	static u64 old_searched = 0;
+	static u64 old_found = 0;
+	static u64 old_notfound = 0;
+	u64 searched = 0;
+	u64 found = 0;
+	u64 notfound = 0;
+	unsigned int dsrch, dfnd, dnfnd;
 	u64 pkt_total = 0;
 	u64 traf_total = 0;
 	int cpu;
@@ -974,6 +995,9 @@ static void rate_timer_calc(unsigned long dummy)
 
 		pkt_total += st->pkt_total;
 		traf_total += st->traf_total;
+		searched += st->searched;
+		found += st->found;
+		notfound += st->notfound;
 	}
 
 	sec_prate = (pkt_total - old_pkt_total) >> RATESHIFT;
@@ -985,6 +1009,18 @@ static void rate_timer_calc(unsigned long dummy)
 	CALC_RATE(min5_brate, sec_brate, 5);
 	CALC_RATE(min_brate, sec_brate, 1);
 	old_traf_total = traf_total;
+
+	dsrch = searched - old_searched;
+	dfnd = found - old_found;
+	dnfnd = notfound - old_notfound;
+	old_searched = searched;
+	old_found = found;
+	old_notfound = notfound;
+	/* if there is no access to hash keep rate steady */
+	metric = (dfnd + dnfnd)? 10 * (dsrch + dfnd + dnfnd) / (dfnd + dnfnd) : metric;
+	CALC_RATE(min15_metric, (unsigned long long)metric, 15);
+	CALC_RATE(min5_metric, (unsigned long long)metric, 5);
+	CALC_RATE(min_metric, (unsigned long long)metric, 1);
 
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
 }
