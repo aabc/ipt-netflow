@@ -484,13 +484,16 @@ static int netflow_send_pdu(void *buffer, int len)
 			       usock->sock->sk->sk_sndbuf);
 		ret = kernel_sendmsg(usock->sock, &msg, &iov, 1, (size_t)len);
 		if (ret < 0) {
-			printk(KERN_ERR "netflow_send_pdu: kernel_sendmsg (%d) error %d, %d, %d\n",
-			       snum, ret, usock->sock->sk->sk_err, usock->sock->sk->sk_err_soft);
+			char *suggestion = "";
+
 			NETFLOW_STAT_INC(send_failed);
-			if (ret == -EAGAIN)
+			if (ret == -EAGAIN) {
 				atomic_inc(&usock->err_full);
-			else
+				suggestion = ": increase sndbuf!";
+			} else
 				atomic_inc(&usock->err_other);
+			printk(KERN_ERR "netflow_send_pdu[%d]: sendmsg error %d: data loss %llu pkt, %llu bytes%s\n",
+			       snum, ret, pdu_packets, pdu_traf, suggestion);
 		} else {
 			unsigned int wmem = atomic_read(&usock->sock->sk->sk_wmem_alloc);
 			if (wmem > atomic_read(&usock->wmem_peak))
