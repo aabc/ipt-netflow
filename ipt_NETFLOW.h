@@ -135,6 +135,8 @@ struct ipt_netflow_stat {
 	u64 traf_total;			// traffic accounted total
 	u64 pkt_drop;			// packets not accounted total
 	u64 traf_drop;			// traffic not accounted total
+	u64 pkt_out;			// packets out of the memory
+	u64 traf_out;			// traffic out of the memory
 };
 
 #ifndef list_first_entry

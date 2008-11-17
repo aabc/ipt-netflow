@@ -94,6 +94,8 @@ static struct kmem_cache *ipt_netflow_cachep __read_mostly; /* ipt_netflow memor
 static atomic_t ipt_netflow_count = ATOMIC_INIT(0);
 static DEFINE_SPINLOCK(ipt_netflow_lock);
 
+static DEFINE_SPINLOCK(pdu_lock);
+static long long pdu_packets = 0L, pdu_traf = 0L;
 static struct netflow5_pdu pdu;
 static __be32 pdu_ts_mod;
 static void netflow_work_fn(struct work_struct *work);
@@ -102,9 +104,9 @@ static struct timer_list rate_timer;
 
 #define TCP_FIN_RST 0x05
 
-static long long sec_prate = 0, sec_brate = 0;
-static long long min_prate = 0, min_brate = 0;
-static long long min5_prate = 0, min5_brate = 0;
+static long long sec_prate = 0L, sec_brate = 0L;
+static long long min_prate = 0L, min_brate = 0L;
+static long long min5_prate = 0L, min5_brate = 0L;
 
 static int set_hashsize(int new_size);
 static void destination_fini(void);
@@ -140,17 +142,17 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	unsigned int sock_errors = 0, send_failed = 0, send_success = 0;
 	unsigned long long pkt_total = 0, traf_total = 0, exported_size = 0;
 	unsigned long long pkt_drop = 0, traf_drop = 0;
+	unsigned long long pkt_out = 0, traf_out = 0;
 	struct ipt_netflow_sock *usock;
 	struct netflow_aggr_n *aggr_n;
 	struct netflow_aggr_p *aggr_p;
 	int snum = 0;
 	int peak = (jiffies - peakflows_at) / HZ;
 
-	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago, maxflows %u), mem %uK\n",
+	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK\n",
 		   nr_flows,
 		   peakflows,
 		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
-		   maxflows,
 		   (unsigned int)((nr_flows * sizeof(struct ipt_netflow)) >> 10));
 
 	for_each_present_cpu(cpu) {
@@ -170,14 +172,23 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		traf_total += st->traf_total;
 		pkt_drop += st->pkt_drop;
 		traf_drop += st->traf_drop;
+		pkt_out += st->pkt_out;
+		traf_out += st->traf_out;
 	}
 
-	seq_printf(seq, "Hash: size %u (mem %uK), metric %d. Timeout: active %d, inactive %d\n",
+	seq_printf(seq, "Hash: size %u (mem %uK), metric %d. MemTraf: %llu pkt, %llu K (pdu %llu, %llu).\n",
 		   ipt_netflow_hash_size, 
 		   (unsigned int)((ipt_netflow_hash_size * sizeof(struct hlist_head)) >> 10),
 		   found? (searched + found) / found : 0,
+		   pkt_total - pkt_out + pdu_packets,
+		   (traf_total - traf_out + pdu_traf) >> 10,
+		   pdu_packets,
+		   pdu_traf);
+
+	seq_printf(seq, "Timeout: active %d, inactive %d. Maxflows %u\n",
 		   active_timeout,
-		   inactive_timeout);
+		   inactive_timeout,
+		   maxflows);
 
 	seq_printf(seq, "Rate: %llu bits/sec, %llu packets/sec; Avg 1 min: %llu bps, %llu pps; 5 min: %llu bps, %llu pps\n",
 		   sec_brate, sec_prate, min_brate, min_prate, min5_brate, min5_prate);
@@ -529,10 +540,9 @@ static void add_usock(struct ipt_netflow_sock *usock)
 		}
 	}
 	list_add_tail(&usock->list, &usock_list);
-	printk(KERN_INFO "netflow: added destination %u.%u.%u.%u:%u (%p)\n",
+	printk(KERN_INFO "netflow: added destination %u.%u.%u.%u:%u\n",
 	       HIPQUAD(usock->ipaddr),
-	       usock->port,
-	       usock->sock);
+	       usock->port);
 	write_unlock(&sock_lock);
 }
 
@@ -811,7 +821,7 @@ init_netflow(struct ipt_netflow_tuple *tuple,
 }
 
 /* cook pdu, send, and clean */
-static void netflow_export_pdu(void)
+static void __netflow_export_pdu(void)
 {
 	struct timeval tv;
 	int pdusize;
@@ -838,28 +848,26 @@ static void netflow_export_pdu(void)
 	pdu.nr_records	= htons(pdu.nr_records);
 
 	if (netflow_send_pdu(&pdu, pdusize) == 0) {
-		int i;
-
 		/* not least one send succeded, account stat for dropped packets */
-		pdu.nr_records = ntohs(pdu.nr_records); // recover nr_records
-		for (i = 0; i < pdu.nr_records; i++) {
-			struct netflow5_record *rec = &pdu.flow[i];
-
-			NETFLOW_STAT_ADD(pkt_drop, ntohl(rec->nr_packets));
-			NETFLOW_STAT_ADD(traf_drop, ntohl(rec->nr_octets));
-		}
+		NETFLOW_STAT_ADD(pkt_drop, pdu_packets);
+		NETFLOW_STAT_ADD(traf_drop, pdu_traf);
 	}
 
 	pdu.nr_records	= 0;
+	pdu_packets = 0L;
+	pdu_traf = 0L;
 }
 
 static void netflow_export_flow(struct ipt_netflow *nf)
 {
 	struct netflow5_record *rec;
 
+	spin_lock(&pdu_lock);
 	if (debug > 2)
 		printk(KERN_INFO "adding flow to export (%d)\n", pdu.nr_records);
 
+	pdu_packets += nf->nr_packets;
+	pdu_traf += nf->nr_bytes;
 	pdu_ts_mod = jiffies;
 	rec = &pdu.flow[pdu.nr_records++];
 
@@ -884,11 +892,11 @@ static void netflow_export_flow(struct ipt_netflow *nf)
 	rec->s_mask	= nf->s_mask;
 	rec->d_mask	= nf->d_mask;
 	//rec->padding	= 0;
+	ipt_netflow_free(nf);
 
 	if (pdu.nr_records == NETFLOW5_RECORDS_MAX)
-		netflow_export_pdu();
-
-	ipt_netflow_free(nf);
+		__netflow_export_pdu();
+	spin_unlock(&pdu_lock);
 }
 
 static inline int active_needs_export(struct ipt_netflow *nf, long a_timeout)
@@ -919,6 +927,8 @@ static void netflow_scan_inactive_timeout(long timeout)
 			hlist_del(&nf->hlist);
 			list_del(&nf->list);
 			spin_unlock_bh(&ipt_netflow_lock);
+			NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
+			NETFLOW_STAT_ADD(traf_out, nf->nr_bytes);
 			netflow_export_flow(nf);
 			spin_lock_bh(&ipt_netflow_lock);
 		} else {
@@ -931,8 +941,11 @@ static void netflow_scan_inactive_timeout(long timeout)
 
 	/* flush flows stored in pdu if there no new flows for too long */
 	/* Note: using >= to allow flow purge on zero timeout */
-	if ((jiffies - pdu_ts_mod) >= i_timeout)
-		netflow_export_pdu();
+	if ((jiffies - pdu_ts_mod) >= i_timeout) {
+		spin_lock(&pdu_lock);
+		__netflow_export_pdu();
+		spin_unlock(&pdu_lock);
+	}
 }
 
 static void netflow_work_fn(struct work_struct *dummy)
