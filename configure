@@ -1,0 +1,96 @@
+#!/bin/bash
+
+PATH=$PATH:/usr/sbin
+
+error() {
+  echo Error: $@
+  exit 1
+}
+
+iptables_version() {
+  echo -n "Checking iptables sources version: "
+  SRC="$IPTDIR/Makefile"
+  test -s "$SRC" || error Please build iptables first
+  VER=`sed -n 's/^\(IPTABLES_\)\?VERSION[ :]= \?//p' "$SRC"`
+  test "$VER" || error Unknown version of iptables.
+  if [ "$VER" = "$IPTVER" ]; then
+    echo Ok.
+  else
+    echo "$VER. doesn't mach, warrany void!"
+    echo "  * You may want to create symlink from the iptables sources"
+    echo "  directory to here like this: ln -s /usr/src/iptables ."
+    exit 1
+  fi
+}
+
+get_lib_dir() {
+  test -s "$1" && LIB=`sed -n 's/.*_LIB_DIR "\(.*\)"/\1/p' "$1"`
+  if [ "$LIB" ]; then
+    IPTMOD=$LIB
+    echo $IPTMOD
+    return 0
+  fi
+  return 1
+}
+
+iptables_modules() {
+  echo -n "Iptables module path: "
+  get_lib_dir "$IPTDIR/include/iptables.h" && return 0
+  get_lib_dir "$IPTDIR/include/xtables.h" && return 0
+  get_lib_dir "$IPTDIR/xtables/internal.h" && return 0
+  IPTMOD=/usr/local/lib/iptables
+  echo can\'t find, setting to default: $IPTMOD
+}
+
+try_dir() {
+  if [ -d "$1/include" ]; then
+    echo "Found iptables sources at $1"
+    IPTDIR=$1
+    return 0
+  fi
+  return 1
+}
+
+try_dirg() {
+  try_dir "$1" && return 0
+  try_dir "$1.git" && return 0
+}
+
+try_dir2() {
+  test -d "$1" && try_dir `dirname $1` && return 0
+}
+
+iptables_dir() {
+  echo -n "Iptables version: "
+  IPTVER=`iptables -V | sed -n s/iptables.v//p`
+  test "$IPTVER" || error Can not find iptables version
+  VER="iptables-$IPTVER"
+  echo $VER, searching for sources..
+  try_dir "./$VER" && return 0
+  try_dir "../$VER" && return 0
+  try_dir "/usr/src/$VER" && return 0
+  try_dirg "iptables" && return 0
+  try_dirg "../iptables" && return 0
+  try_dirg "/usr/src/iptables" && return 0
+  try_dir2 `locate $VER/extensions | head -1` && return 0
+  error Can not find iptables sources
+}
+
+KVERSION=`uname -r`
+echo Kernel version: $KVERSION
+
+iptables_dir
+iptables_version
+iptables_modules
+
+REPLACE="s!@KVERSION@!$KVERSION!;\
+s!@IPTDIR@!$IPTDIR!;\
+s!@IPTABLES_VERSION@!$IPTVER!;\
+s!@IPTABLES_MODULES@!$IPTMOD!"
+
+echo -n "Creating Makefile.. "
+sed "$REPLACE" Makefile.in > Makefile
+echo done.
+test "$1" || echo "  Now run: make all install"
+echo
+

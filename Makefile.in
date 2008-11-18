@@ -1,0 +1,42 @@
+#
+
+KVERSION = @KVERSION@
+KDIR = /lib/modules/$(KVERSION)/build
+IPTDIR = @IPTDIR@
+IPTABLES_VERSION = @IPTABLES_VERSION@
+IPTABLES_MODULES = @IPTABLES_MODULES@
+
+obj-m = ipt_NETFLOW.o
+
+ipt_NETFLOW.ko: ipt_NETFLOW.c ipt_NETFLOW.h
+	@echo Compiling for kernel $(KVERSION)
+	make -C $(KDIR) M=$(PWD) modules
+all: ipt_NETFLOW.ko libipt_NETFLOW.so
+minstall:
+	make -C $(KDIR) M=$(PWD) modules_install
+mclean:
+	make -C $(KDIR) M=$(PWD) clean
+clean: mclean
+	-rm -f *.so *.o modules.order
+
+libipt_NETFLOW.so: libipt_NETFLOW.c
+	gcc -O2 -Wall -Wunused -I$(KDIR)/include -I$(IPTDIR)/include -DIPTABLES_VERSION=\"$(IPTABLES_VERSION)\" -fPIC -o libipt_NETFLOW_sh.o -c libipt_NETFLOW.c
+	gcc -shared  -o libipt_NETFLOW.so libipt_NETFLOW_sh.o
+
+linstall: ipt_NETFLOW.ko libipt_NETFLOW.so
+	cp -a libipt_NETFLOW.so $(IPTABLES_MODULES)
+
+install: minstall linstall
+
+Makefile: Makefile.in configure
+	./configure --make
+
+load: all
+	insmod ipt_NETFLOW.ko active_timeout=5
+	iptables -A OUTPUT -d 0/0 -j NETFLOW
+	iptables -A INPUT -d 0/0 -j NETFLOW
+
+unload:
+	iptables -D OUTPUT -d 0/0 -j NETFLOW
+	iptables -D INPUT -d 0/0 -j NETFLOW
+	rmmod ipt_NETFLOW.ko
