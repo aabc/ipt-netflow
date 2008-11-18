@@ -98,8 +98,13 @@ static DEFINE_SPINLOCK(pdu_lock);
 static long long pdu_packets = 0, pdu_traf = 0;
 static struct netflow5_pdu pdu;
 static __be32 pdu_ts_mod;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
+static void netflow_work_fn(void *work);
+static DECLARE_WORK(netflow_work, netflow_work_fn, NULL);
+#else
 static void netflow_work_fn(struct work_struct *work);
 static DECLARE_DELAYED_WORK(netflow_work, netflow_work_fn);
+#endif
 static struct timer_list rate_timer;
 
 #define TCP_FIN_RST 0x05
@@ -965,7 +970,11 @@ static void netflow_scan_inactive_timeout(long timeout)
 	}
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
+static void netflow_work_fn(void *dummy)
+#else
 static void netflow_work_fn(struct work_struct *dummy)
+#endif
 {
 	netflow_scan_inactive_timeout(inactive_timeout);
 	schedule_delayed_work(&netflow_work, HZ / 10);
