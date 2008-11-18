@@ -370,8 +370,14 @@ static int aggregation_procctl(ctl_table *ctl, int write, struct file *filp,
 
 static struct ctl_table_header *netflow_sysctl_header;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
+#define _CTL_NAME(x) .ctl_name = x,
+#else
+#define _CTL_NAME(x)
+#endif
 static struct ctl_table netflow_sysctl_table[] = {
 	{
+		_CTL_NAME(1)
 		.procname	= "active_timeout",
 		.mode		= 0644,
 		.data		= &active_timeout,
@@ -379,6 +385,8 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
+		_CTL_NAME(2)
+		.procname	= "active_timeout",
 		.procname	= "inactive_timeout",
 		.mode		= 0644,
 		.data		= &inactive_timeout,
@@ -386,6 +394,8 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
+		_CTL_NAME(3)
+		.procname	= "active_timeout",
 		.procname	= "debug",
 		.mode		= 0644,
 		.data		= &debug,
@@ -393,6 +403,8 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
+		_CTL_NAME(4)
+		.procname	= "active_timeout",
 		.procname	= "hashsize",
 		.mode		= 0644,
 		.data		= &ipt_netflow_hash_size,
@@ -400,12 +412,16 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &hsize_procctl,
 	},
 	{
+		_CTL_NAME(5)
+		.procname	= "active_timeout",
 		.procname	= "sndbuf",
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &sndbuf_procctl,
 	},
 	{
+		_CTL_NAME(6)
+		.procname	= "active_timeout",
 		.procname	= "destination",
 		.mode		= 0644,
 		.data		= &destination_buf,
@@ -413,6 +429,8 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &destination_procctl,
 	},
 	{
+		_CTL_NAME(7)
+		.procname	= "active_timeout",
 		.procname	= "aggregation",
 		.mode		= 0644,
 		.data		= &aggregation_buf,
@@ -420,6 +438,8 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &aggregation_procctl,
 	},
 	{
+		_CTL_NAME(8)
+		.procname	= "active_timeout",
 		.procname	= "maxflows",
 		.mode		= 0644,
 		.data		= &maxflows,
@@ -432,6 +452,8 @@ static struct ctl_table netflow_sysctl_table[] = {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
 static struct ctl_table netflow_sysctl_root[] = {
 	{
+		_CTL_NAME(33)
+		.procname	= "active_timeout",
 		.procname	= "netflow",
 		.mode		= 0555,
 		.child		= netflow_sysctl_table,
