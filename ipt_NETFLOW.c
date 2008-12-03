@@ -71,7 +71,7 @@ static int maxflows = 2000000;
 module_param(maxflows, int, 0600);
 MODULE_PARM_DESC(maxflows, "maximum number of flows");
 static int peakflows = 0;
-static __u32 peakflows_at;
+static unsigned long peakflows_at;
 
 #define AGGR_SIZE 1024
 static char aggregation_buf[AGGR_SIZE] = "none";
@@ -97,7 +97,7 @@ static DEFINE_SPINLOCK(ipt_netflow_lock);
 static DEFINE_SPINLOCK(pdu_lock);
 static long long pdu_packets = 0, pdu_traf = 0;
 static struct netflow5_pdu pdu;
-static __be32 pdu_ts_mod;
+static unsigned long pdu_ts_mod;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
 static void netflow_work_fn(void *work);
 static DECLARE_WORK(netflow_work, netflow_work_fn, NULL);

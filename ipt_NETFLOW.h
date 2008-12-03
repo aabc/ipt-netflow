@@ -80,8 +80,8 @@ struct ipt_netflow {
 	/* flow statistics */
 	u_int32_t	nr_packets;
 	u_int32_t	nr_bytes;
-	__u32		ts_first;
-	__u32		ts_last;
+	unsigned long	ts_first;
+	unsigned long	ts_last;
 	__u8		tcp_flags; /* `OR' of all tcp flags */
 };
 
