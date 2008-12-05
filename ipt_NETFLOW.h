@@ -31,7 +31,7 @@ struct netflow5_record {
 	__u8		s_mask;
 	__u8		d_mask;
 	__u16		padding;
-};
+} __attribute__ ((packed));
 
 /* NetFlow v5 packet */
 struct netflow5_pdu {
@@ -45,7 +45,7 @@ struct netflow5_pdu {
 	__u8			eng_id;
 	__u16			padding;
 	struct netflow5_record	flow[NETFLOW5_RECORDS_MAX];
-};
+} __attribute__ ((packed));
 #define NETFLOW5_HEADER_SIZE (sizeof(struct netflow5_pdu) - NETFLOW5_RECORDS_MAX * sizeof(struct netflow5_record))
 
 /* hashed data which identify unique flow */
