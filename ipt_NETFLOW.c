@@ -34,7 +34,7 @@
 #include <linux/sysctl.h>
 #endif
 
-#define IPT_NETFLOW_VERSION "1.3"
+#define IPT_NETFLOW_VERSION "1.4"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("<abc@telekom.ru>");
