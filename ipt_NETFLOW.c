@@ -877,7 +877,6 @@ static void __netflow_export_pdu(void)
 	//pdu.eng_id	= 0;
 	//pdu.padding	= 0;
 
-	pdu.seq = htonl(ntohl(pdu.seq) + pdu.nr_records);
 	pdusize = NETFLOW5_HEADER_SIZE + sizeof(struct netflow5_record) * pdu.nr_records;
 
 	/* especially fix nr_records before export */
@@ -888,6 +887,8 @@ static void __netflow_export_pdu(void)
 		NETFLOW_STAT_ADD(pkt_drop, pdu_packets);
 		NETFLOW_STAT_ADD(traf_drop, pdu_traf);
 	}
+
+	pdu.seq = htonl(ntohl(pdu.seq) + ntohs(pdu.nr_records));
 
 	pdu.nr_records	= 0;
 	pdu_packets = 0;
