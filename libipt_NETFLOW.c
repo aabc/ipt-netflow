@@ -70,6 +70,9 @@ static void print(const _IPT_IP *ip,
 }
 
 static struct iptables_target netflow = { 
+#ifdef MOD140
+	.family		= AF_INET,
+#endif
 	.next		= NULL,
 	.name		= "NETFLOW",
 	.version	= IPTABLES_VERSION,
