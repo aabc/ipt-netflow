@@ -3,23 +3,21 @@
 PATH=$PATH:/usr/sbin
 
 error() {
-  echo Error: $@
+  echo "! Error: $@"
   exit 1
 }
 
-iptables_version() {
+iptables_src_version() {
   echo -n "Checking iptables sources version: "
   SRC="$IPTDIR/Makefile"
-  test -s "$SRC" || error Please build iptables first
+  test -s "$SRC" || error "Please build iptables first."
   VER=`sed -n 's/^\(IPTABLES_\)\?VERSION[ :]= \?//p' "$SRC"`
-  test "$VER" || error Unknown version of iptables.
+  test "$VER" || error "Unknown version of iptables."
   if [ "$VER" = "$IPTVER" ]; then
-    echo Ok.
+    echo "$VER (ok)"
   else
-    echo "$VER. doesn't mach, warrany void!"
-    echo "  * You may want to create symlink from the iptables sources"
-    echo "  directory to here like this: ln -s /usr/src/iptables ."
-    exit 1
+    echo "$VER"
+    error "Source version ($VER) doesn't match binary ($IPTVER)"
   fi
 }
 
@@ -27,7 +25,17 @@ get_lib_dir() {
   test -s "$1" && LIB=`sed -n 's/.*_LIB_DIR "\(.*\)"/\1/p' "$1"`
   if [ "$LIB" ]; then
     IPTMOD=$LIB
-    echo $IPTMOD
+    echo "$IPTMOD (from sources)"
+    return 0
+  fi
+  return 1
+}
+
+get_lib_from_bin() {
+  LIB=`strings /usr/local/sbin/iptables|grep ^/.*lib.*tables`
+  if [ "$LIB" ]; then
+    IPTMOD=$LIB
+    echo "$IPTMOD (from binary)"
     return 0
   fi
   return 1
@@ -38,8 +46,8 @@ iptables_modules() {
   get_lib_dir "$IPTDIR/include/iptables.h" && return 0
   get_lib_dir "$IPTDIR/include/xtables.h" && return 0
   get_lib_dir "$IPTDIR/xtables/internal.h" && return 0
-  IPTMOD=/usr/local/lib/iptables
-  echo can\'t find, setting to default: $IPTMOD
+  get_lib_from_bin && return 0
+  error "can not find, try setting it with --ipt-lib="
 }
 
 try_dir() {
@@ -60,27 +68,65 @@ try_dir2() {
   test -d "$1" && try_dir `dirname $1` && return 0
 }
 
-iptables_dir() {
-  echo -n "Iptables version: "
-  IPTVER=`iptables -V | sed -n s/iptables.v//p`
-  test "$IPTVER" || error Can not find iptables version
-  VER="iptables-$IPTVER"
-  echo $VER, searching for sources..
-  try_dir "./$VER" && return 0
-  try_dir "../$VER" && return 0
-  try_dir "/usr/src/$VER" && return 0
-  try_dirg "iptables" && return 0
-  try_dirg "../iptables" && return 0
-  try_dirg "/usr/src/iptables" && return 0
-  try_dir2 `locate $VER/extensions | head -1` && return 0
-  error Can not find iptables sources
+iptables_ver() {
+  echo -n "Iptables binary version: "
+  if [ "$IPTVER" ]; then
+    echo "$IPTVER (user specified)"
+  else
+    IPTVER=`iptables -V | sed -n s/iptables.v//p`
+    test "$IPTVER" || error "Can not find iptables version, try setting it with --ipt-ver="
+    echo "$IPTVER (detected from `which iptables`)"
+  fi
 }
+
+iptables_dir() {
+  VER="iptables-$IPTVER"
+  if [ "$IPTDIR" ]; then
+    echo "User specified source directory: $IPTDIR"
+    try_dir $IPTDIR || error "Specified directory is not iptables source.."
+  else
+    echo "Searching for $VER sources.."
+    try_dir "./$VER" && return 0
+    try_dir "../$VER" && return 0
+    try_dir "/usr/src/$VER" && return 0
+    try_dirg "iptables" && return 0
+    try_dirg "../iptables" && return 0
+    try_dirg "/usr/src/iptables" && return 0
+    try_dir2 `locate $VER/extensions | head -1` && return 0
+    error "Can not find iptables source directory, try setting it with --ipt-src="
+  fi
+}
+
+show_help() {
+  echo "  --ipt-ver=..  iptables version"
+  echo "  --ipt-src=..  directory for iptable source"
+  echo "  --ipt-lib=..  iptable modules path"
+  exit 0
+}
+
+for ac_option
+do
+  case "$ac_option" in
+    -*=*) ac_optarg=`echo "$ac_option" | sed 's/[-_a-zA-Z0-9]*=//'` ;;
+    *) ac_optarg= ;;
+  esac
+
+  case "$ac_option" in
+    --ipt-lib=*) IPTMOD="$ac_optarg" ;;
+    --ipt-src=*) IPTDIR="$ac_optarg" ;;
+    --ipt-ver=*) IPTVER="$ac_optarg" ;;
+    --help) show_help ;;
+    -*) echo Invalid option: $ac_option; exit 1 ;;
+#    *) ni="$ni $ac_option" ;;
+  esac
+done
 
 KVERSION=`uname -r`
 echo Kernel version: $KVERSION
 
+iptables_ver
 iptables_dir
-iptables_version
+iptables_src_version
 iptables_modules
 
 REPLACE="s!@KVERSION@!$KVERSION!;\
@@ -91,6 +137,6 @@ s!@IPTABLES_MODULES@!$IPTMOD!"
 echo -n "Creating Makefile.. "
 sed "$REPLACE" Makefile.in > Makefile
 echo done.
-test "$1" || echo "  Now run: make all install"
+echo "  Now run: make all install"
 echo
 
