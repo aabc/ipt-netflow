@@ -1,6 +1,6 @@
 #!/bin/bash
 
-PATH=$PATH:/usr/sbin
+PATH=$PATH:/bin:/usr/bin:/usr/sbin:/sbin:/usr/local/sbin
 
 error() {
   echo "! Error: $@"
@@ -9,7 +9,7 @@ error() {
 
 iptables_src_version() {
   echo -n "Checking iptables sources version: "
-  SRC="$IPTDIR/Makefile"
+  SRC="$IPTSRC/Makefile"
   test -s "$SRC" || error "Please build iptables first."
   VER=`sed -n 's/^\(IPTABLES_\)\?VERSION[ :]= \?//p' "$SRC"`
   test "$VER" || error "Unknown version of iptables."
@@ -24,18 +24,18 @@ iptables_src_version() {
 get_lib_dir() {
   test -s "$1" && LIB=`sed -n 's/.*_LIB_DIR "\(.*\)"/\1/p' "$1"`
   if [ "$LIB" ]; then
-    IPTMOD=$LIB
-    echo "$IPTMOD (from sources)"
+    IPTLIB=$LIB
+    echo "$IPTLIB (from sources)"
     return 0
   fi
   return 1
 }
 
 get_lib_from_bin() {
-  LIB=`strings /usr/local/sbin/iptables|grep ^/.*lib.*tables`
+  LIB=`strings $IPTBIN | grep ^/.*lib.*tables`
   if [ "$LIB" ]; then
-    IPTMOD=$LIB
-    echo "$IPTMOD (from binary)"
+    IPTLIB=$LIB
+    echo "$IPTLIB (from binary)"
     return 0
   fi
   return 1
@@ -43,17 +43,21 @@ get_lib_from_bin() {
 
 iptables_modules() {
   echo -n "Iptables module path: "
-  get_lib_dir "$IPTDIR/include/iptables.h" && return 0
-  get_lib_dir "$IPTDIR/include/xtables.h" && return 0
-  get_lib_dir "$IPTDIR/xtables/internal.h" && return 0
-  get_lib_from_bin && return 0
-  error "can not find, try setting it with --ipt-lib="
+  if [ "$IPTLIB" ]; then
+    echo "$IPTLIB (user specified)"
+  else
+    get_lib_dir "$IPTSRC/include/iptables.h" && return 0
+    get_lib_dir "$IPTSRC/include/xtables.h" && return 0
+    get_lib_dir "$IPTSRC/xtables/internal.h" && return 0
+    get_lib_from_bin && return 0
+    error "can not find, try setting it with --ipt-lib="
+  fi
 }
 
 try_dir() {
   if [ -d "$1/include" ]; then
     echo "Found iptables sources at $1"
-    IPTDIR=$1
+    IPTSRC=$1
     return 0
   fi
   return 1
@@ -73,17 +77,17 @@ iptables_ver() {
   if [ "$IPTVER" ]; then
     echo "$IPTVER (user specified)"
   else
-    IPTVER=`iptables -V | sed -n s/iptables.v//p`
+    IPTVER=`$IPTBIN -V | sed -n s/iptables.v//p`
     test "$IPTVER" || error "Can not find iptables version, try setting it with --ipt-ver="
-    echo "$IPTVER (detected from `which iptables`)"
+    echo "$IPTVER (detected from $IPTBIN)"
   fi
 }
 
 iptables_dir() {
   VER="iptables-$IPTVER"
-  if [ "$IPTDIR" ]; then
-    echo "User specified source directory: $IPTDIR"
-    try_dir $IPTDIR || error "Specified directory is not iptables source.."
+  if [ "$IPTSRC" ]; then
+    echo "User specified source directory: $IPTSRC"
+    try_dir $IPTSRC || error "Specified directory is not iptables source.."
   else
     echo "Searching for $VER sources.."
     try_dir "./$VER" && return 0
@@ -98,9 +102,11 @@ iptables_dir() {
 }
 
 show_help() {
-  echo "  --ipt-ver=..  iptables version"
-  echo "  --ipt-src=..  directory for iptable source"
-  echo "  --ipt-lib=..  iptable modules path"
+  echo "Possible options:"
+  echo "  --ipt-ver=..  iptables version (ex.: 1.4.2)"
+  echo "  --ipt-bin=..  iptables binary to use (ex.: /usr/sbin/iptables)"
+  echo "  --ipt-src=..  directory for iptable source (ex.: ../iptables-1.4.2)"
+  echo "  --ipt-lib=..  iptable modules path (ex.: /usr/libexec/xtables)"
   exit 0
 }
 
@@ -112,8 +118,9 @@ do
   esac
 
   case "$ac_option" in
-    --ipt-lib=*) IPTMOD="$ac_optarg" ;;
-    --ipt-src=*) IPTDIR="$ac_optarg" ;;
+    --ipt-bin=*) IPTBIN="$ac_optarg" ;;
+    --ipt-lib=*) IPTLIB="$ac_optarg" ;;
+    --ipt-src=*) IPTSRC="$ac_optarg" ;;
     --ipt-ver=*) IPTVER="$ac_optarg" ;;
     --help) show_help ;;
     -*) echo Invalid option: $ac_option; exit 1 ;;
@@ -124,15 +131,17 @@ done
 KVERSION=`uname -r`
 echo Kernel version: $KVERSION
 
+test "$IPTBIN" || IPTBIN=`which iptables`
+
 iptables_ver
 iptables_dir
 iptables_src_version
 iptables_modules
 
 REPLACE="s!@KVERSION@!$KVERSION!;\
-s!@IPTDIR@!$IPTDIR!;\
+s!@IPTSRC@!$IPTSRC!;\
 s!@IPTABLES_VERSION@!$IPTVER!;\
-s!@IPTABLES_MODULES@!$IPTMOD!"
+s!@IPTABLES_MODULES@!$IPTLIB!"
 
 echo -n "Creating Makefile.. "
 sed "$REPLACE" Makefile.in > Makefile

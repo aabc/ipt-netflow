@@ -2,7 +2,7 @@
 
 KVERSION = @KVERSION@
 KDIR = /lib/modules/$(KVERSION)/build
-IPTDIR = @IPTDIR@
+IPTSRC = @IPTSRC@
 IPTABLES_VERSION = @IPTABLES_VERSION@
 IPTABLES_MODULES = @IPTABLES_MODULES@
 
@@ -20,7 +20,7 @@ clean: mclean
 	-rm -f *.so *.o modules.order
 
 libipt_NETFLOW.so: libipt_NETFLOW.c
-	gcc -O2 -Wall -Wunused -I$(KDIR)/include -I$(IPTDIR)/include -DIPTABLES_VERSION=\"$(IPTABLES_VERSION)\" -fPIC -o libipt_NETFLOW_sh.o -c libipt_NETFLOW.c
+	gcc -O2 -Wall -Wunused -I$(KDIR)/include -I$(IPTSRC)/include -DIPTABLES_VERSION=\"$(IPTABLES_VERSION)\" -fPIC -o libipt_NETFLOW_sh.o -c libipt_NETFLOW.c
 	gcc -shared  -o libipt_NETFLOW.so libipt_NETFLOW_sh.o
 
 linstall: ipt_NETFLOW.ko libipt_NETFLOW.so
