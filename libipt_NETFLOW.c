@@ -75,7 +75,11 @@ static struct iptables_target netflow = {
 #endif
 	.next		= NULL,
 	.name		= "NETFLOW",
+#ifdef XTABLES_VERSION
+	.version	= XTABLES_VERSION,
+#else
 	.version	= IPTABLES_VERSION,
+#endif
 	.size           = IPT_ALIGN(0),
 	.userspacesize  = IPT_ALIGN(0),
 	.help		= &help,

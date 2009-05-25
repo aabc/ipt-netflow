@@ -41,6 +41,18 @@ get_lib_from_bin() {
   return 1
 }
 
+get_lib_from_lib() {
+  XLIB=`/usr/bin/ldd $IPTBIN | grep libxtables | sed -n 's!.* \(/[^ ]\+\).*!\1!p'`
+  test "$XLIB" || return 1
+  LIB=`strings $XLIB | grep ^/.*lib.*tables`
+  if [ "$LIB" ]; then
+    IPTLIB=$LIB
+    echo "$IPTLIB (from library)"
+    return 0
+  fi
+  return 1
+}
+
 iptables_modules() {
   echo -n "Iptables module path: "
   if [ "$IPTLIB" ]; then
@@ -50,6 +62,7 @@ iptables_modules() {
     get_lib_dir "$IPTSRC/include/xtables.h" && return 0
     get_lib_dir "$IPTSRC/xtables/internal.h" && return 0
     get_lib_from_bin && return 0
+    get_lib_from_lib && return 0
     error "can not find, try setting it with --ipt-lib="
   fi
 }
