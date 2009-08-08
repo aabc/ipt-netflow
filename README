@@ -21,6 +21,10 @@ Troubleshooting:
    2) Compile module with actual kernel source compiled.
    I.e. first compile kernel and boot into it, and then compile module.
 
+   3) For autoloading module after reboot: set net.netflow.destination (or load
+   module, if idestination set on load) after interfaces are up. Becasue module
+   needs exporting interface (usually lo) to establish export connection.
+
 4. After this point you should be able to load module
      and use -j NETFLOW target in your iptables. See next section.
 
