@@ -1073,6 +1073,7 @@ static unsigned int netflow_target(
 #else
 			   struct sk_buff *skb,
 #endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 			   const struct net_device *if_in,
 			   const struct net_device *if_out,
 			   unsigned int hooknum,
@@ -1081,11 +1082,14 @@ static unsigned int netflow_target(
 #endif
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
 			   const void *targinfo,
-			   void *userinfo)
+			   void *userinfo
 #else
-			   const void *targinfo)
+			   const void *targinfo
 #endif
-
+#else /* since 2.6.28 */
+			   const struct xt_target_param *par
+#endif
+		)
 {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
 	struct sk_buff *skb = *pskb;
@@ -1110,7 +1114,11 @@ static unsigned int netflow_target(
 	tuple.d_addr	= iph->daddr;
 	tuple.s_port	= 0;
 	tuple.d_port	= 0;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 	tuple.i_ifc	= if_in? if_in->ifindex : -1;
+#else
+	tuple.i_ifc	= par->if_in? par->if_in->ifindex : -1;
+#endif
 	tuple.protocol	= iph->protocol;
 	tuple.tos	= iph->tos;
 	tcp_flags	= 0; /* Cisco sometimes have TCP ACK for non TCP packets, don't get it */
@@ -1212,7 +1220,11 @@ static unsigned int netflow_target(
 
 		nf->ts_first = jiffies;
 		nf->tcp_flags = tcp_flags;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 		nf->o_ifc = if_out? if_out->ifindex : -1;
+#else
+		nf->o_ifc = par->if_out? par->if_out->ifindex : -1;
+#endif
 		nf->s_mask = s_mask;
 		nf->d_mask = d_mask;
 
