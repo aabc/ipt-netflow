@@ -99,7 +99,7 @@ static DEFINE_RWLOCK(sock_lock);
 
 static unsigned int ipt_netflow_hash_rnd;
 struct hlist_head *ipt_netflow_hash __read_mostly; /* hash table memory */
-static unsigned int ipt_netflow_hash_size __read_mostly = 0;
+static unsigned int ipt_netflow_hash_size __read_mostly = 0; /* buckets */
 static LIST_HEAD(ipt_netflow_list); /* all flows */
 static LIST_HEAD(aggr_n_list);
 static LIST_HEAD(aggr_p_list);
@@ -775,7 +775,7 @@ static struct hlist_head *alloc_hashtable(int size)
 {
 	struct hlist_head *hash;
 
-	hash = vmalloc(sizeof(struct list_head) * size);
+	hash = vmalloc(sizeof(struct hlist_head) * size);
 	if (hash) {
 		int i;
 
@@ -796,7 +796,7 @@ static int set_hashsize(int new_size)
 
 	printk(KERN_INFO "netflow: allocating new hash table %u -> %u buckets\n",
 	       ipt_netflow_hash_size, new_size);
-	new_hash = alloc_hashtable(sizeof(struct list_head) * new_size);
+	new_hash = alloc_hashtable(new_size);
 	if (!new_hash)
 		return -ENOMEM;
 
@@ -1291,7 +1291,7 @@ static int __init ipt_netflow_init(void)
 	/* determine hash size (idea from nf_conntrack_core.c) */
 	if (!hashsize) {
 		hashsize = (((num_physpages << PAGE_SHIFT) / 16384)
-					 / sizeof(struct list_head));
+					 / sizeof(struct hlist_head));
 		if (num_physpages > (1024 * 1024 * 1024 / PAGE_SIZE))
 			hashsize = 8192;
 	}
