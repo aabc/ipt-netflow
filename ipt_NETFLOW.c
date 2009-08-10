@@ -1117,7 +1117,7 @@ static unsigned int netflow_target(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 	tuple.i_ifc	= if_in? if_in->ifindex : -1;
 #else
-	tuple.i_ifc	= par->if_in? par->if_in->ifindex : -1;
+	tuple.i_ifc	= par->in? par->in->ifindex : -1;
 #endif
 	tuple.protocol	= iph->protocol;
 	tuple.tos	= iph->tos;
@@ -1223,7 +1223,7 @@ static unsigned int netflow_target(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 		nf->o_ifc = if_out? if_out->ifindex : -1;
 #else
-		nf->o_ifc = par->if_out? par->if_out->ifindex : -1;
+		nf->o_ifc = par->out? par->out->ifindex : -1;
 #endif
 		nf->s_mask = s_mask;
 		nf->d_mask = d_mask;
