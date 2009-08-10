@@ -1326,7 +1326,9 @@ static int __init ipt_netflow_init(void)
 		goto err_free_netflow_slab;
 	}
 	proc_stat->proc_fops = &nf_seq_fops;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30)
 	proc_stat->owner = THIS_MODULE;
+#endif
 	printk(KERN_INFO "netflow: registered: /proc/net/stat/ipt_netflow\n");
 #endif
 
