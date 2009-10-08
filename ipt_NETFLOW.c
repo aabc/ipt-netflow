@@ -88,7 +88,7 @@ static int peakflows = 0;
 static unsigned long peakflows_at;
 
 #define AGGR_SIZE 1024
-static char aggregation_buf[AGGR_SIZE] = "none";
+static char aggregation_buf[AGGR_SIZE] = "";
 static char *aggregation = aggregation_buf;
 module_param(aggregation, charp, 0400);
 MODULE_PARM_DESC(aggregation, "aggregation ruleset");
@@ -682,7 +682,7 @@ static int add_aggregation(char *ptr)
 	LIST_HEAD(new_aggr_p_list);
 	LIST_HEAD(old_aggr_list);
 
-	while (ptr) {
+	while (ptr && *ptr) {
 		unsigned char ip[4]; 
 		unsigned int mask;
 		unsigned int port1, port2;
@@ -1361,6 +1361,8 @@ static int __init ipt_netflow_init(void)
 		printk(KERN_INFO "netflow: registered: sysctl net.netflow\n");
 #endif
 
+	if (!destination)
+		destination = aggregation_buf;
 	if (destination != destination_buf) {
 		strlcpy(destination_buf, destination, sizeof(destination_buf));
 		destination = destination_buf;
@@ -1368,6 +1370,8 @@ static int __init ipt_netflow_init(void)
 	if (add_destinations(destination) < 0)
 		goto err_free_sysctl;
 
+	if (!aggregation)
+		aggregation = aggregation_buf;
 	if (aggregation != aggregation_buf) {
 		strlcpy(aggregation_buf, aggregation, sizeof(aggregation_buf));
 		aggregation = aggregation_buf;
