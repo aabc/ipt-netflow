@@ -493,8 +493,8 @@ static void sk_error_report(struct sock *sk)
 	if (debug > 1)
 		printk(KERN_INFO "NETFLOW: socket error <%d>\n", sk->sk_err);
 	sk->sk_err = 0;
-	write_unlock_bh(&sk->sk_callback_lock);
 	NETFLOW_STAT_INC(sock_errors);
+	write_unlock_bh(&sk->sk_callback_lock);
 	return;
 }
 
@@ -519,7 +519,7 @@ static int netflow_send_pdu(void *buffer, int len)
 		if (ret < 0) {
 			char *suggestion = "";
 
-			NETFLOW_STAT_INC(send_failed);
+			NETFLOW_STAT_INC_ATOMIC(send_failed);
 			if (ret == -EAGAIN) {
 				atomic_inc(&usock->err_full);
 				suggestion = ": increase sndbuf!";
@@ -531,8 +531,8 @@ static int netflow_send_pdu(void *buffer, int len)
 			unsigned int wmem = atomic_read(&usock->sock->sk->sk_wmem_alloc);
 			if (wmem > atomic_read(&usock->wmem_peak))
 				atomic_set(&usock->wmem_peak, wmem);
-			NETFLOW_STAT_INC(send_success);
-			NETFLOW_STAT_ADD(exported_size, ret);
+			NETFLOW_STAT_INC_ATOMIC(send_success);
+			NETFLOW_STAT_ADD_ATOMIC(exported_size, ret);
 			retok++;
 		}
 		snum++;
@@ -898,8 +898,8 @@ static void __netflow_export_pdu(void)
 
 	if (netflow_send_pdu(&pdu, pdusize) == 0) {
 		/* not least one send succeded, account stat for dropped packets */
-		NETFLOW_STAT_ADD(pkt_drop, pdu_packets);
-		NETFLOW_STAT_ADD(traf_drop, pdu_traf);
+		NETFLOW_STAT_ADD_ATOMIC(pkt_drop, pdu_packets);
+		NETFLOW_STAT_ADD_ATOMIC(traf_drop, pdu_traf);
 	}
 
 	pdu.seq = htonl(ntohl(pdu.seq) + ntohs(pdu.nr_records));
@@ -977,9 +977,9 @@ static void netflow_scan_inactive_timeout(long timeout)
 		    active_needs_export(nf, a_timeout)) {
 			hlist_del(&nf->hlist);
 			list_del(&nf->list);
-			spin_unlock_bh(&ipt_netflow_lock);
 			NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
 			NETFLOW_STAT_ADD(traf_out, nf->nr_bytes);
+			spin_unlock_bh(&ipt_netflow_lock);
 			netflow_export_flow(nf);
 			spin_lock_bh(&ipt_netflow_lock);
 		} else {
