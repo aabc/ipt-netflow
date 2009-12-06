@@ -122,14 +122,14 @@ struct netflow_aggr_p {
 #define NETFLOW_STAT_INC_ATOMIC(count)				\
 	do {							\
 		preempt_disable();				\
-		(__get_cpu_var(ipt_netflow_stat).count++)	\
+		(__get_cpu_var(ipt_netflow_stat).count++);	\
 		preempt_enable();				\
 	} while(0);
 
 #define NETFLOW_STAT_ADD_ATOMIC(count, val)			\
 	do {							\
 		preempt_disable();				\
-		(__get_cpu_var(ipt_netflow_stat).count += (unsigned long long)val) \
+		(__get_cpu_var(ipt_netflow_stat).count += (unsigned long long)val); \
 		preempt_enable();				\
 	} while(0);
 
