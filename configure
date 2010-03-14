@@ -120,6 +120,8 @@ show_help() {
   echo "  --ipt-bin=..  iptables binary to use (ex.: /usr/sbin/iptables)"
   echo "  --ipt-src=..  directory for iptable source (ex.: ../iptables-1.4.2)"
   echo "  --ipt-lib=..  iptable modules path (ex.: /usr/libexec/xtables)"
+  echo "  --kver=..     kernel version (ex.: 2.6.30-std-def-alt15)"
+  echo "  --kdir=..     directory for kernel source (ex.: /usr/src/kernel)"
   exit 0
 }
 
@@ -135,14 +137,19 @@ do
     --ipt-lib=*) IPTLIB="$ac_optarg" ;;
     --ipt-src=*) IPTSRC="$ac_optarg" ;;
     --ipt-ver=*) IPTVER="$ac_optarg" ;;
+    --kver=*)  KVERSION="$ac_optarg" ;;
+    --kdir=*)      KDIR="$ac_optarg" ;;
     --help) show_help ;;
     -*) echo Invalid option: $ac_option; exit 1 ;;
 #    *) ni="$ni $ac_option" ;;
   esac
 done
 
-KVERSION=`uname -r`
+test "$KVERSION" || KVERSION=`uname -r`
 echo Kernel version: $KVERSION
+
+test "$KDIR" || KDIR=/lib/modules/$KVERSION/build
+echo Kernel sources: $KDIR
 
 test "$IPTBIN" || IPTBIN=`which iptables`
 
@@ -151,7 +158,9 @@ iptables_dir
 iptables_src_version
 iptables_modules
 
-REPLACE="s!@KVERSION@!$KVERSION!;\
+REPLACE="\
++s!@KVERSION@!$KVERSION!;\
++s!@KDIR@!$KDIR!;\
 s!@IPTSRC@!$IPTSRC!;\
 s!@IPTABLES_VERSION@!$IPTVER!;\
 s!@IPTABLES_MODULES@!$IPTLIB!"
