@@ -159,8 +159,8 @@ iptables_src_version
 iptables_modules
 
 REPLACE="\
-+s!@KVERSION@!$KVERSION!;\
-+s!@KDIR@!$KDIR!;\
+s!@KVERSION@!$KVERSION!;\
+s!@KDIR@!$KDIR!;\
 s!@IPTSRC@!$IPTSRC!;\
 s!@IPTABLES_VERSION@!$IPTVER!;\
 s!@IPTABLES_MODULES@!$IPTLIB!"
