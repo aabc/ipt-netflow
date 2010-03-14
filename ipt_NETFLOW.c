@@ -307,8 +307,15 @@ static struct file_operations nf_seq_fops = {
 #endif /* CONFIG_PROC_FS */
 
 #ifdef CONFIG_SYSCTL
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
+#define BEFORE2632(x,y) x,y
+#else /* since 2.6.32 */
+#define BEFORE2632(x,y)
+#endif
+
 /* sysctl /proc/sys/net/netflow */
-static int hsize_procctl(ctl_table *ctl, int write, struct file *filp,
+static int hsize_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	void *orig = ctl->data;
@@ -316,7 +323,7 @@ static int hsize_procctl(ctl_table *ctl, int write, struct file *filp,
 
 	if (write)
 		ctl->data = &hsize;
-	ret = proc_dointvec(ctl, write, filp, buffer, lenp, fpos);
+	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (write) {
 		ctl->data = orig;
 		if (hsize < 1)
@@ -326,7 +333,7 @@ static int hsize_procctl(ctl_table *ctl, int write, struct file *filp,
 		return ret;
 }
 
-static int sndbuf_procctl(ctl_table *ctl, int write, struct file *filp,
+static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
@@ -342,7 +349,7 @@ static int sndbuf_procctl(ctl_table *ctl, int write, struct file *filp,
 	read_unlock(&sock_lock);
 
 	ctl->data = &sndbuf;
-	ret = proc_dointvec(ctl, write, filp, buffer, lenp, fpos);
+	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (!write)
 		return ret;
 	if (sndbuf < SOCK_MIN_SNDBUF)
@@ -355,12 +362,12 @@ static int sndbuf_procctl(ctl_table *ctl, int write, struct file *filp,
 	return ret;
 }
 
-static int destination_procctl(ctl_table *ctl, int write, struct file *filp,
+static int destination_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
 
-	ret = proc_dostring(ctl, write, filp, buffer, lenp, fpos);
+	ret = proc_dostring(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (ret >= 0 && write) {
 		destination_fini();
 		add_destinations(destination_buf);
@@ -368,14 +375,14 @@ static int destination_procctl(ctl_table *ctl, int write, struct file *filp,
 	return ret;
 }
 
-static int aggregation_procctl(ctl_table *ctl, int write, struct file *filp,
+static int aggregation_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
 
 	if (debug > 1)
 		printk(KERN_INFO "aggregation_procctl (%d) %u %llu\n", write, (unsigned int)(*lenp), *fpos);
-	ret = proc_dostring(ctl, write, filp, buffer, lenp, fpos);
+	ret = proc_dostring(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (ret >= 0 && write) {
 		add_aggregation(aggregation_buf);
 	}
