@@ -460,7 +460,7 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.maxlen		= sizeof(int),
 		.proc_handler	= &proc_dointvec,
 	},
-	{ .ctl_name = 0 }
+	{ }
 };
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
@@ -471,7 +471,7 @@ static struct ctl_table netflow_sysctl_root[] = {
 		.mode		= 0555,
 		.child		= netflow_sysctl_table,
 	},
-	{ .ctl_name = 0 }
+	{ }
 };
 
 static struct ctl_table netflow_net_table[] = {
@@ -481,11 +481,16 @@ static struct ctl_table netflow_net_table[] = {
 		.mode		= 0555,
 		.child		= netflow_sysctl_root,
 	},
-	{ .ctl_name = 0 }
+	{ }
 };
-#else /* 2.6.25 */
+#else /* >= 2.6.25 */
 static struct ctl_path netflow_sysctl_path[] = {
-	{ .procname = "net", .ctl_name = CTL_NET },
+	{
+		.procname = "net",
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,33)
+		.ctl_name = CTL_NET
+#endif
+	},
 	{ .procname = "netflow" },
 	{ }
 };
