@@ -55,6 +55,11 @@
 #endif /* __LITTLE_ENDIAN */
 #endif
 
+#ifndef IPT_CONTINUE
+#define IPT_CONTINUE XT_CONTINUE
+#define ipt_target xt_target
+#endif
+
 #define IPT_NETFLOW_VERSION "1.7"
 
 MODULE_LICENSE("GPL");
