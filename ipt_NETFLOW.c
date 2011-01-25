@@ -34,13 +34,20 @@
 #include <linux/sysctl.h>
 #endif
 
+#ifndef NIPQUAD
+#define NIPQUAD(addr) \
+	((unsigned char *)&addr)[0], \
+	((unsigned char *)&addr)[1], \
+	((unsigned char *)&addr)[2], \
+	((unsigned char *)&addr)[3]
+#endif
 #ifndef HIPQUAD
 #if defined(__LITTLE_ENDIAN)
 #define HIPQUAD(addr) \
 	((unsigned char *)&addr)[3], \
-((unsigned char *)&addr)[2], \
-((unsigned char *)&addr)[1], \
-((unsigned char *)&addr)[0]
+	((unsigned char *)&addr)[2], \
+	((unsigned char *)&addr)[1], \
+	((unsigned char *)&addr)[0]
 #elif defined(__BIG_ENDIAN)
 #define HIPQUAD NIPQUAD
 #else
@@ -48,7 +55,7 @@
 #endif /* __LITTLE_ENDIAN */
 #endif
 
-#define IPT_NETFLOW_VERSION "1.6"
+#define IPT_NETFLOW_VERSION "1.7"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("<abc@telekom.ru>");
