@@ -1,5 +1,13 @@
 ipt_NETFLOW linux 2.6 kernel module by <abc@telekom.ru> -- 11 Feb 2008
 
+============================
+= OBTAINING LATEST VERSION =
+============================
+
+   $ git clone git://ipt-netflow.git.sourceforge.net/gitroot/ipt-netflow/ipt-netflow
+   $ cd ipt-netflow
+
+
 ================
 = INSTALLATION =
 ================
