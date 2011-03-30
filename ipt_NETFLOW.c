@@ -145,6 +145,7 @@ static void destination_fini(void);
 static int add_destinations(char *ptr);
 static void aggregation_fini(struct list_head *list);
 static int add_aggregation(char *ptr);
+static void netflow_scan_inactive_timeout(long timeout);
 
 static inline __be32 bits2mask(int bits) {
 	return (bits? 0xffffffff << (32 - bits) : 0);
@@ -401,6 +402,27 @@ static int aggregation_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 	return ret;
 }
 
+static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+			 void __user *buffer, size_t *lenp, loff_t *fpos)
+{
+	int ret;
+	int val;
+
+	val = 0;
+	ctl->data = &val;
+	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+
+	if (!write)
+		return ret;
+
+	if (val > 0) {
+		printk(KERN_INFO "ipt_NETFLOW: forced flush\n");
+		netflow_scan_inactive_timeout(0);
+	}
+
+	return ret;
+}
+
 static struct ctl_table_header *netflow_sysctl_header;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
@@ -471,6 +493,13 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.data		= &maxflows,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &proc_dointvec,
+	},
+	{
+		_CTL_NAME(9)
+		.procname	= "flush",
+		.mode		= 0644,
+		.maxlen		= sizeof(int),
+		.proc_handler	= &flush_procctl,
 	},
 	{ }
 };
