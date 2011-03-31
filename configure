@@ -8,6 +8,8 @@ error() {
 }
 
 iptables_src_version() {
+  test "$IPTSRC" || return 1
+
   echo -n "Checking iptables sources version: "
   SRC="$IPTSRC/Makefile"
   test -s "$SRC" || error "Please build iptables first."
@@ -53,17 +55,39 @@ get_lib_from_lib() {
   return 1
 }
 
+iptables_inc() {
+  echo -n "Iptables include path: "
+  if [ "$IPTINC" ]; then
+    echo "$IPTINC (user specified)"
+    IPTINC="-I$IPTINC"
+  else
+    if [ "$PKGINC" ]; then
+      IPTINC="$PKGINC"
+      echo "$IPTINC (pkg-config)"
+    else
+      IPTINC="$IPTSRC/include"
+      echo "$IPTINC (from source)"
+      IPTINC="-I$IPTINC"
+    fi
+  fi
+}
+
 iptables_modules() {
   echo -n "Iptables module path: "
   if [ "$IPTLIB" ]; then
     echo "$IPTLIB (user specified)"
   else
-    get_lib_dir "$IPTSRC/include/iptables.h" && return 0
-    get_lib_dir "$IPTSRC/include/xtables.h" && return 0
-    get_lib_dir "$IPTSRC/xtables/internal.h" && return 0
-    get_lib_from_bin && return 0
-    get_lib_from_lib && return 0
-    error "can not find, try setting it with --ipt-lib="
+    if [ "$PKGLIB" ]; then
+      IPTLIB="$PKGLIB"
+      echo "$IPTLIB (pkg-config)"
+    else
+      get_lib_dir "$IPTSRC/include/iptables.h" && return 0
+      get_lib_dir "$IPTSRC/include/xtables.h" && return 0
+      get_lib_dir "$IPTSRC/xtables/internal.h" && return 0
+      get_lib_from_bin && return 0
+      get_lib_from_lib && return 0
+      error "can not find, try setting it with --ipt-lib="
+    fi
   fi
 }
 
@@ -97,6 +121,9 @@ iptables_ver() {
 }
 
 iptables_dir() {
+  test "$IPTINC" && return 1
+  test "$PKGINC" && return 1
+
   VER="iptables-$IPTVER"
   if [ "$IPTSRC" ]; then
     echo "User specified source directory: $IPTSRC"
@@ -114,12 +141,27 @@ iptables_dir() {
   fi
 }
 
+iptables_pkg_config() {
+  echo -n "pkg-config for version $IPTVER exists: "
+  PKGVER=`pkg-config --exact-version=$IPTVER --modversion xtables 2>/dev/null`
+  if [ $? = 0 ]; then
+    echo "Yes (extracting compilation flags)"
+    PKGINC=`pkg-config --cflags xtables`
+    PKGLIB=`pkg-config --variable=xtlibdir xtables`
+    IPTCFLAGS="-DXTABLES"
+  else
+    echo "No (reported: $PKGVER)"
+    IPTCFLAGS="-DIPTABLES_VERSION=\\\\\"$IPTVER\\\\\""
+  fi
+}
+
 show_help() {
   echo "Possible options:"
   echo "  --ipt-ver=..  iptables version (ex.: 1.4.2)"
   echo "  --ipt-bin=..  iptables binary to use (ex.: /usr/sbin/iptables)"
   echo "  --ipt-src=..  directory for iptable source (ex.: ../iptables-1.4.2)"
   echo "  --ipt-lib=..  iptable modules path (ex.: /usr/libexec/xtables)"
+  echo "  --ipt-inc=..  directory for iptable headers (ex.: /usr/include)"
   echo "  --kver=..     kernel version (ex.: 2.6.30-std-def-alt15)"
   echo "  --kdir=..     directory for kernel source (ex.: /usr/src/kernel)"
   exit 0
@@ -137,8 +179,10 @@ do
     --ipt-lib=*) IPTLIB="$ac_optarg" ;;
     --ipt-src=*) IPTSRC="$ac_optarg" ;;
     --ipt-ver=*) IPTVER="$ac_optarg" ;;
+    --ipt-inc=*) IPTINC="$ac_optarg" ;;
     --kver=*)  KVERSION="$ac_optarg" ;;
     --kdir=*)      KDIR="$ac_optarg" ;;
+    --make) echo called from make ;;
     --help) show_help ;;
     -*) echo Invalid option: $ac_option; exit 1 ;;
 #    *) ni="$ni $ac_option" ;;
@@ -153,21 +197,26 @@ echo Kernel sources: $KDIR
 
 test "$IPTBIN" || IPTBIN=`which iptables`
 
-iptables_ver
-iptables_dir
-iptables_src_version
-iptables_modules
+iptables_ver		#IPTVER
+iptables_pkg_config
+iptables_dir		#IPTSRC
+iptables_src_version	#check IPTSRC match to IPTVER
+iptables_inc		#IPTINC
+iptables_modules	#IPTLIB
 
 REPLACE="\
 s!@KVERSION@!$KVERSION!;\
 s!@KDIR@!$KDIR!;\
 s!@IPTSRC@!$IPTSRC!;\
 s!@IPTABLES_VERSION@!$IPTVER!;\
+s!@IPTABLES_INCLUDES@!$IPTINC!;\
+s!@IPTABLES_CFLAGS@!$IPTCFLAGS $IPTINC!;\
 s!@IPTABLES_MODULES@!$IPTLIB!"
 
 echo -n "Creating Makefile.. "
 sed "$REPLACE" Makefile.in > Makefile
 echo done.
+echo
 echo "  Now run: make all install"
 echo
 

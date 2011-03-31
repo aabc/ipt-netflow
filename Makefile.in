@@ -2,8 +2,7 @@
 
 KVERSION = @KVERSION@
 KDIR = @KDIR@
-IPTSRC = @IPTSRC@
-IPTABLES_VERSION = @IPTABLES_VERSION@
+IPTABLES_CFLAGS = @IPTABLES_CFLAGS@
 IPTABLES_MODULES = @IPTABLES_MODULES@
 
 obj-m = ipt_NETFLOW.o
@@ -16,12 +15,14 @@ minstall:
 	make -C $(KDIR) M=$(PWD) modules_install
 mclean:
 	make -C $(KDIR) M=$(PWD) clean
-clean: mclean
+lclean:
+	-rm -f *.so *.o
+clean: mclean lclean
 	-rm -f *.so *.o modules.order
 
 libipt_NETFLOW.so: libipt_NETFLOW.c
-	gcc -O2 -Wall -Wunused -I$(KDIR)/include -I$(IPTSRC)/include -DIPTABLES_VERSION=\"$(IPTABLES_VERSION)\" -fPIC -o libipt_NETFLOW_sh.o -c libipt_NETFLOW.c
-	gcc -shared  -o libipt_NETFLOW.so libipt_NETFLOW_sh.o
+	gcc -O2 -Wall -Wunused -I$(KDIR)/include $(IPTABLES_CFLAGS) -fPIC -o libipt_NETFLOW_sh.o -c libipt_NETFLOW.c
+	ld -shared  -o libipt_NETFLOW.so libipt_NETFLOW_sh.o
 
 linstall: ipt_NETFLOW.ko libipt_NETFLOW.so
 	cp -a libipt_NETFLOW.so $(IPTABLES_MODULES)

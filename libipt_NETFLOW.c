@@ -5,17 +5,23 @@
 #include <string.h>
 #include <stdlib.h>
 #include <getopt.h>
-#include <iptables.h>
 #include <net/if.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+
+#define __EXPORTED_HEADERS__
+#ifdef XTABLES
+#include <xtables.h>
+#else
 #include <iptables.h>
+#endif
 
 #ifdef XTABLES_VERSION_CODE	// since 1.4.1
 #define MOD140
 #define iptables_target         xtables_target
 #endif
+
 #ifdef iptables_target		// only in 1.4.0
 #define MOD140
 #endif
