@@ -114,9 +114,20 @@ iptables_ver() {
   if [ "$IPTVER" ]; then
     echo "$IPTVER (user specified)"
   else
-    IPTVER=`$IPTBIN -V | sed -n s/iptables.v//p`
-    test "$IPTVER" || error "Can not find iptables version, try setting it with --ipt-ver="
-    echo "$IPTVER (detected from $IPTBIN)"
+    IPTVER=`$IPTBIN -V 2>/dev/null | sed -n s/iptables.v//p`
+    if [ "$IPTVER" ]; then
+      echo "$IPTVER (detected from $IPTBIN)"
+      return
+    else
+      echo "no iptables binary found"
+    fi
+    PKGVER=`pkg-config --modversion xtables 2>/dev/null`
+    if [ "$PKGVER" ]; then
+      IPTVER="$PKGVER"
+      echo "Xtables version: $IPTVER (detected from `which pkg-config`)"
+      return
+    fi
+    error "Can not find iptables version, try setting it with --ipt-ver="
   fi
 }
 
@@ -142,15 +153,21 @@ iptables_dir() {
 }
 
 iptables_pkg_config() {
-  echo -n "pkg-config for version $IPTVER exists: "
-  PKGVER=`pkg-config --exact-version=$IPTVER --modversion xtables 2>/dev/null`
-  if [ $? = 0 ]; then
-    echo "Yes (extracting compilation flags)"
+  if [ ! "$PKGVER" ]; then
+    echo -n "pkg-config for version $IPTVER exists: "
+    PKGVER=`pkg-config --exact-version=$IPTVER --modversion xtables 2>/dev/null`
+    if [ $? = 0 ]; then
+      echo "Yes"
+    else
+      echo "No (reported: $PKGVER)"
+      unset PKGVER
+    fi
+  fi
+  if [ "$PKGVER" ]; then
     PKGINC=`pkg-config --cflags xtables`
     PKGLIB=`pkg-config --variable=xtlibdir xtables`
     IPTCFLAGS="-DXTABLES"
   else
-    echo "No (reported: $PKGVER)"
     IPTCFLAGS="-DIPTABLES_VERSION=\\\\\"$IPTVER\\\\\""
   fi
 }
