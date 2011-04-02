@@ -96,6 +96,9 @@ static struct iptables_target netflow = {
 	.extra_opts     = opts
 };
 
+#ifndef _init
+#define _init __attribute__((constructor)) _INIT
+#endif
 void _init(void)
 {
 	register_target(&netflow);

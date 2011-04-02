@@ -16,13 +16,13 @@ minstall:
 mclean:
 	make -C $(KDIR) M=$(PWD) clean
 lclean:
-	-rm -f *.so *.o
+	-rm -f *.so *_sh.o
 clean: mclean lclean
 	-rm -f *.so *.o modules.order
 
 libipt_NETFLOW.so: libipt_NETFLOW.c
 	gcc -O2 -Wall -Wunused -I$(KDIR)/include $(IPTABLES_CFLAGS) -fPIC -o libipt_NETFLOW_sh.o -c libipt_NETFLOW.c
-	ld -shared  -o libipt_NETFLOW.so libipt_NETFLOW_sh.o
+	gcc -shared  -o libipt_NETFLOW.so libipt_NETFLOW_sh.o
 
 linstall: ipt_NETFLOW.ko libipt_NETFLOW.so
 	cp -a libipt_NETFLOW.so $(IPTABLES_MODULES)
