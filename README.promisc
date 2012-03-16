@@ -2,7 +2,9 @@ Hello,
 
 If you wish to account with netflow module traffic mirrored on switch you may follow this example:
 
+**************
 * Solution 1 *
+**************
 
 1. Patch your kernel with `raw_promisc.patch' to enable raw table to see promisc traffic.
 
@@ -57,7 +59,9 @@ If you wish to account with netflow module traffic mirrored on switch you may fo
 Voila.
 
 
+**************
 * Solution 2 *
+**************
 
 By Anonymous.
 
@@ -70,4 +74,11 @@ By Anonymous.
 >
 > ...for some reason it works when ipt_netflow is attached to a bridge, but
 > requires the promisc hack when attached to a real promisc interface.
+
+Sometimes you may need to run:
+
+ # brctl setageing br0 0
+
+for this scheme to work.
+
 
