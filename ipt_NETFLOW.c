@@ -60,7 +60,7 @@
 #define ipt_target xt_target
 #endif
 
-#define IPT_NETFLOW_VERSION "1.7.1"
+#define IPT_NETFLOW_VERSION "1.7.2"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("<abc@telekom.ru>");
@@ -145,7 +145,8 @@ static void destination_fini(void);
 static int add_destinations(char *ptr);
 static void aggregation_fini(struct list_head *list);
 static int add_aggregation(char *ptr);
-static void netflow_scan_inactive_timeout(long timeout);
+static void netflow_scan_inactive_timeout(void);
+static int flush_next_scan = 0;
 
 static inline __be32 bits2mask(int bits) {
 	return (bits? 0xffffffff << (32 - bits) : 0);
@@ -157,6 +158,18 @@ static inline int mask2bits(__be32 mask) {
 	for (n = 0; mask; n++)
 		mask = (mask << 1) & 0xffffffff;
 	return n;
+}
+
+static inline int start_scan_worker(void)
+{
+	return schedule_delayed_work(&netflow_work, HZ / 10);
+}
+
+/* we always stop scanner before write_lock(&sock_lock)
+ * to let it never hold that spin lock */
+static inline int stop_scan_worker(void)
+{
+	return cancel_delayed_work_sync(&netflow_work);
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
@@ -367,11 +380,13 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 		return ret;
 	if (sndbuf < SOCK_MIN_SNDBUF)
 		sndbuf = SOCK_MIN_SNDBUF;
+	stop_scan_worker();
 	write_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
 		usock->sock->sk->sk_sndbuf = sndbuf;
 	}
 	write_unlock(&sock_lock);
+	start_scan_worker();
 	return ret;
 }
 
@@ -382,8 +397,10 @@ static int destination_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 
 	ret = proc_dostring(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (ret >= 0 && write) {
+		stop_scan_worker();
 		destination_fini();
 		add_destinations(destination_buf);
+		start_scan_worker();
 	}
 	return ret;
 }
@@ -417,7 +434,9 @@ static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 
 	if (val > 0) {
 		printk(KERN_INFO "ipt_NETFLOW: forced flush\n");
-		netflow_scan_inactive_timeout(0);
+		stop_scan_worker();
+		flush_next_scan = 1;
+		schedule_delayed_work(&netflow_work, 0);
 	}
 
 	return ret;
@@ -552,6 +571,7 @@ static void sk_error_report(struct sock *sk)
 }
 
 // return numbers of sends succeded, 0 if none
+/* only called in scan worker path */
 static int netflow_send_pdu(void *buffer, int len)
 {
 	struct msghdr msg = { .msg_flags = MSG_DONTWAIT|MSG_NOSIGNAL };
@@ -560,7 +580,6 @@ static int netflow_send_pdu(void *buffer, int len)
 	int snum = 0;
 	struct ipt_netflow_sock *usock;
 
-	read_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
 		if (debug)
 			printk(KERN_INFO "netflow_send_pdu: sendmsg(%d, %d) [%u %u]\n",
@@ -590,7 +609,6 @@ static int netflow_send_pdu(void *buffer, int len)
 		}
 		snum++;
 	}
-	read_unlock(&sock_lock);
 	return retok;
 }
 
@@ -924,6 +942,7 @@ init_netflow(struct ipt_netflow_tuple *tuple,
 }
 
 /* cook pdu, send, and clean */
+/* only called in scan worker path */
 static void __netflow_export_pdu(void)
 {
 	struct timeval tv;
@@ -962,6 +981,7 @@ static void __netflow_export_pdu(void)
 	pdu_traf = 0;
 }
 
+/* only called in scan worker path */
 static void netflow_export_flow(struct ipt_netflow *nf)
 {
 	struct netflow5_record *rec;
@@ -1014,10 +1034,16 @@ static inline int active_needs_export(struct ipt_netflow *nf, long a_timeout)
 }
 
 /* could be called with zero to flush cache and pdu */
-static void netflow_scan_inactive_timeout(long timeout)
+/* this function is never called from anywhere except worker path */
+static void netflow_scan_inactive_timeout()
 {
-	long i_timeout = timeout * HZ;
+	long i_timeout = inactive_timeout * HZ;
 	long a_timeout = active_timeout * HZ;
+
+	if (flush_next_scan) {
+		flush_next_scan = 0;
+		i_timeout = 0;
+	}
 
 	spin_lock_bh(&ipt_netflow_lock);
 	while (!list_empty(&ipt_netflow_list)) {
@@ -1058,8 +1084,8 @@ static void netflow_work_fn(void *dummy)
 static void netflow_work_fn(struct work_struct *dummy)
 #endif
 {
-	netflow_scan_inactive_timeout(inactive_timeout);
-	schedule_delayed_work(&netflow_work, HZ / 10);
+	netflow_scan_inactive_timeout();
+	start_scan_worker();
 }
 
 #define RATESHIFT 2
@@ -1435,7 +1461,7 @@ static int __init ipt_netflow_init(void)
 	}
 	add_aggregation(aggregation);
 
-	schedule_delayed_work(&netflow_work, HZ / 10);
+	start_scan_worker();
 	setup_timer(&rate_timer, rate_timer_calc, 0);
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
 
@@ -1448,8 +1474,7 @@ static int __init ipt_netflow_init(void)
 	return 0;
 
 err_stop_timer:
-	cancel_delayed_work(&netflow_work);
-	flush_scheduled_work();
+	stop_scan_worker();
 	del_timer_sync(&rate_timer);
 	destination_fini();
 
@@ -1477,8 +1502,7 @@ static void __exit ipt_netflow_fini(void)
 	printk(KERN_INFO "ipt_netflow unloading..\n");
 
 	xt_unregister_target(&ipt_netflow_reg);
-	cancel_delayed_work(&netflow_work);
-	flush_scheduled_work();
+	stop_scan_worker();
 	del_timer_sync(&rate_timer);
 
 	synchronize_sched();
@@ -1490,7 +1514,6 @@ static void __exit ipt_netflow_fini(void)
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
 #endif
 
-	netflow_scan_inactive_timeout(0); /* flush cache and pdu */
 	destination_fini();
 	aggregation_fini(&aggr_n_list);
 	aggregation_fini(&aggr_p_list);
