@@ -120,7 +120,7 @@ static struct kmem_cache *ipt_netflow_cachep __read_mostly; /* ipt_netflow memor
 static atomic_t ipt_netflow_count = ATOMIC_INIT(0);
 static DEFINE_SPINLOCK(ipt_netflow_lock);
 
-static DEFINE_SPINLOCK(pdu_lock);
+static DEFINE_MUTEX(pdu_lock);
 static long long pdu_packets = 0, pdu_traf = 0;
 static struct netflow5_pdu pdu;
 static unsigned long pdu_ts_mod;
@@ -966,7 +966,7 @@ static void netflow_export_flow(struct ipt_netflow *nf)
 {
 	struct netflow5_record *rec;
 
-	spin_lock(&pdu_lock);
+	mutex_lock(&pdu_lock);
 	if (debug > 2)
 		printk(KERN_INFO "adding flow to export (%d)\n", pdu.nr_records);
 
@@ -1000,7 +1000,7 @@ static void netflow_export_flow(struct ipt_netflow *nf)
 
 	if (pdu.nr_records == NETFLOW5_RECORDS_MAX)
 		__netflow_export_pdu();
-	spin_unlock(&pdu_lock);
+	mutex_unlock(&pdu_lock);
 }
 
 static inline int active_needs_export(struct ipt_netflow *nf, long a_timeout)
@@ -1046,9 +1046,9 @@ static void netflow_scan_inactive_timeout(long timeout)
 	/* flush flows stored in pdu if there no new flows for too long */
 	/* Note: using >= to allow flow purge on zero timeout */
 	if ((jiffies - pdu_ts_mod) >= i_timeout) {
-		spin_lock(&pdu_lock);
+		mutex_lock(&pdu_lock);
 		__netflow_export_pdu();
-		spin_unlock(&pdu_lock);
+		mutex_unlock(&pdu_lock);
 	}
 }
 
