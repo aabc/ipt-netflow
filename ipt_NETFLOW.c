@@ -155,9 +155,9 @@ static long long min5_prate = 0, min5_brate = 0;
 static unsigned int metric = 10, min15_metric = 10, min5_metric = 10, min_metric = 10; /* hash metrics */
 
 static int set_hashsize(int new_size);
-static void destination_fini(void);
+static void destination_removeall(void);
 static int add_destinations(char *ptr);
-static void aggregation_fini(struct list_head *list);
+static void aggregation_remove(struct list_head *list);
 static int add_aggregation(char *ptr);
 static void netflow_scan_inactive_timeout(void);
 static int flush_next_scan = 0;
@@ -412,7 +412,7 @@ static int destination_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 	ret = proc_dostring(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (ret >= 0 && write) {
 		stop_scan_worker();
-		destination_fini();
+		destination_removeall();
 		add_destinations(destination_buf);
 		start_scan_worker();
 	}
@@ -638,7 +638,7 @@ static void usock_free(struct ipt_netflow_sock *usock)
 	vfree(usock); 
 }
 
-static void destination_fini(void)
+static void destination_removeall(void)
 {
 	write_lock(&sock_lock);
 	while (!list_empty(&usock_list)) {
@@ -744,7 +744,7 @@ static int add_destinations(char *ptr)
 	return 0;
 }
 
-static void aggregation_fini(struct list_head *list)
+static void aggregation_remove(struct list_head *list)
 {
 	write_lock_bh(&aggr_lock);
 	while (!list_empty(list)) {
@@ -827,7 +827,7 @@ static int add_aggregation(char *ptr)
 	list_for_each_entry_safe(aggr, tmp, &new_aggr_p_list, list)
 		list_move_tail(&aggr->list, &aggr_p_list);
 	write_unlock_bh(&aggr_lock);
-	aggregation_fini(&old_aggr_list);
+	aggregation_remove(&old_aggr_list);
 	return 0;
 }
 
@@ -1490,11 +1490,9 @@ static int __init ipt_netflow_init(void)
 err_stop_timer:
 	stop_scan_worker();
 	del_timer_sync(&rate_timer);
-	destination_fini();
-
-	aggregation_fini(&aggr_n_list);
-	aggregation_fini(&aggr_p_list);
-	destination_fini();
+	destination_removeall();
+	aggregation_remove(&aggr_n_list);
+	aggregation_remove(&aggr_p_list);
 err_free_sysctl:
 #ifdef CONFIG_SYSCTL
 	unregister_sysctl_table(netflow_sysctl_header);
@@ -1515,12 +1513,6 @@ static void __exit ipt_netflow_fini(void)
 {
 	printk(KERN_INFO "ipt_netflow unloading..\n");
 
-	xt_unregister_target(&ipt_netflow_reg);
-	stop_scan_worker();
-	del_timer_sync(&rate_timer);
-
-	synchronize_sched();
-
 #ifdef CONFIG_SYSCTL
 	unregister_sysctl_table(netflow_sysctl_header);
 #endif
@@ -1528,9 +1520,15 @@ static void __exit ipt_netflow_fini(void)
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
 #endif
 
-	destination_fini();
-	aggregation_fini(&aggr_n_list);
-	aggregation_fini(&aggr_p_list);
+	xt_unregister_target(&ipt_netflow_reg);
+	stop_scan_worker();
+	del_timer_sync(&rate_timer);
+
+	synchronize_sched();
+
+	destination_removeall();
+	aggregation_remove(&aggr_n_list);
+	aggregation_remove(&aggr_p_list);
 
 	kmem_cache_destroy(ipt_netflow_cachep);
 	vfree(ipt_netflow_hash);
