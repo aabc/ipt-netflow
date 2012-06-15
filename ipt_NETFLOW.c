@@ -158,8 +158,7 @@ static void destination_removeall(void);
 static int add_destinations(char *ptr);
 static void aggregation_remove(struct list_head *list);
 static int add_aggregation(char *ptr);
-static void netflow_scan_inactive_timeout(void);
-static int flush_next_scan = 0;
+static void netflow_scan_and_export(int flush);
 
 static inline __be32 bits2mask(int bits) {
 	return (bits? 0xffffffff << (32 - bits) : 0);
@@ -448,8 +447,8 @@ static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 	if (val > 0) {
 		printk(KERN_INFO "ipt_NETFLOW: forced flush\n");
 		stop_scan_worker();
-		flush_next_scan = 1;
-		schedule_delayed_work(&netflow_work, 0);
+		netflow_scan_and_export(1);
+		start_scan_worker();
 	}
 
 	return ret;
@@ -956,7 +955,7 @@ init_netflow(struct ipt_netflow_tuple *tuple,
 
 /* cook pdu, send, and clean */
 /* only called in scan worker path */
-static void __netflow_export_pdu(void)
+static void netflow_export_pdu(void)
 {
 	struct timeval tv;
 	int pdusize;
@@ -1031,7 +1030,7 @@ static void netflow_export_flow(struct ipt_netflow *nf)
 	ipt_netflow_free(nf);
 
 	if (pdu.nr_records == NETFLOW5_RECORDS_MAX)
-		__netflow_export_pdu();
+		netflow_export_pdu();
 }
 
 static inline int active_needs_export(struct ipt_netflow *nf, long a_timeout)
@@ -1045,16 +1044,14 @@ static inline int active_needs_export(struct ipt_netflow *nf, long a_timeout)
 }
 
 /* could be called with zero to flush cache and pdu */
-/* this function is never called from anywhere except worker path */
-static void netflow_scan_inactive_timeout()
+/* this function is guaranteed to be called non-concurrently */
+static void netflow_scan_and_export(int flush)
 {
 	long i_timeout = inactive_timeout * HZ;
 	long a_timeout = active_timeout * HZ;
 
-	if (flush_next_scan) {
-		flush_next_scan = 0;
+	if (flush)
 		i_timeout = 0;
-	}
 
 	spin_lock_bh(&ipt_netflow_lock);
 	while (!list_empty(&ipt_netflow_list)) {
@@ -1082,9 +1079,8 @@ static void netflow_scan_inactive_timeout()
 
 	/* flush flows stored in pdu if there no new flows for too long */
 	/* Note: using >= to allow flow purge on zero timeout */
-	if ((jiffies - pdu_ts_mod) >= i_timeout) {
-		__netflow_export_pdu();
-	}
+	if ((jiffies - pdu_ts_mod) >= i_timeout)
+		netflow_export_pdu();
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
@@ -1093,7 +1089,7 @@ static void netflow_work_fn(void *dummy)
 static void netflow_work_fn(struct work_struct *dummy)
 #endif
 {
-	netflow_scan_inactive_timeout();
+	netflow_scan_and_export(0);
 	start_scan_worker();
 }
 
