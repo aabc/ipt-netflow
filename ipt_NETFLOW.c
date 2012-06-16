@@ -188,10 +188,15 @@ static inline void start_scan_worker(void)
 
 /* we always stop scanner before write_lock(&sock_lock)
  * to let it never hold that spin lock */
+static inline void __stop_scan_worker(void)
+{
+	cancel_delayed_work_sync(&netflow_work);
+}
+
 static inline void stop_scan_worker(void)
 {
 	mutex_lock(&worker_lock);
-	cancel_delayed_work_sync(&netflow_work);
+	__stop_scan_worker();
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
@@ -1489,7 +1494,7 @@ static int __init ipt_netflow_init(void)
 	return 0;
 
 err_stop_timer:
-	stop_scan_worker();
+	__stop_scan_worker();
 	del_timer_sync(&rate_timer);
 	destination_removeall();
 	aggregation_remove(&aggr_n_list);
@@ -1522,7 +1527,7 @@ static void __exit ipt_netflow_fini(void)
 #endif
 
 	xt_unregister_target(&ipt_netflow_reg);
-	stop_scan_worker();
+	__stop_scan_worker();
 	netflow_scan_and_export(1);
 	del_timer_sync(&rate_timer);
 
