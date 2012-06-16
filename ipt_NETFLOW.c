@@ -172,16 +172,26 @@ static inline int mask2bits(__be32 mask) {
 	return n;
 }
 
-static inline int start_scan_worker(void)
+/* under that lock worker is always stopped and not rescheduled,
+ * and we can call worker sub-functions manually */
+static DEFINE_MUTEX(worker_lock);
+static inline void __start_scan_worker(void)
 {
-	return schedule_delayed_work(&netflow_work, HZ / 10);
+	schedule_delayed_work(&netflow_work, HZ / 10);
+}
+
+static inline void start_scan_worker(void)
+{
+	__start_scan_worker();
+	mutex_unlock(&worker_lock);
 }
 
 /* we always stop scanner before write_lock(&sock_lock)
  * to let it never hold that spin lock */
-static inline int stop_scan_worker(void)
+static inline void stop_scan_worker(void)
 {
-	return cancel_delayed_work_sync(&netflow_work);
+	mutex_lock(&worker_lock);
+	cancel_delayed_work_sync(&netflow_work);
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
@@ -1090,7 +1100,7 @@ static void netflow_work_fn(struct work_struct *dummy)
 #endif
 {
 	netflow_scan_and_export(0);
-	start_scan_worker();
+	__start_scan_worker();
 }
 
 #define RATESHIFT 2
@@ -1466,7 +1476,7 @@ static int __init ipt_netflow_init(void)
 	}
 	add_aggregation(aggregation);
 
-	start_scan_worker();
+	__start_scan_worker();
 	setup_timer(&rate_timer, rate_timer_calc, 0);
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
 
@@ -1513,6 +1523,7 @@ static void __exit ipt_netflow_fini(void)
 
 	xt_unregister_target(&ipt_netflow_reg);
 	stop_scan_worker();
+	netflow_scan_and_export(1);
 	del_timer_sync(&rate_timer);
 
 	synchronize_sched();
