@@ -132,7 +132,7 @@ static LIST_HEAD(aggr_p_list);
 static DEFINE_RWLOCK(aggr_lock);
 static struct kmem_cache *ipt_netflow_cachep __read_mostly; /* ipt_netflow memory */
 static atomic_t ipt_netflow_count = ATOMIC_INIT(0);
-static DEFINE_SPINLOCK(ipt_netflow_lock);
+static DEFINE_SPINLOCK(ipt_netflow_lock); /* hash table lock */
 
 static long long pdu_packets = 0, pdu_traf = 0;
 static struct netflow5_pdu pdu;
@@ -851,10 +851,9 @@ static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple)
 }
 
 static struct ipt_netflow *
-ipt_netflow_find(const struct ipt_netflow_tuple *tuple)
+ipt_netflow_find(const struct ipt_netflow_tuple *tuple, unsigned int hash)
 {
 	struct ipt_netflow *nf;
-	unsigned int hash = hash_netflow(tuple);
 	struct hlist_node *pos;
 
 	hlist_for_each_entry(nf, pos, &ipt_netflow_hash[hash], hlist) {
@@ -952,16 +951,14 @@ static void ipt_netflow_free(struct ipt_netflow *nf)
 
 static struct ipt_netflow *
 init_netflow(struct ipt_netflow_tuple *tuple,
-	     struct sk_buff *skb)
+	     struct sk_buff *skb, unsigned int hash)
 {
 	struct ipt_netflow *nf;
-	unsigned int hash;
 
 	nf = ipt_netflow_alloc(tuple);
 	if (!nf)
 		return NULL;
 
-	hash = hash_netflow(&nf->tuple);
 	hlist_add_head(&nf->hlist, &ipt_netflow_hash[hash]);
 	list_add(&nf->list, &ipt_netflow_list);
 
@@ -1204,6 +1201,7 @@ static unsigned int netflow_target(
 	struct netflow_aggr_n *aggr_n;
 	struct netflow_aggr_p *aggr_p;
 	__u8 s_mask, d_mask;
+	unsigned int hash;
 
 	iph = skb_header_pointer(skb, 0, sizeof(_iph), &_iph); //iph = ip_hdr(skb);
 
@@ -1299,9 +1297,10 @@ static unsigned int netflow_target(
 		}
 	read_unlock_bh(&aggr_lock);
 
+	hash = hash_netflow(&tuple);
 	spin_lock_bh(&ipt_netflow_lock);
 	/* record */
-	nf = ipt_netflow_find(&tuple);
+	nf = ipt_netflow_find(&tuple, hash);
 	if (!nf) {
 		if (maxflows > 0 && atomic_read(&ipt_netflow_count) >= maxflows) {
 			/* This is DOS attack prevention */
@@ -1312,7 +1311,7 @@ static unsigned int netflow_target(
 			return IPT_CONTINUE;
 		}
 
-		nf = init_netflow(&tuple, skb);
+		nf = init_netflow(&tuple, skb, hash);
 		if (!nf || IS_ERR(nf)) {
 			NETFLOW_STAT_INC(alloc_err);
 			NETFLOW_STAT_INC(pkt_drop);
