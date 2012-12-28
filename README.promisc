@@ -2,9 +2,14 @@ Hello,
 
 If you wish to account with netflow module traffic mirrored on switch you may follow this example:
 
-**************
-* Solution 1 *
-**************
+
+   Solution 1: General kernel patch.
+   Solution 2: Alternative w/o kernel patch.
+
+
+    **************
+    * Solution 1 *
+    **************
 
 1. Patch your kernel with `raw_promisc.patch' to enable raw table to see promisc traffic.
 
@@ -55,13 +60,14 @@ If you wish to account with netflow module traffic mirrored on switch you may fo
 
  # /sbin/iptables -A PREROUTING -t raw -i eth1.47 -j NETFLOW
 
-
 Voila.
 
+ps. For Debian Squeeze instructions look at raw_promisc_debian_squeeze6.patch
 
-**************
-* Solution 2 *
-**************
+
+    **************
+    * Solution 2 *
+    **************
 
 By Anonymous.
 
@@ -80,5 +86,4 @@ Sometimes you may need to run:
  # brctl setageing br0 0
 
 for this scheme to work.
-
 

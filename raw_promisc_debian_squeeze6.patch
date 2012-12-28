@@ -1,0 +1,37 @@
+
+ Short manual and patch for Debian Squeeze
+ suggested by Pavel Odintsov:
+
+On Thu, Dec 27, 2012 at 07:46:30PM +0400, Pavel Odintsov wrote:
+>
+> краткий мануал для патчинга Debian Squeeze ядра патчем promisc.
+> 
+> cd /usr/src
+> apt-get install -y dpkg-dev
+> apt-get build-dep  linux-image-2.6.32-5-amd64
+> cd linux-2.6-2.6.32/
+> apt-get source  linux-image-2.6.32-5-amd64
+> 
+> wget .... /root/raw_promisc_debian_squeeze6.patch
+> patch -p1 < raw_promisc_debian_squeeze6.patch
+> Накладываем патчи дебияна:
+> debian/rules source
+> 
+> Запускаем сборку:
+> debian/rules binary
+> 
+
+diff -rupN linux-2.6-2.6.32/net/ipv4/ip_input.c linux-2.6-2.6.32_promisc_raw//net/ipv4/ip_input.c
+--- linux-2.6-2.6.32/net/ipv4/ip_input.c	2009-12-03 04:51:21.000000000 +0100
++++ linux-2.6-2.6.32_promisc_raw//net/ipv4/ip_input.c	2012-06-25 19:13:49.000000000 +0200
+@@ -383,8 +383,8 @@ int ip_rcv(struct sk_buff *skb, struct n
+ 	/* When the interface is in promisc. mode, drop all the crap
+ 	 * that it receives, do not try to analyse it.
+ 	 */
+-	if (skb->pkt_type == PACKET_OTHERHOST)
+-		goto drop;
++	//if (skb->pkt_type == PACKET_OTHERHOST)
++	//	goto drop;
+ 
+ 
+ 	IP_UPD_PO_STATS_BH(dev_net(dev), IPSTATS_MIB_IN, skb->len);
