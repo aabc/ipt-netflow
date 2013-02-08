@@ -56,19 +56,17 @@ get_lib_from_lib() {
 }
 
 iptables_inc() {
-  echo -n "Iptables include path: "
+  echo -n "Iptables include flags: "
   if [ "$IPTINC" ]; then
-    echo "$IPTINC (user specified)"
     IPTINC="-I$IPTINC"
+    echo "$IPTINC (user specified)"
+  elif [ "$PKGVER" ]; then
+    IPTINC="$PKGINC"
+    echo "$IPTINC (pkg-config)"
   else
-    if [ "$PKGINC" ]; then
-      IPTINC="$PKGINC"
-      echo "$IPTINC (pkg-config)"
-    else
-      IPTINC="$IPTSRC/include"
-      echo "$IPTINC (from source)"
-      IPTINC="-I$IPTINC"
-    fi
+    IPTINC="$IPTSRC/include"
+    IPTINC="-I$IPTINC"
+    echo "$IPTINC (from source)"
   fi
 }
 
@@ -109,7 +107,7 @@ try_dir2() {
   test -d "$1" && try_dir `dirname $1` && return 0
 }
 
-iptables_ver() {
+iptables_find_version() {
   echo -n "Iptables binary version: "
   if [ "$IPTVER" ]; then
     echo "$IPTVER (user specified)"
@@ -131,9 +129,30 @@ iptables_ver() {
   fi
 }
 
-iptables_dir() {
+iptables_try_pkgconfig() {
+  if [ ! "$PKGVER" ]; then
+    TRYPKGVER=`pkg-config --modversion xtables 2>/dev/null`
+    echo -n "pkg-config for version $IPTVER exists: "
+    pkg-config --exact-version=$IPTVER xtables
+    if [ $? = 0 ]; then
+      echo "Yes"
+      PKGVER=$TRYPKGVER
+    else
+      echo "No (reported: $TRYPKGVER)"
+    fi
+  fi
+  if [ "$PKGVER" ]; then
+    PKGINC=`pkg-config --cflags xtables`
+    PKGLIB=`pkg-config --variable=xtlibdir xtables`
+    IPTCFLAGS="-DXTABLES"
+  else
+    IPTCFLAGS="-DIPTABLES_VERSION=\\\\\"$IPTVER\\\\\""
+  fi
+}
+
+iptables_find_src() {
   test "$IPTINC" && return 1
-  test "$PKGINC" && return 1
+  test "$PKGVER" && return 1
 
   VER="iptables-$IPTVER"
   if [ "$IPTSRC" ]; then
@@ -149,26 +168,6 @@ iptables_dir() {
     try_dirg "/usr/src/iptables" && return 0
     try_dir2 `locate $VER/extensions | head -1` && return 0
     error "Can not find iptables source directory, try setting it with --ipt-src="
-  fi
-}
-
-iptables_pkg_config() {
-  if [ ! "$PKGVER" ]; then
-    echo -n "pkg-config for version $IPTVER exists: "
-    PKGVER=`pkg-config --exact-version=$IPTVER --modversion xtables 2>/dev/null`
-    if [ $? = 0 ]; then
-      echo "Yes"
-    else
-      echo "No (reported: $PKGVER)"
-      unset PKGVER
-    fi
-  fi
-  if [ "$PKGVER" ]; then
-    PKGINC=`pkg-config --cflags xtables`
-    PKGLIB=`pkg-config --variable=xtlibdir xtables`
-    IPTCFLAGS="-DXTABLES"
-  else
-    IPTCFLAGS="-DIPTABLES_VERSION=\\\\\"$IPTVER\\\\\""
   fi
 }
 
@@ -214,10 +213,10 @@ echo Kernel sources: $KDIR
 
 test "$IPTBIN" || IPTBIN=`which iptables`
 
-iptables_ver		#IPTVER
-iptables_pkg_config
-iptables_dir		#IPTSRC
-iptables_src_version	#check IPTSRC match to IPTVER
+iptables_find_version	#IPTVER
+iptables_try_pkgconfig	#try to configure from pkg-config
+iptables_find_src	#IPTSRC
+iptables_src_version	#check that IPTSRC match to IPTVER
 iptables_inc		#IPTINC
 iptables_modules	#IPTLIB
 
