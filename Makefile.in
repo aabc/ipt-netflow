@@ -12,8 +12,8 @@ ipt_NETFLOW.ko: ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	@echo Compiling for kernel $(KVERSION)
 	make -C $(KDIR) M=$(CURDIR) modules
 	@touch $@
-minstall:
-	make -C $(KDIR) M=$(CURDIR) modules_install
+minstall: | ipt_NETFLOW.ko
+	make -C $(KDIR) M=$(CURDIR) modules_install INSTALL_MOD_PATH=$(DESTDIR)
 mclean:
 	make -C $(KDIR) M=$(CURDIR) clean
 lclean:
@@ -25,8 +25,8 @@ libipt_NETFLOW.so: libipt_NETFLOW.c Makefile
 	gcc -O2 -Wall -Wunused $(IPTABLES_CFLAGS) -fPIC -o libipt_NETFLOW_sh.o -c libipt_NETFLOW.c
 	gcc -shared  -o libipt_NETFLOW.so libipt_NETFLOW_sh.o
 
-linstall: ipt_NETFLOW.ko libipt_NETFLOW.so
-	cp -a libipt_NETFLOW.so $(IPTABLES_MODULES)
+linstall: | libipt_NETFLOW.so
+	install -D libipt_NETFLOW.so $(DESTDIR)$(IPTABLES_MODULES)/libipt_NETFLOW.so
 
 install: minstall linstall
 
