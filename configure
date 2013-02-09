@@ -146,7 +146,10 @@ iptables_try_pkgconfig() {
     PKGLIB=`pkg-config --variable=xtlibdir xtables`
     IPTCFLAGS="-DXTABLES"
   else
-    IPTCFLAGS="-DIPTABLES_VERSION=\\\\\"$IPTVER\\\\\""
+    # Newer versions of iptables should not have -I/kernel/include!
+    # So I assume that newer version will have correct pkg-config set up
+    # and if not, then it's older who need it.
+    IPTCFLAGS="-I$KDIR/include -DIPTABLES_VERSION=\\\\\"$IPTVER\\\\\""
   fi
 }
 
@@ -224,7 +227,6 @@ REPLACE="\
 s!@KVERSION@!$KVERSION!;\
 s!@KDIR@!$KDIR!;\
 s!@IPTABLES_VERSION@!$IPTVER!;\
-s!@IPTABLES_INCLUDES@!$IPTINC!;\
 s!@IPTABLES_CFLAGS@!$IPTCFLAGS $IPTINC!;\
 s!@IPTABLES_MODULES@!$IPTLIB!"
 
