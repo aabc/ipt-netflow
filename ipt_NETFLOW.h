@@ -115,6 +115,7 @@ struct ipt_netflow_sock {
 	unsigned short port;
 	atomic_t wmem_peak;	// sk_wmem_alloc peak value
 	atomic_t err_full;	// socket filled error
+	atomic_t err_connect;	// connect errors
 	atomic_t err_other;	// other socket errors
 };
 

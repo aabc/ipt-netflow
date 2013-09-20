@@ -1,6 +1,6 @@
 /*
  * This is NetFlow exporting module (NETFLOW target) for linux
- * (c) 2008-2012 <abc@telekom.ru>
+ * (c) 2008-2013 <abc@telekom.ru>
  *
  *
  *   This program is free software: you can redistribute it and/or modify
@@ -304,20 +304,22 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 
 	read_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
-		struct sock *sk = usock->sock->sk;
+		seq_printf(seq, "sock%d: %u.%u.%u.%u:%u",
+		    snum,
+		    HIPQUAD(usock->ipaddr),
+		    usock->port);
+		if (usock->sock) {
+			struct sock *sk = usock->sock->sk;
 
-		seq_printf(seq, "sock%d: %u.%u.%u.%u:%u, sndbuf %u, filled %u, peak %u; err: sndbuf reached %u, other %u\n",
-			   snum,
-			   usock->ipaddr >> 24,
-			   (usock->ipaddr >> 16) & 255,
-			   (usock->ipaddr >> 8) & 255,
-			   usock->ipaddr & 255,
-			   usock->port,
-			   sk->sk_sndbuf,
-			   atomic_read(&sk->sk_wmem_alloc),
-			   atomic_read(&usock->wmem_peak),
-			   atomic_read(&usock->err_full),
-			   atomic_read(&usock->err_other));
+			seq_printf(seq, ", sndbuf %u, filled %u, peak %u; err: sndbuf reached %u, connect %u, other %u\n",
+			    sk->sk_sndbuf,
+			    atomic_read(&sk->sk_wmem_alloc),
+			    atomic_read(&usock->wmem_peak),
+			    atomic_read(&usock->err_full),
+			    atomic_read(&usock->err_connect),
+			    atomic_read(&usock->err_other));
+		} else
+			seq_printf(seq, " unconnected (%u attempts).\n", atomic_read(&usock->err_connect));
 		snum++;
 	}
 	read_unlock(&sock_lock);
@@ -398,7 +400,8 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 		return -ENOENT;
 	}
 	usock = list_first_entry(&usock_list, struct ipt_netflow_sock, list);
-	sndbuf = usock->sock->sk->sk_sndbuf;
+	if (usock->sock)
+		sndbuf = usock->sock->sk->sk_sndbuf;
 	read_unlock(&sock_lock);
 
 	ctl->data = &sndbuf;
@@ -410,7 +413,8 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 	stop_scan_worker();
 	write_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
-		usock->sock->sk->sk_sndbuf = sndbuf;
+		if (usock->sock)
+			usock->sock->sk->sk_sndbuf = sndbuf;
 	}
 	write_unlock(&sock_lock);
 	start_scan_worker();
@@ -597,6 +601,59 @@ static void sk_error_report(struct sock *sk)
 	return;
 }
 
+static struct socket *_usock_alloc(__be32 ipaddr, unsigned short port)
+{
+	struct sockaddr_in sin;
+	struct socket *sock;
+	int error;
+
+	if ((error = sock_create_kern(PF_INET, SOCK_DGRAM, IPPROTO_UDP, &sock)) < 0) {
+		printk(KERN_ERR "netflow: sock_create_kern error %d\n", -error);
+		return NULL;
+	}
+	sock->sk->sk_allocation = GFP_ATOMIC;
+	sock->sk->sk_prot->unhash(sock->sk); /* hidden from input */
+	sock->sk->sk_error_report = &sk_error_report; /* clear ECONNREFUSED */
+	if (sndbuf)
+		sock->sk->sk_sndbuf = sndbuf;
+	else
+		sndbuf = sock->sk->sk_sndbuf;
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family      = AF_INET;
+	sin.sin_addr.s_addr = htonl(ipaddr);
+	sin.sin_port        = htons(port);
+	if ((error = sock->ops->connect(sock, (struct sockaddr *)&sin,
+				  sizeof(sin), 0)) < 0) {
+		printk(KERN_ERR "netflow: error connecting UDP socket %d,"
+		    " don't worry, will try reconnect later.\n", -error);
+		/* ENETUNREACH when no interfaces */
+		sock_release(sock);
+		return NULL;
+	}
+	return sock;
+}
+
+static void usock_connect(struct ipt_netflow_sock *usock, int sendmsg)
+{
+	usock->sock = _usock_alloc(usock->ipaddr, usock->port);
+	if (usock->sock) {
+		if (sendmsg || debug)
+			printk(KERN_INFO "netflow: connected %u.%u.%u.%u:%u\n",
+			    HIPQUAD(usock->ipaddr),
+			    usock->port);
+	} else {
+		atomic_inc(&usock->err_connect);
+		if (debug)
+			printk(KERN_INFO "netflow: connect to %u.%u.%u.%u:%u failed%s.\n",
+			    HIPQUAD(usock->ipaddr),
+			    usock->port,
+			    (sendmsg)? " (pdu lost)" : "");
+	}
+	atomic_set(&usock->wmem_peak, 0);
+	atomic_set(&usock->err_full, 0);
+	atomic_set(&usock->err_other, 0);
+}
+
 // return numbers of sends succeded, 0 if none
 /* only called in scan worker path */
 static int netflow_send_pdu(void *buffer, int len)
@@ -608,6 +665,12 @@ static int netflow_send_pdu(void *buffer, int len)
 	struct ipt_netflow_sock *usock;
 
 	list_for_each_entry(usock, &usock_list, list) {
+		if (!usock->sock)
+			usock_connect(usock, 1);
+		if (!usock->sock) {
+			NETFLOW_STAT_INC_ATOMIC(send_failed);
+			continue;
+		}
 		if (debug)
 			printk(KERN_INFO "netflow_send_pdu: sendmsg(%d, %d) [%u %u]\n",
 			       snum,
@@ -639,12 +702,11 @@ static int netflow_send_pdu(void *buffer, int len)
 	return retok;
 }
 
-static void usock_free(struct ipt_netflow_sock *usock)
+static void usock_close_free(struct ipt_netflow_sock *usock)
 {
-	printk(KERN_INFO "netflow: remove destination %u.%u.%u.%u:%u (%p)\n",
+	printk(KERN_INFO "netflow: removed destination %u.%u.%u.%u:%u\n",
 	       HIPQUAD(usock->ipaddr),
-	       usock->port,
-	       usock->sock);
+	       usock->port);
 	if (usock->sock)
 		sock_release(usock->sock);
 	usock->sock = NULL;
@@ -660,7 +722,7 @@ static void destination_removeall(void)
 		usock = list_entry(usock_list.next, struct ipt_netflow_sock, list);
 		list_del(&usock->list);
 		write_unlock(&sock_lock);
-		usock_free(usock);
+		usock_close_free(usock);
 		write_lock(&sock_lock);
 	}
 	write_unlock(&sock_lock);
@@ -670,57 +732,22 @@ static void add_usock(struct ipt_netflow_sock *usock)
 {
 	struct ipt_netflow_sock *sk;
 
-	/* don't need empty sockets */
-	if (!usock->sock) {
-		usock_free(usock);
-		return;
-	}
-
 	write_lock(&sock_lock);
 	/* don't need duplicated sockets */
 	list_for_each_entry(sk, &usock_list, list) {
 		if (sk->ipaddr == usock->ipaddr &&
 		    sk->port == usock->port) {
 			write_unlock(&sock_lock);
-			usock_free(usock);
+			usock_close_free(usock);
 			return;
 		}
 	}
 	list_add_tail(&usock->list, &usock_list);
-	printk(KERN_INFO "netflow: added destination %u.%u.%u.%u:%u\n",
+	printk(KERN_INFO "netflow: added destination %u.%u.%u.%u:%u%s\n",
 	       HIPQUAD(usock->ipaddr),
-	       usock->port);
+	       usock->port,
+	       (!usock->sock)? " (unconnected)" : "");
 	write_unlock(&sock_lock);
-}
-
-static struct socket *usock_alloc(__be32 ipaddr, unsigned short port)
-{
-	struct sockaddr_in sin;
-	struct socket *sock;
-	int error;
-
-	if ((error = sock_create_kern(PF_INET, SOCK_DGRAM, IPPROTO_UDP, &sock)) < 0) {
-		printk(KERN_ERR "netflow: sock_create_kern error %d\n", error);
-		return NULL;
-	}
-	sock->sk->sk_allocation = GFP_ATOMIC;
-	sock->sk->sk_prot->unhash(sock->sk); /* hidden from input */
-	sock->sk->sk_error_report = &sk_error_report; /* clear ECONNREFUSED */
-	if (sndbuf)
-		sock->sk->sk_sndbuf = sndbuf;
-	else
-		sndbuf = sock->sk->sk_sndbuf;
-	memset(&sin, 0, sizeof(sin));
-	sin.sin_family      = AF_INET;
-	sin.sin_addr.s_addr = htonl(ipaddr);
-	sin.sin_port        = htons(port);
-	if ((error = sock->ops->connect(sock, (struct sockaddr *)&sin,
-				  sizeof(sin), 0)) < 0) {
-		printk(KERN_ERR "netflow: error connecting UDP socket %d\n", error);
-		sock_release(sock);
-		return NULL;
-	}
-	return sock;
 }
 
 #define SEPARATORS " ,;\t\n"
@@ -742,12 +769,10 @@ static int add_destinations(char *ptr)
 			}
 
 			memset(usock, 0, sizeof(*usock));
+			atomic_set(&usock->err_connect, 0);
 			usock->ipaddr = ntohl(*(__be32 *)ip);
 			usock->port = port;
-			usock->sock = usock_alloc(usock->ipaddr, port);
-			atomic_set(&usock->wmem_peak, 0);
-			atomic_set(&usock->err_full, 0);
-			atomic_set(&usock->err_other, 0);
+			usock_connect(usock, 0);
 			add_usock(usock);
 		} else
 			break;
