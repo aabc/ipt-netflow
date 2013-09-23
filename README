@@ -1,4 +1,4 @@
-ipt_NETFLOW linux 2.6 kernel module by <abc@telekom.ru> -- 11 Feb 2008
+ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
 
 ============================
 = OBTAINING LATEST VERSION =
@@ -12,9 +12,11 @@ ipt_NETFLOW linux 2.6 kernel module by <abc@telekom.ru> -- 11 Feb 2008
 = INSTALLATION =
 ================
 
-1. Besides kernel you will need iptables/netfilter source matching your
-     installation or just fresh install from there: ftp://ftp.netfilter.org/pub/iptables/snapshot/
-   I have this: ftp://ftp.netfilter.org/pub/iptables/snapshot/iptables-1.3.7-20070329.tar.bz2
+1. Besides kernel source (or kernel-devel package of your distro matching varsion
+    of your kernel exactly) you will need iptables/netfilter source (or devel package)
+    matching, again, your installation, or just fresh install from there:
+       ftp://ftp.netfilter.org/pub/iptables/snapshot/
+   I had this: ftp://ftp.netfilter.org/pub/iptables/snapshot/iptables-1.3.7-20070329.tar.bz2
    Unpack it somewhere and build with make.
 
 2. Run ./configure script and it will create Makefile
@@ -23,15 +25,13 @@ ipt_NETFLOW linux 2.6 kernel module by <abc@telekom.ru> -- 11 Feb 2008
    This will install kernel module and iptable specific library.
 
 Troubleshooting:
-   1) Sometimes you will want to add CC=gcc-3 to make command.
+   a) Sometimes you will want to add CC=gcc-3 to make command.
    Example: make CC=gcc-3.3
 
-   2) Compile module with actual kernel source compiled.
+   b) Compile module with actual kernel source compiled.
    I.e. first compile kernel and boot into it, and then compile module.
-
-   3) For autoloading module after reboot: set net.netflow.destination (or load
-   module, if idestination set on load) after interfaces are up. Becasue module
-   needs exporting interface (usually lo) to establish export connection.
+   If you are using kernel-devel package check that its version matches
+    your kernel package.
 
 4. After this point you should be able to load module
      and use -j NETFLOW target in your iptables. See next section.
@@ -49,7 +49,7 @@ Troubleshooting:
 
    See, you may add options in insmod/modprobe command line, or add
      them in /etc/ to modules.conf or modprobe.conf like thus:
-   options ipt_NETFLOW destination=127.0.0.1:2055
+   options ipt_NETFLOW destination=127.0.0.1:2055 version=9
 
 2. Statistics is in /proc/net/stat/ipt_netflow
    To view slab statistics: grep ipt_netflow /proc/slabinfo
@@ -67,6 +67,10 @@ Troubleshooting:
 = OPTIONS =
 ===========
 
+   version=5
+     - what version of NetFlow protocol to use. Default is 5. You
+       can choose from 5 or 9.
+
    destination=127.0.0.1:2055
      - where to export netflow, to this ip address
        You will see this connection in netstat like this:
@@ -81,6 +85,10 @@ Troubleshooting:
 
    active_timeout=1800
      - export flow after it's active 1800 seconds (30 minutes). Default value is 1800.
+
+   refresh-rate=20
+     - for NetFlow v9 it's rate how frequently to send templates (per
+       packets). You probably don't need to change default (which is 20).
 
    debug=0
      - debug level (none).
@@ -166,8 +174,9 @@ Troubleshooting:
   pdu X, X: how much traffic in flows preparing to be exported.
     - it is included already in aforementioned MemTraf total.
 
-> Timeout: active 1800, inactive 15. Maxflows 2000000
+> NetFlow protocol version 9, refresh-rate 2. Timeout: active 1800, inactive 15. Maxflows 2000000
 
+  Protocol version curently in use. And refresh-rate for v9.
   Timeout: active X: how much seconds to wait before exporting active flow.
     - same as sysctl net.netflow.active_timeout variable.
   inactive X: how much seconds to wait before exporting inactive flow.
@@ -225,7 +234,13 @@ Troubleshooting:
       packet is for new flow but maxflows is already reached,
       all flows in export packets that got socket error.
 
-> sock0: 10.0.0.2:2055, sndbuf 106496, filled 0, peak 106848; err: sndbuf reached 928, other 0
+> sock0: 10.0.0.2:2055 unconnected (1 attempts).
+
+  If socket is unconnected (for example if module loaded before interfaces is up)
+  it shows now much connection attempts was failed. It will try to connect until
+  success.
+
+> sock0: 10.0.0.2:2055, sndbuf 106496, filled 0, peak 106848; err: sndbuf reached 928, connect 0, other 0
 
   sockX: per destination stats for:
   X.X.X.X:Y: destination ip address and port.
@@ -239,6 +254,7 @@ Troubleshooting:
   err: how much packets are dropped due to errors.
     - all flows from them will be accounted in drop stat.
   sndbuf reached X: how much packets dropped due to sndbuf being too small (error -11).
+  connect X: how much connection attempts was failed.
   other X: dropped due to other possible errors.
 
 > aggr0: ...

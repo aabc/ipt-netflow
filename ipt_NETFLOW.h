@@ -54,9 +54,9 @@ struct netflow5_record {
 struct netflow5_pdu {
 	__be16			version;
 	__be16			nr_records;
-	__be32			ts_uptime;
-	__be32			ts_usecs;
-	__be32			ts_unsecs;
+	__be32			ts_uptime; /* ms */
+	__be32			ts_usecs;  /* s  */
+	__be32			ts_unsecs; /* ns */
 	__be32			seq;
 	__u8			eng_type;
 	__u8			eng_id;
@@ -64,6 +64,59 @@ struct netflow5_pdu {
 	struct netflow5_record	flow[NETFLOW5_RECORDS_MAX];
 } __attribute__ ((packed));
 #define NETFLOW5_HEADER_SIZE (sizeof(struct netflow5_pdu) - NETFLOW5_RECORDS_MAX * sizeof(struct netflow5_record))
+
+/* NetFlow v9 RFC http://www.ietf.org/rfc/rfc3954.txt */
+enum {
+	IN_BYTES = 1,
+	IN_PKTS = 2,
+	PROTOCOL = 4,
+	TOS = 5,
+	TCP_FLAGS = 6,
+	L4_SRC_PORT = 7,
+	IPV4_SRC_ADDR = 8,
+	SRC_MASK = 9,
+	INPUT_SNMP = 10,
+	L4_DST_PORT = 11,
+	IPV4_DST_ADDR = 12,
+	DST_MASK = 13,
+	OUTPUT_SNMP = 14,
+	LAST_SWITCHED = 21,
+	FIRST_SWITCHED = 22,
+	TOTAL_BYTES_EXP = 40,
+	TOTAL_PKTS_EXP = 41,
+	TOTAL_FLOWS_EXP = 42,
+	IP_PROTOCOL_VERSION = 60
+};
+
+enum {
+	FLOWSET_TEMPLATE = 0,
+	FLOWSET_OPTIONS = 1,
+	FLOWSET_DATA_FIRST = 256,
+};
+
+struct flowset_template {
+	__be16	flowset_id;
+	__be16	length;
+	__be16	template_id;
+	__be16	field_count;
+} __attribute__ ((packed));
+
+struct flowset_data {
+	__be16	flowset_id;
+	__be16	length;
+} __attribute__ ((packed));
+
+/* NetFlow v9 packet. */
+struct netflow9_pdu {
+	__be16		version;
+	__be16		nr_records;
+	__be32		sys_uptime_ms;
+	__be32		export_time_s;
+	__be32		seq;
+	__be32		source_id; /* Exporter Observation Domain */
+	__u8		data[1400];
+} __attribute__ ((packed));
+
 
 /* hashed data which identify unique flow */
 struct ipt_netflow_tuple {

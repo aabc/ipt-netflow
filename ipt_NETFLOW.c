@@ -103,6 +103,18 @@ static int sndbuf;
 module_param(sndbuf, int, 0400);
 MODULE_PARM_DESC(sndbuf, "udp socket SNDBUF size");
 
+static int version = 5;
+module_param(version, int, 0400);
+MODULE_PARM_DESC(version, "netflow protocol version (5, 9)");
+
+static int refresh_rate = 20;
+module_param(refresh_rate, int, 0400);
+MODULE_PARM_DESC(refresh_rate, "netflow v9 refresh rate (packets)");
+
+//static int timeout_rate = 30;
+//module_param(timeout_rate, int, 0400);
+//MODULE_PARM_DESC(timeout_rate, "netflow v9 timeout rate (minutes)");
+
 static int hashsize;
 module_param(hashsize, int, 0400);
 MODULE_PARM_DESC(hashsize, "hash table size");
@@ -134,9 +146,15 @@ static struct kmem_cache *ipt_netflow_cachep __read_mostly; /* ipt_netflow memor
 static atomic_t ipt_netflow_count = ATOMIC_INIT(0);
 static DEFINE_SPINLOCK(ipt_netflow_lock); /* hash table lock */
 
-static long long pdu_packets = 0, pdu_traf = 0;
-static struct netflow5_pdu pdu;
-static unsigned long pdu_ts_mod;
+static long long pdu_packets = 0, pdu_traf = 0; /* how much accounted traffic in pdu */
+static unsigned int pdu_seq = 0;
+static unsigned long pdu_ts_mod; /* ts of last flow */
+static struct netflow5_pdu pdu5;
+static struct netflow9_pdu pdu9;
+static void (*netflow_export_flow)(struct ipt_netflow *nf);
+static void (*netflow_export_pdu)(void); /* called if timeout */
+static void netflow_switch_version(int ver);
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
 static void netflow_work_fn(void *work);
 static DECLARE_WORK(netflow_work, netflow_work_fn, NULL);
@@ -264,7 +282,10 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		   pdu_packets,
 		   pdu_traf);
 
-	seq_printf(seq, "Timeout: active %d, inactive %d. Maxflows %u\n",
+	seq_printf(seq, "NetFlow protocol version %d", version);
+	if (version == 9)
+		seq_printf(seq, ", refresh-rate %d", refresh_rate);
+	seq_printf(seq, ". Timeouts: active %d, inactive %d. Maxflows %u\n",
 		   active_timeout,
 		   inactive_timeout,
 		   maxflows);
@@ -473,6 +494,34 @@ static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 	return ret;
 }
 
+static int version_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+			 void __user *buffer, size_t *lenp, loff_t *fpos)
+{
+	int ret;
+	int ver = version;
+
+	ctl->data = &ver;
+	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+
+	if (!write)
+		return ret;
+
+	switch (ver) {
+		case 5:
+		case 9:
+			printk(KERN_INFO "ipt_NETFLOW: forced flush (protocol version change)\n");
+			stop_scan_worker();
+			netflow_scan_and_export(1);
+			netflow_switch_version(ver);
+			start_scan_worker();
+			break;
+		default:
+			return -EPERM;
+	}
+
+	return ret;
+}
+
 static struct ctl_table_header *netflow_sysctl_header;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
@@ -550,6 +599,21 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &flush_procctl,
+	},
+	{
+		_CTL_NAME(9)
+		.procname	= "version",
+		.mode		= 0644,
+		.maxlen		= sizeof(int),
+		.proc_handler	= &version_procctl,
+	},
+	{
+		_CTL_NAME(9)
+		.procname	= "refresh-rate",
+		.mode		= 0644,
+		.data		= &refresh_rate,
+		.maxlen		= sizeof(int),
+		.proc_handler	= &proc_dointvec,
 	},
 	{ }
 };
@@ -656,7 +720,7 @@ static void usock_connect(struct ipt_netflow_sock *usock, int sendmsg)
 
 // return numbers of sends succeded, 0 if none
 /* only called in scan worker path */
-static int netflow_send_pdu(void *buffer, int len)
+static void netflow_sendmsg(void *buffer, int len)
 {
 	struct msghdr msg = { .msg_flags = MSG_DONTWAIT|MSG_NOSIGNAL };
 	struct kvec iov = { buffer, len };
@@ -672,7 +736,7 @@ static int netflow_send_pdu(void *buffer, int len)
 			continue;
 		}
 		if (debug)
-			printk(KERN_INFO "netflow_send_pdu: sendmsg(%d, %d) [%u %u]\n",
+			printk(KERN_INFO "netflow_sendmsg: sendmsg(%d, %d) [%u %u]\n",
 			       snum,
 			       len,
 			       atomic_read(&usock->sock->sk->sk_wmem_alloc),
@@ -687,7 +751,7 @@ static int netflow_send_pdu(void *buffer, int len)
 				suggestion = ": increase sndbuf!";
 			} else
 				atomic_inc(&usock->err_other);
-			printk(KERN_ERR "netflow_send_pdu[%d]: sendmsg error %d: data loss %llu pkt, %llu bytes%s\n",
+			printk(KERN_ERR "netflow_sendmsg[%d]: sendmsg error %d: data loss %llu pkt, %llu bytes%s\n",
 			       snum, ret, pdu_packets, pdu_traf, suggestion);
 		} else {
 			unsigned int wmem = atomic_read(&usock->sock->sk->sk_wmem_alloc);
@@ -699,7 +763,11 @@ static int netflow_send_pdu(void *buffer, int len)
 		}
 		snum++;
 	}
-	return retok;
+	if (retok == 0) {
+		/* not least one send succeded, account stat for dropped packets */
+		NETFLOW_STAT_ADD_ATOMIC(pkt_drop, pdu_packets);
+		NETFLOW_STAT_ADD_ATOMIC(traf_drop, pdu_traf);
+	}
 }
 
 static void usock_close_free(struct ipt_netflow_sock *usock)
@@ -997,56 +1065,53 @@ init_netflow(struct ipt_netflow_tuple *tuple,
 
 /* cook pdu, send, and clean */
 /* only called in scan worker path */
-static void netflow_export_pdu(void)
+static void netflow_export_pdu5(void)
 {
 	struct timeval tv;
 	int pdusize;
 
-	if (!pdu.nr_records)
+	if (!pdu5.nr_records)
 		return;
 
 	if (debug > 1)
-		printk(KERN_INFO "netflow_export_pdu with %d records\n", pdu.nr_records);
+		printk(KERN_INFO "netflow_export_pdu5 with %d records\n", pdu5.nr_records);
 	do_gettimeofday(&tv);
 
-	pdu.version	= htons(5);
-	pdu.ts_uptime	= htonl(jiffies_to_msecs(jiffies));
-	pdu.ts_usecs	= htonl(tv.tv_sec);
-	pdu.ts_unsecs	= htonl(tv.tv_usec);
-	//pdu.eng_type	= 0;
-	//pdu.eng_id	= 0;
-	//pdu.padding	= 0;
+	pdu5.version	= htons(5);
+	pdu5.ts_uptime	= htonl(jiffies_to_msecs(jiffies));
+	pdu5.ts_usecs	= htonl(tv.tv_sec);
+	pdu5.ts_unsecs	= htonl(tv.tv_usec);
+	//pdu5.eng_type	= 0;
+	//pdu5.eng_id	= 0;
+	//pdu5.padding	= 0;
 
-	pdusize = NETFLOW5_HEADER_SIZE + sizeof(struct netflow5_record) * pdu.nr_records;
+	pdusize = NETFLOW5_HEADER_SIZE + sizeof(struct netflow5_record) * pdu5.nr_records;
 
 	/* especially fix nr_records before export */
-	pdu.nr_records	= htons(pdu.nr_records);
+	pdu5.nr_records	= htons(pdu5.nr_records);
 
-	if (netflow_send_pdu(&pdu, pdusize) == 0) {
-		/* not least one send succeded, account stat for dropped packets */
-		NETFLOW_STAT_ADD_ATOMIC(pkt_drop, pdu_packets);
-		NETFLOW_STAT_ADD_ATOMIC(traf_drop, pdu_traf);
-	}
+	netflow_sendmsg(&pdu5, pdusize);
 
-	pdu.seq = htonl(ntohl(pdu.seq) + ntohs(pdu.nr_records));
+	pdu_seq = pdu_seq + ntohs(pdu5.nr_records);
+	pdu5.seq = htonl(pdu_seq);
 
-	pdu.nr_records	= 0;
+	pdu5.nr_records	= 0;
 	pdu_packets = 0;
-	pdu_traf = 0;
+	pdu_traf    = 0;
 }
 
 /* only called in scan worker path */
-static void netflow_export_flow(struct ipt_netflow *nf)
+static void netflow_export_flow5(struct ipt_netflow *nf)
 {
 	struct netflow5_record *rec;
 
 	if (debug > 2)
-		printk(KERN_INFO "adding flow to export (%d)\n", pdu.nr_records);
+		printk(KERN_INFO "adding flow to export (%d)\n", pdu5.nr_records);
 
 	pdu_packets += nf->nr_packets;
 	pdu_traf += nf->nr_bytes;
 	pdu_ts_mod = jiffies;
-	rec = &pdu.flow[pdu.nr_records++];
+	rec = &pdu5.flow[pdu5.nr_records++];
 
 	/* make V5 flow record */
 	rec->s_addr	= nf->tuple.s_addr;
@@ -1071,8 +1136,259 @@ static void netflow_export_flow(struct ipt_netflow *nf)
 	//rec->padding	= 0;
 	ipt_netflow_free(nf);
 
-	if (pdu.nr_records == NETFLOW5_RECORDS_MAX)
-		netflow_export_pdu();
+	if (pdu5.nr_records == NETFLOW5_RECORDS_MAX)
+		netflow_export_pdu5();
+}
+
+static __u8 *pdu9_data_used = pdu9.data; /* up to */
+static struct flowset_data *pdu9_flowset = NULL; /* current data flowset */
+
+/* pdu is initially blank, export current pdu, and prepare next for filling. */
+static void netflow_export_pdu9(void)
+{
+	struct timeval tv;
+	int pdusize;
+
+	if (!pdu9.nr_records)
+		return;
+
+	if (debug > 1)
+		printk(KERN_INFO "netflow_export_pdu9 with %d records\n", pdu9.nr_records);
+
+	pdu9.version		= htons(9);
+	/* fix nr_records before export */
+	pdu9.nr_records		= htons(pdu9.nr_records);
+	pdu9.sys_uptime_ms	= htonl(jiffies_to_msecs(jiffies));
+	do_gettimeofday(&tv);
+	pdu9.export_time_s	= htonl(tv.tv_sec);
+	// pdu9.source_id	= 0;
+
+	pdusize = pdu9_data_used - (unsigned char *)&pdu9;
+
+	netflow_sendmsg(&pdu9, pdusize);
+
+	pdu_seq++;
+	pdu9.seq = htonl(pdu_seq);
+
+	pdu_packets = 0;
+	pdu_traf    = 0;
+	pdu9_data_used = pdu9.data;
+	pdu9_flowset = NULL;
+	pdu9.nr_records = 0;
+}
+
+static inline int pdu9_have_space(size_t size)
+{
+	return ((pdu9_data_used + size) <= (((unsigned char *)&pdu9) + sizeof(pdu9)));
+}
+
+static inline unsigned char *pdu9_grab_space(size_t size)
+{
+	unsigned char *ptr = pdu9_data_used;
+	pdu9_data_used += size;
+	return ptr;
+}
+
+// allocate data space in pdu, or fail if pdu is reallocated.
+static inline unsigned char *pdu9_alloc_fail(size_t size)
+{
+	if (!pdu9_have_space(size)) {
+		netflow_export_pdu9();
+		return NULL;
+	}
+	return pdu9_grab_space(size);
+}
+
+/* doesn't fail, but can provide empty pdu. */
+static unsigned char *pdu9_alloc(size_t size)
+{
+	return pdu9_alloc_fail(size) ?: pdu9_grab_space(size);
+}
+
+/* global table of sizes of template field types */
+static u_int8_t tpl_element_sizes[] = {
+	[IN_BYTES]	= 4,
+	[IN_PKTS]	= 4,
+	[PROTOCOL]	= 1,
+	[TOS]		= 1,
+	[TCP_FLAGS]	= 1,
+	[L4_SRC_PORT]	= 2,
+	[IPV4_SRC_ADDR]	= 4,
+	[SRC_MASK]	= 1,
+	[INPUT_SNMP]	= 2,
+	[L4_DST_PORT]	= 2,
+	[IPV4_DST_ADDR]	= 4,
+	[DST_MASK]	= 1,
+	[OUTPUT_SNMP]	= 2,
+	[LAST_SWITCHED]	= 4,
+	[FIRST_SWITCHED] = 4,
+	[TOTAL_BYTES_EXP] = 4,
+	[TOTAL_PKTS_EXP]  = 4,
+	[TOTAL_FLOWS_EXP] = 4,
+	[IP_PROTOCOL_VERSION] = 1
+};
+
+static int template_ids = FLOWSET_DATA_FIRST;
+
+struct data_template {
+	int length; /* number of elements in template */
+	int tpl_size; /* summary size of template */
+	int rec_size; /* summary size of all recods of template */
+	int ntemplate_id; /* assigned from template_ids, network order. */
+	int		exported_seq;
+	unsigned long	exported_ts; /* jiffies */
+	u_int16_t fields[]; /* {type, size} pairs */
+} __attribute__ ((packed));
+
+/* default template w/o aggregation */
+static struct data_template template_ipv4 = {
+	.fields = {
+		IPV4_SRC_ADDR, 0,
+		IPV4_DST_ADDR, 0,
+		INPUT_SNMP, 0,
+		OUTPUT_SNMP, 0,
+		IN_PKTS, 0,
+		IN_BYTES, 0,
+		FIRST_SWITCHED, 0,
+		LAST_SWITCHED, 0,
+		L4_SRC_PORT, 0,
+		L4_DST_PORT, 0,
+		TCP_FLAGS, 0,
+		PROTOCOL, 0,
+		TOS, 0,
+		0 /* terminator */
+	}
+};
+#define TPL_FIELD_NSIZE 4 /* one complete template field's network size */
+
+static void pdu9_add_template(struct data_template *tpl)
+{
+	int i;
+	unsigned char *ptr;
+	struct flowset_template *ntpl;
+	__be16 *sptr;
+
+	/* calc and cache template dimensions */
+	if (!tpl->ntemplate_id) {
+		tpl->ntemplate_id = htons(template_ids++);
+		tpl->length = 0;
+		tpl->rec_size = 0;
+		tpl->tpl_size = 0;
+		for (i = 0; ; ) {
+			int type = tpl->fields[i++];
+			int size;
+
+			if (!type)
+				break;
+			size = tpl_element_sizes[type];
+			tpl->fields[i++] = size;
+			tpl->rec_size += size;
+			tpl->length++;
+		}
+		tpl->tpl_size = sizeof(struct flowset_template) + tpl->length * TPL_FIELD_NSIZE;
+	}
+
+
+	ptr = pdu9_alloc(tpl->tpl_size);
+	ntpl = (struct flowset_template *)ptr;
+	ntpl->flowset_id  = htons(FLOWSET_TEMPLATE);
+	ntpl->length	  = htons(tpl->tpl_size);
+	ntpl->template_id = tpl->ntemplate_id;
+	ntpl->field_count = htons(tpl->length);
+	ptr += sizeof(struct flowset_template);
+	sptr = (__be16 *)ptr;
+	for (i = 0; ; ) {
+		int type = tpl->fields[i++];
+		if (!type)
+			break;
+		*sptr++ = htons(type);
+		*sptr++ = htons(tpl->fields[i++]);
+	}
+
+	tpl->exported_seq = pdu_seq;
+	tpl->exported_ts = jiffies;
+
+	pdu9_flowset = NULL;
+	pdu9.nr_records++;
+}
+
+/* encode one field */
+static inline void add_ipv4_field(void *ptr, int type, struct ipt_netflow *nf)
+{
+	switch (type) {
+		case IN_BYTES:	     *(__be32 *)ptr = htonl(nf->nr_bytes); break;
+		case IN_PKTS:	     *(__be32 *)ptr = htonl(nf->nr_packets); break;
+		case FIRST_SWITCHED: *(__be32 *)ptr = htonl(jiffies_to_msecs(nf->ts_first)); break;
+		case LAST_SWITCHED:  *(__be32 *)ptr = htonl(jiffies_to_msecs(nf->ts_last)); break;
+		case IPV4_SRC_ADDR:  *(__be32 *)ptr = nf->tuple.s_addr; break;
+		case IPV4_DST_ADDR:  *(__be32 *)ptr = nf->tuple.d_addr; break;
+		case L4_SRC_PORT:    *(__be16 *)ptr = nf->tuple.s_port; break;
+		case L4_DST_PORT:    *(__be16 *)ptr = nf->tuple.d_port; break;
+		case INPUT_SNMP:     *(__be16 *)ptr = htons(nf->tuple.i_ifc); break;
+		case OUTPUT_SNMP:    *(__be16 *)ptr = htons(nf->o_ifc); break;
+		case PROTOCOL:	       *(__u8 *)ptr = nf->tuple.protocol; break;
+		case TCP_FLAGS:	       *(__u8 *)ptr = nf->tcp_flags; break;
+		case TOS:	       *(__u8 *)ptr = nf->tuple.tos; break;
+		case SRC_MASK:	       *(__u8 *)ptr = nf->s_mask; break;
+		case DST_MASK:	       *(__u8 *)ptr = nf->d_mask; break;
+		default:
+					memset(ptr, 0, tpl_element_sizes[type]);
+	}
+}
+
+static void netflow_export_flow9(struct ipt_netflow *nf)
+{
+	unsigned char *ptr;
+	int i;
+
+	if (debug > 2)
+		printk(KERN_INFO "adding flow to export (%d)\n", pdu9.nr_records);
+
+	if (!template_ipv4.ntemplate_id ||
+	    pdu_seq > template_ipv4.exported_seq + refresh_rate)
+		pdu9_add_template(&template_ipv4);
+
+	if (!pdu9_flowset ||
+	    pdu9_flowset->flowset_id != template_ipv4.ntemplate_id ||
+	    !(ptr = pdu9_alloc_fail(template_ipv4.rec_size))) {
+		ptr = pdu9_alloc(sizeof(struct flowset_data) + template_ipv4.rec_size);
+		pdu9_flowset = (struct flowset_data *)ptr;
+		pdu9_flowset->flowset_id = template_ipv4.ntemplate_id;
+		pdu9_flowset->length	 = htons(sizeof(struct flowset_data));
+		ptr += sizeof(struct flowset_data);
+	}
+
+	/* encode all fields */
+	for (i = 0; ; ) {
+		int type = template_ipv4.fields[i++];
+
+		if (!type)
+			break;
+		add_ipv4_field(ptr, type, nf);
+		ptr += template_ipv4.fields[i++];
+	}
+	ipt_netflow_free(nf);
+
+	pdu9.nr_records++;
+	pdu9_flowset->length = htons(ntohs(pdu9_flowset->length) + template_ipv4.rec_size);
+
+	pdu_packets += nf->nr_packets;
+	pdu_traf    += nf->nr_bytes;
+	pdu_ts_mod = jiffies;
+}
+
+static void netflow_switch_version(int ver)
+{
+	printk(KERN_INFO "netflow protocol version %d -> %d.\n", version, ver);
+	version = ver;
+	if (version == 5) {
+		netflow_export_flow = &netflow_export_flow5;
+		netflow_export_pdu = &netflow_export_pdu5;
+	} else {
+		netflow_export_flow = &netflow_export_flow9;
+		netflow_export_pdu = &netflow_export_pdu9;
+		template_ipv4.ntemplate_id = 0; /* renew templates */
+	}
 }
 
 static inline int active_needs_export(struct ipt_netflow *nf, long a_timeout)
@@ -1516,6 +1832,7 @@ static int __init ipt_netflow_init(void)
 	}
 	add_aggregation(aggregation);
 
+	netflow_switch_version(version);
 	__start_scan_worker();
 	setup_timer(&rate_timer, rate_timer_calc, 0);
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
