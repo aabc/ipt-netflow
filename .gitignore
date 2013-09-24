@@ -1,0 +1,12 @@
+*.o
+*.so
+*.ko
+*.lst
+*.cmd
+*.unsigned
+Module.symvers
+Makefile
+.tmp_versions
+*.mod.c
+modules.order
+tags
