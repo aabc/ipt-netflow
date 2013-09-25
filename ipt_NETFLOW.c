@@ -1136,7 +1136,7 @@ static void netflow_export_flow_v5(struct ipt_netflow *nf)
 {
 	struct netflow5_record *rec;
 
-	if (debug > 2)
+	if (unlikely(debug > 2))
 		printk(KERN_INFO "adding flow to export (%d)\n", pdu_records);
 
 	pdu_packets += nf->nr_packets;
@@ -1417,7 +1417,7 @@ static void netflow_export_flow_v9(struct ipt_netflow *nf)
 	int i;
 	struct data_template *tpl;
 
-	if (debug > 2)
+	if (unlikely(debug > 2))
 		printk(KERN_INFO "adding flow to export (%d)\n", pdu_records);
 
 	if (unlikely(nf->s_mask || nf->d_mask))
@@ -1425,9 +1425,9 @@ static void netflow_export_flow_v9(struct ipt_netflow *nf)
 	else
 		tpl = &template_ipv4;
 
-	if (!pdu_flowset ||
+	if (unlikely(!pdu_flowset ||
 	    pdu_flowset->flowset_id != tpl->template_id_n ||
-	    !(ptr = pdu_alloc_fail(tpl->rec_size))) {
+	    !(ptr = pdu_alloc_fail(tpl->rec_size)))) {
 
 		/* if there was previous data template we should pad it to 4 bytes */
 		if (pdu_flowset) {
@@ -1518,7 +1518,7 @@ static void netflow_scan_and_export(int flush)
 		i_timeout = 0;
 
 	spin_lock_bh(&ipt_netflow_lock);
-	while (!list_empty(&ipt_netflow_list)) {
+	while (likely(!list_empty(&ipt_netflow_list))) {
 		struct ipt_netflow *nf;
 	       
 		nf = list_entry(ipt_netflow_list.prev, struct ipt_netflow, list);
@@ -1657,7 +1657,7 @@ static unsigned int netflow_target(
 
 	iph = skb_header_pointer(skb, 0, sizeof(_iph), &_iph); //iph = ip_hdr(skb);
 
-	if (iph == NULL) {
+	if (unlikely(iph == NULL)) {
 		NETFLOW_STAT_INC(truncated);
 		NETFLOW_STAT_INC(pkt_drop);
 		return IPT_CONTINUE;
@@ -1678,14 +1678,14 @@ static unsigned int netflow_target(
 	s_mask		= 0;
 	d_mask		= 0;
 
-	if (iph->frag_off & htons(IP_OFFSET))
+	if (unlikely(iph->frag_off & htons(IP_OFFSET)))
 		NETFLOW_STAT_INC(frags);
 	else {
 		switch (tuple.protocol) {
 		    case IPPROTO_TCP: {
 			struct tcphdr _hdr, *hp;
 
-			if ((hp = skb_header_pointer(skb, iph->ihl * 4, 14, &_hdr))) {
+			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 14, &_hdr))) {
 				tuple.s_port = hp->source;
 				tuple.d_port = hp->dest;
 				tcp_flags = (u_int8_t)(ntohl(tcp_flag_word(hp)) >> 16);
@@ -1695,7 +1695,7 @@ static unsigned int netflow_target(
 		    case IPPROTO_UDP: {
 			struct udphdr _hdr, *hp;
 
-			if ((hp = skb_header_pointer(skb, iph->ihl * 4, 4, &_hdr))) {
+			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 4, &_hdr))) {
 				tuple.s_port = hp->source;
 				tuple.d_port = hp->dest;
 			}
@@ -1704,14 +1704,14 @@ static unsigned int netflow_target(
 		    case IPPROTO_ICMP: {
 			struct icmphdr _hdr, *hp;
 
-			if ((hp = skb_header_pointer(skb, iph->ihl * 4, 2, &_hdr)))
+			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 2, &_hdr)))
 				tuple.d_port = (hp->type << 8) | hp->code;
 			break;
 		    }
 		    case IPPROTO_IGMP: {
 			struct igmphdr *_hdr, *hp;
 
-			if ((hp = skb_header_pointer(skb, iph->ihl * 4, 1, &_hdr)))
+			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 1, &_hdr)))
 				tuple.d_port = hp->type;
 			}
 			break;
@@ -1721,44 +1721,46 @@ static unsigned int netflow_target(
 	/* aggregate networks */
 	read_lock_bh(&aggr_lock);
 	list_for_each_entry(aggr_n, &aggr_n_list, list)
-		if ((ntohl(tuple.s_addr) & aggr_n->mask) == aggr_n->addr) {
+		if (unlikely((ntohl(tuple.s_addr) & aggr_n->mask) == aggr_n->addr)) {
 			tuple.s_addr &= htonl(aggr_n->aggr_mask);
 			s_mask = aggr_n->prefix;
 			atomic_inc(&aggr_n->usage);
 			break; 
 		}
 	list_for_each_entry(aggr_n, &aggr_n_list, list)
-		if ((ntohl(tuple.d_addr) & aggr_n->mask) == aggr_n->addr) {
+		if (unlikely((ntohl(tuple.d_addr) & aggr_n->mask) == aggr_n->addr)) {
 			tuple.d_addr &= htonl(aggr_n->aggr_mask);
 			d_mask = aggr_n->prefix;
 			atomic_inc(&aggr_n->usage);
 			break; 
 		}
 
-	/* aggregate ports */
-	list_for_each_entry(aggr_p, &aggr_p_list, list)
-		if (ntohs(tuple.s_port) >= aggr_p->port1 &&
-		    ntohs(tuple.s_port) <= aggr_p->port2) {
-			tuple.s_port = htons(aggr_p->aggr_port);
-			atomic_inc(&aggr_p->usage);
-			break;
-		}
+	if (tuple.protocol == IPPROTO_TCP || tuple.protocol == IPPROTO_UDP) {
+		/* aggregate ports */
+		list_for_each_entry(aggr_p, &aggr_p_list, list)
+			if (unlikely(ntohs(tuple.s_port) >= aggr_p->port1 &&
+			    ntohs(tuple.s_port) <= aggr_p->port2)) {
+				tuple.s_port = htons(aggr_p->aggr_port);
+				atomic_inc(&aggr_p->usage);
+				break;
+			}
 
-	list_for_each_entry(aggr_p, &aggr_p_list, list)
-		if (ntohs(tuple.d_port) >= aggr_p->port1 &&
-		    ntohs(tuple.d_port) <= aggr_p->port2) {
-			tuple.d_port = htons(aggr_p->aggr_port);
-			atomic_inc(&aggr_p->usage);
-			break;
-		}
+		list_for_each_entry(aggr_p, &aggr_p_list, list)
+			if (unlikely(ntohs(tuple.d_port) >= aggr_p->port1 &&
+			    ntohs(tuple.d_port) <= aggr_p->port2)) {
+				tuple.d_port = htons(aggr_p->aggr_port);
+				atomic_inc(&aggr_p->usage);
+				break;
+			}
+	}
 	read_unlock_bh(&aggr_lock);
 
 	hash = hash_netflow(&tuple);
 	spin_lock_bh(&ipt_netflow_lock);
 	/* record */
 	nf = ipt_netflow_find(&tuple, hash);
-	if (!nf) {
-		if (maxflows > 0 && atomic_read(&ipt_netflow_count) >= maxflows) {
+	if (unlikely(!nf)) {
+		if (unlikely(maxflows > 0 && atomic_read(&ipt_netflow_count) >= maxflows)) {
 			/* This is DOS attack prevention */
 			NETFLOW_STAT_INC(maxflows_err);
 			NETFLOW_STAT_INC(pkt_drop);
@@ -1768,7 +1770,7 @@ static unsigned int netflow_target(
 		}
 
 		nf = init_netflow(&tuple, skb, hash);
-		if (!nf || IS_ERR(nf)) {
+		if (unlikely(!nf || IS_ERR(nf))) {
 			NETFLOW_STAT_INC(alloc_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, ntohs(iph->tot_len));
@@ -1786,7 +1788,7 @@ static unsigned int netflow_target(
 		nf->s_mask = s_mask;
 		nf->d_mask = d_mask;
 
-		if (debug > 2)
+		if (unlikely(debug > 2))
 			printk(KERN_INFO "ipt_netflow: new (%u) %hd:%hd SRC=%u.%u.%u.%u:%u DST=%u.%u.%u.%u:%u\n",
 			       atomic_read(&ipt_netflow_count),
 			       tuple.i_ifc, nf->o_ifc,
@@ -1807,7 +1809,7 @@ static unsigned int netflow_target(
 	NETFLOW_STAT_INC(pkt_total);
 	NETFLOW_STAT_ADD(traf_total, ntohs(iph->tot_len));
 
-	if (active_needs_export(nf, active_timeout * HZ)) {
+	if (likely(active_needs_export(nf, active_timeout * HZ))) {
 		/* ok, if this active flow to be exported
 		 * bubble it to the tail */
 		list_move_tail(&nf->list, &ipt_netflow_list);
