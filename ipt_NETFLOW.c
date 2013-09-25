@@ -148,11 +148,21 @@ static DEFINE_SPINLOCK(ipt_netflow_lock); /* hash table lock */
 
 static long long pdu_packets = 0, pdu_traf = 0; /* how much accounted traffic in pdu */
 static unsigned int pdu_seq = 0;
+static unsigned int pdu_records = 0;
 static unsigned long pdu_ts_mod; /* ts of last flow */
-static struct netflow5_pdu pdu5;
-static struct netflow9_pdu pdu9;
+static union {
+	struct netflow5_pdu v5;
+	struct netflow9_pdu v9;
+	struct ipfix_pdu ipfix;
+} pdu;
+static int engine_id = 0; /* Observation Domain */
+static __u8 *pdu_data_used;
+static __u8 *pdu_high_wm; /* high watermark */
+static unsigned int pdu_max_size; /* sizeof pdu */
+static struct flowset_data *pdu_flowset = NULL; /* current data flowset */
+
 static void (*netflow_export_flow)(struct ipt_netflow *nf);
-static void (*netflow_export_pdu)(void); /* called if timeout */
+static void (*netflow_export_pdu)(void); /* called on timeout */
 static void netflow_switch_version(int ver);
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
@@ -288,8 +298,12 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	    pdu_packets,
 	    pdu_traf);
 
-	seq_printf(seq, "NetFlow protocol version %d", protocol);
-	if (protocol == 9)
+	seq_printf(seq, "Export protocol version %d", protocol);
+	if (protocol == 10)
+		seq_printf(seq, " (ipfix)");
+	else
+		seq_printf(seq, " (netflow)");
+	if (protocol >= 9)
 		seq_printf(seq, ", refresh-rate %d, (templates %d)",
 		    refresh_rate, template_ids - FLOWSET_DATA_FIRST);
 
@@ -528,6 +542,7 @@ static int protocol_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *f
 	switch (ver) {
 		case 5:
 		case 9:
+		case 10:
 			printk(KERN_INFO "ipt_NETFLOW: forced flush (protocol version change)\n");
 			stop_scan_worker();
 			netflow_scan_and_export(AND_FLUSH);
@@ -1084,53 +1099,50 @@ init_netflow(struct ipt_netflow_tuple *tuple,
 
 /* cook pdu, send, and clean */
 /* only called in scan worker path */
-static void netflow_export_pdu5(void)
+static void netflow_export_pdu_v5(void)
 {
 	struct timeval tv;
 	int pdusize;
 
-	if (!pdu5.nr_records)
+	if (!pdu_records)
 		return;
 
 	if (debug > 1)
-		printk(KERN_INFO "netflow_export_pdu5 with %d records\n", pdu5.nr_records);
+		printk(KERN_INFO "netflow_export_pdu_v5 with %d records\n", pdu_records);
 	do_gettimeofday(&tv);
 
-	pdu5.version	= htons(5);
-	pdu5.ts_uptime	= htonl(jiffies_to_msecs(jiffies));
-	pdu5.ts_usecs	= htonl(tv.tv_sec);
-	pdu5.ts_unsecs	= htonl(tv.tv_usec);
-	//pdu5.eng_type	= 0;
-	//pdu5.eng_id	= 0;
-	//pdu5.padding	= 0;
+	pdu.v5.version		= htons(5);
+	pdu.v5.nr_records	= htons(pdu_records);
+	pdu.v5.ts_uptime	= htonl(jiffies_to_msecs(jiffies));
+	pdu.v5.ts_usecs		= htonl(tv.tv_sec);
+	pdu.v5.ts_unsecs	= htonl(tv.tv_usec);
+	pdu.v5.seq		= htonl(pdu_seq);
+	//pdu.v5.eng_type	= 0;
+	pdu.v5.eng_id		= engine_id;
+	//pdu.v5.padding	= 0;
 
-	pdusize = NETFLOW5_HEADER_SIZE + sizeof(struct netflow5_record) * pdu5.nr_records;
+	pdusize = NETFLOW5_HEADER_SIZE + sizeof(struct netflow5_record) * pdu_records;
 
-	/* especially fix nr_records before export */
-	pdu5.nr_records	= htons(pdu5.nr_records);
+	netflow_sendmsg(&pdu.v5, pdusize);
 
-	netflow_sendmsg(&pdu5, pdusize);
-
-	pdu_seq = pdu_seq + ntohs(pdu5.nr_records);
-	pdu5.seq = htonl(pdu_seq);
-
-	pdu5.nr_records	= 0;
 	pdu_packets = 0;
 	pdu_traf    = 0;
+	pdu_seq += pdu_records;
+	pdu_records = 0;
 }
 
 /* only called in scan worker path */
-static void netflow_export_flow5(struct ipt_netflow *nf)
+static void netflow_export_flow_v5(struct ipt_netflow *nf)
 {
 	struct netflow5_record *rec;
 
 	if (debug > 2)
-		printk(KERN_INFO "adding flow to export (%d)\n", pdu5.nr_records);
+		printk(KERN_INFO "adding flow to export (%d)\n", pdu_records);
 
 	pdu_packets += nf->nr_packets;
 	pdu_traf += nf->nr_bytes;
 	pdu_ts_mod = jiffies;
-	rec = &pdu5.flow[pdu5.nr_records++];
+	rec = &pdu.v5.flow[pdu_records++];
 
 	/* make V5 flow record */
 	rec->s_addr	= nf->tuple.s_addr;
@@ -1155,73 +1167,97 @@ static void netflow_export_flow5(struct ipt_netflow *nf)
 	//rec->padding	= 0;
 	ipt_netflow_free(nf);
 
-	if (pdu5.nr_records == NETFLOW5_RECORDS_MAX)
-		netflow_export_pdu5();
+	if (pdu_records == NETFLOW5_RECORDS_MAX)
+		netflow_export_pdu_v5();
 }
 
-static __u8 *pdu9_data_used = pdu9.data; /* up to */
-static struct flowset_data *pdu9_flowset = NULL; /* current data flowset */
-
 /* pdu is initially blank, export current pdu, and prepare next for filling. */
-static void netflow_export_pdu9(void)
+static void netflow_export_pdu_v9(void)
 {
 	struct timeval tv;
 	int pdusize;
 
-	if (!pdu9.nr_records)
+	if (!pdu_records)
 		return;
 
 	if (debug > 1)
-		printk(KERN_INFO "netflow_export_pdu9 with %d records\n", pdu9.nr_records);
+		printk(KERN_INFO "netflow_export_pdu_v9 with %d records\n", pdu_records);
 
-	pdu9.version		= htons(9);
-	/* fix nr_records before export */
-	pdu9.nr_records		= htons(pdu9.nr_records);
-	pdu9.sys_uptime_ms	= htonl(jiffies_to_msecs(jiffies));
+	pdu.v9.version		= htons(9);
+	pdu.v9.nr_records	= htons(pdu_records);
+	pdu.v9.sys_uptime_ms	= htonl(jiffies_to_msecs(jiffies));
 	do_gettimeofday(&tv);
-	pdu9.export_time_s	= htonl(tv.tv_sec);
-	// pdu9.source_id	= 0;
+	pdu.v9.export_time_s	= htonl(tv.tv_sec);
+	pdu.v9.seq		= htonl(pdu_seq);
+	pdu.v9.source_id	= engine_id;
 
-	pdusize = pdu9_data_used - (unsigned char *)&pdu9;
+	pdusize = pdu_data_used - (unsigned char *)&pdu.v9;
 
-	netflow_sendmsg(&pdu9, pdusize);
-
-	pdu_seq++;
-	pdu9.seq = htonl(pdu_seq);
+	netflow_sendmsg(&pdu.v9, pdusize);
 
 	pdu_packets = 0;
 	pdu_traf    = 0;
-	pdu9_data_used = pdu9.data;
-	pdu9_flowset = NULL;
-	pdu9.nr_records = 0;
+	pdu_seq++;
+	pdu_records = 0;
+	pdu_data_used = pdu.v9.data;
+	pdu_flowset = NULL;
 }
 
-static inline int pdu9_have_space(size_t size)
+static void netflow_export_pdu_ipfix(void)
 {
-	return ((pdu9_data_used + size) <= (((unsigned char *)&pdu9) + sizeof(pdu9)));
+	struct timeval tv;
+	int pdusize;
+
+	if (pdu_data_used <= pdu.ipfix.data)
+		return;
+
+	if (debug > 1)
+		printk(KERN_INFO "netflow_export_pduX with %d records\n", pdu_records);
+
+	pdu.ipfix.version	= htons(10);
+	do_gettimeofday(&tv);
+	pdu.ipfix.export_time_s	= htonl(tv.tv_sec);
+	pdu.ipfix.seq		= htonl(pdu_seq);
+	pdu.ipfix.odomain_id	= engine_id;
+	pdusize = pdu_data_used - (unsigned char *)&pdu;
+	pdu.ipfix.length	= htons(pdusize);
+
+	netflow_sendmsg(&pdu.ipfix, pdusize);
+
+	pdu_packets = 0;
+	pdu_traf    = 0;
+	pdu_seq += pdu_records;
+	pdu_records = 0;
+	pdu_data_used = pdu.ipfix.data;
+	pdu_flowset = NULL;
 }
 
-static inline unsigned char *pdu9_grab_space(size_t size)
+static inline int pdu_have_space(size_t size)
 {
-	unsigned char *ptr = pdu9_data_used;
-	pdu9_data_used += size;
+	return ((pdu_data_used + size) <= pdu_high_wm);
+}
+
+static inline unsigned char *pdu_grab_space(size_t size)
+{
+	unsigned char *ptr = pdu_data_used;
+	pdu_data_used += size;
 	return ptr;
 }
 
 // allocate data space in pdu, or fail if pdu is reallocated.
-static inline unsigned char *pdu9_alloc_fail(size_t size)
+static inline unsigned char *pdu_alloc_fail(size_t size)
 {
-	if (!pdu9_have_space(size)) {
-		netflow_export_pdu9();
+	if (!pdu_have_space(size)) {
+		netflow_export_pdu();
 		return NULL;
 	}
-	return pdu9_grab_space(size);
+	return pdu_grab_space(size);
 }
 
 /* doesn't fail, but can provide empty pdu. */
-static unsigned char *pdu9_alloc(size_t size)
+static unsigned char *pdu_alloc(size_t size)
 {
-	return pdu9_alloc_fail(size) ?: pdu9_grab_space(size);
+	return pdu_alloc_fail(size) ?: pdu_grab_space(size);
 }
 
 /* global table of sizes of template field types */
@@ -1299,7 +1335,7 @@ static struct data_template template_ipv4_aggr = {
 };
 #define TPL_FIELD_NSIZE 4 /* one complete template field's network size */
 
-static void pdu9_add_template(struct data_template *tpl)
+static void pdu_add_template(struct data_template *tpl)
 {
 	int i;
 	unsigned char *ptr;
@@ -1326,10 +1362,9 @@ static void pdu9_add_template(struct data_template *tpl)
 		tpl->tpl_size = sizeof(struct flowset_template) + tpl->length * TPL_FIELD_NSIZE;
 	}
 
-
-	ptr = pdu9_alloc(tpl->tpl_size);
+	ptr = pdu_alloc(tpl->tpl_size);
 	ntpl = (struct flowset_template *)ptr;
-	ntpl->flowset_id  = htons(FLOWSET_TEMPLATE);
+	ntpl->flowset_id  = protocol == 9? htons(FLOWSET_TEMPLATE) : htons(IPFIX_TEMPLATE);
 	ntpl->length	  = htons(tpl->tpl_size);
 	ntpl->template_id = tpl->template_id_n;
 	ntpl->field_count = htons(tpl->length);
@@ -1346,8 +1381,8 @@ static void pdu9_add_template(struct data_template *tpl)
 	tpl->exported_seq = pdu_seq;
 	tpl->exported_ts = jiffies;
 
-	pdu9_flowset = NULL;
-	pdu9.nr_records++;
+	pdu_flowset = NULL;
+	pdu_records++;
 }
 
 /* encode one field */
@@ -1376,29 +1411,29 @@ static inline void add_ipv4_field(void *ptr, int type, struct ipt_netflow *nf)
 
 #define PAD_SIZE 4 /* rfc prescribes flowsets to be padded */
 
-static void netflow_export_flow9(struct ipt_netflow *nf)
+static void netflow_export_flow_v9(struct ipt_netflow *nf)
 {
 	unsigned char *ptr;
 	int i;
 	struct data_template *tpl;
 
 	if (debug > 2)
-		printk(KERN_INFO "adding flow to export (%d)\n", pdu9.nr_records);
+		printk(KERN_INFO "adding flow to export (%d)\n", pdu_records);
 
 	if (unlikely(nf->s_mask || nf->d_mask))
 		tpl = &template_ipv4_aggr;
 	else
 		tpl = &template_ipv4;
 
-	if (!pdu9_flowset ||
-	    pdu9_flowset->flowset_id != tpl->template_id_n ||
-	    !(ptr = pdu9_alloc_fail(tpl->rec_size))) {
+	if (!pdu_flowset ||
+	    pdu_flowset->flowset_id != tpl->template_id_n ||
+	    !(ptr = pdu_alloc_fail(tpl->rec_size))) {
 
 		/* if there was previous data template we should pad it to 4 bytes */
-		if (pdu9_flowset) {
-			int padding = (PAD_SIZE - ntohs(pdu9_flowset->length) % PAD_SIZE) % PAD_SIZE;
-			if (padding && (ptr = pdu9_alloc_fail(padding))) {
-				pdu9_flowset->length = htons(ntohs(pdu9_flowset->length) + padding);
+		if (pdu_flowset) {
+			int padding = (PAD_SIZE - ntohs(pdu_flowset->length) % PAD_SIZE) % PAD_SIZE;
+			if (padding && (ptr = pdu_alloc_fail(padding))) {
+				pdu_flowset->length = htons(ntohs(pdu_flowset->length) + padding);
 				for (; padding; padding--)
 					*ptr++ = 0;
 			}
@@ -1406,12 +1441,12 @@ static void netflow_export_flow9(struct ipt_netflow *nf)
 
 		if (!tpl->template_id_n ||
 		    pdu_seq > tpl->exported_seq + refresh_rate)
-			pdu9_add_template(tpl);
+			pdu_add_template(tpl);
 
-		ptr = pdu9_alloc(sizeof(struct flowset_data) + tpl->rec_size);
-		pdu9_flowset = (struct flowset_data *)ptr;
-		pdu9_flowset->flowset_id = tpl->template_id_n;
-		pdu9_flowset->length	 = htons(sizeof(struct flowset_data));
+		ptr = pdu_alloc(sizeof(struct flowset_data) + tpl->rec_size);
+		pdu_flowset = (struct flowset_data *)ptr;
+		pdu_flowset->flowset_id = tpl->template_id_n;
+		pdu_flowset->length	 = htons(sizeof(struct flowset_data));
 		ptr += sizeof(struct flowset_data);
 	}
 
@@ -1426,8 +1461,8 @@ static void netflow_export_flow9(struct ipt_netflow *nf)
 	}
 	ipt_netflow_free(nf);
 
-	pdu9.nr_records++;
-	pdu9_flowset->length = htons(ntohs(pdu9_flowset->length) + tpl->rec_size);
+	pdu_records++;
+	pdu_flowset->length = htons(ntohs(pdu_flowset->length) + tpl->rec_size);
 
 	pdu_packets += nf->nr_packets;
 	pdu_traf    += nf->nr_bytes;
@@ -1438,16 +1473,28 @@ static void netflow_switch_version(int ver)
 {
 	protocol = ver;
 	if (protocol == 5) {
-		netflow_export_flow = &netflow_export_flow5;
-		netflow_export_pdu = &netflow_export_pdu5;
-	} else {
-		netflow_export_flow = &netflow_export_flow9;
-		netflow_export_pdu = &netflow_export_pdu9;
-		/* renew templates */
+		netflow_export_flow = &netflow_export_flow_v5;
+		netflow_export_pdu = &netflow_export_pdu_v5;
+	} else if (protocol == 9) {
+		pdu_data_used = pdu.v9.data;
+		pdu_max_size = sizeof(pdu.v9);
+		pdu_high_wm = (unsigned char *)&pdu + pdu_max_size;
+		netflow_export_flow = &netflow_export_flow_v9;
+		netflow_export_pdu = &netflow_export_pdu_v9;
+	} else { /* IPFIX */
+		pdu_data_used = pdu.ipfix.data;
+		pdu_max_size = sizeof(pdu.ipfix);
+		pdu_high_wm = (unsigned char *)&pdu + pdu_max_size;
+		netflow_export_flow = &netflow_export_flow_v9;
+		netflow_export_pdu = &netflow_export_pdu_ipfix;
+	}
+	if (protocol != 5) {
 		template_ipv4.template_id_n = 0;
 		template_ipv4_aggr.template_id_n = 0;
 	}
-	printk(KERN_INFO "netflow protocol version %d enabled.\n", protocol);
+	pdu_records = 0;
+	printk(KERN_INFO "ipt_NETFLOW protocol version %d (%s) enabled.\n",
+	    protocol, protocol == 10? "IPFIX" : "NetFlow");
 }
 
 static inline int active_needs_export(struct ipt_netflow *nf, long a_timeout)

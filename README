@@ -69,7 +69,7 @@ Troubleshooting:
 
    protocol=5
      - what version of NetFlow protocol to use. Default is 5. You
-       can choose from 5 or 9.
+       can choose from 5, 9, or 10 (IPFIX).
 
    destination=127.0.0.1:2055
      - where to export netflow, to this ip address
@@ -87,7 +87,7 @@ Troubleshooting:
      - export flow after it's active 1800 seconds (30 minutes). Default value is 1800.
 
    refresh-rate=20
-     - for NetFlow v9 it's rate how frequently to send templates (per
+     - for NetFlow v9 or IPFIX it's rate how frequently to send templates (per
        packets). You probably don't need to change default (which is 20).
 
    debug=0
@@ -175,9 +175,9 @@ Troubleshooting:
   pdu X, X: how much traffic in flows preparing to be exported.
     - it is included already in aforementioned MemTraf total.
 
-> NetFlow protocol version 9, refresh-rate 2. Timeout: active 1800, inactive 15. Maxflows 2000000
+> Export protocol version 9 (netflow), refresh-rate 2. Timeout: active 1800, inactive 15. Maxflows 2000000
 
-  Protocol version currently in use. And refresh-rate for v9.
+  Protocol version currently in use. And refresh-rate for v9 and IPFIX.
   Timeout: active X: how much seconds to wait before exporting active flow.
     - same as sysctl net.netflow.active_timeout variable.
   inactive X: how much seconds to wait before exporting inactive flow.

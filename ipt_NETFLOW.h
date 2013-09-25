@@ -91,6 +91,8 @@ enum {
 enum {
 	FLOWSET_TEMPLATE = 0,
 	FLOWSET_OPTIONS = 1,
+	IPFIX_TEMPLATE = 2,
+	IPFIX_OPTIONS = 3,
 	FLOWSET_DATA_FIRST = 256,
 };
 
@@ -117,6 +119,15 @@ struct netflow9_pdu {
 	__u8		data[1400];
 } __attribute__ ((packed));
 
+/* IPFIX packet. */
+struct ipfix_pdu {
+	__be16		version;
+	__be16		length;
+	__be32		export_time_s;
+	__be32		seq;
+	__be32		odomain_id; /* Observation Domain ID */
+	__u8		data[1400];
+} __attribute__ ((packed));
 
 /* hashed data which identify unique flow */
 struct ipt_netflow_tuple {
