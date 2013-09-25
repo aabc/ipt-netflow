@@ -103,9 +103,9 @@ static int sndbuf;
 module_param(sndbuf, int, 0400);
 MODULE_PARM_DESC(sndbuf, "udp socket SNDBUF size");
 
-static int version = 5;
-module_param(version, int, 0400);
-MODULE_PARM_DESC(version, "netflow protocol version (5, 9)");
+static int protocol = 5;
+module_param(protocol, int, 0400);
+MODULE_PARM_DESC(protocol, "netflow protocol version (5, 9)");
 
 static int refresh_rate = 20;
 module_param(refresh_rate, int, 0400);
@@ -169,7 +169,7 @@ static struct timer_list rate_timer;
 static long long sec_prate = 0, sec_brate = 0;
 static long long min_prate = 0, min_brate = 0;
 static long long min5_prate = 0, min5_brate = 0;
-static unsigned int metric = 10, min15_metric = 10, min5_metric = 10, min_metric = 10; /* hash metrics */
+static unsigned int metric = 100, min15_metric = 100, min5_metric = 100, min_metric = 100; /* hash metrics */
 
 static int set_hashsize(int new_size);
 static void destination_removeall(void);
@@ -177,6 +177,9 @@ static int add_destinations(char *ptr);
 static void aggregation_remove(struct list_head *list);
 static int add_aggregation(char *ptr);
 static void netflow_scan_and_export(int flush);
+enum {
+	DONT_FLUSH, AND_FLUSH
+};
 
 static inline __be32 bits2mask(int bits) {
 	return (bits? 0xffffffff << (32 - bits) : 0);
@@ -270,56 +273,64 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	}
 
 #define FFLOAT(x, prec) (int)(x) / prec, (int)(x) % prec
-	seq_printf(seq, "Hash: size %u (mem %uK), metric %d.%d, %d.%d, %d.%d, %d.%d. MemTraf: %llu pkt, %llu K (pdu %llu, %llu).\n",
-		   ipt_netflow_hash_size, 
-		   (unsigned int)((ipt_netflow_hash_size * sizeof(struct hlist_head)) >> 10),
-		   FFLOAT(metric, 10),
-		   FFLOAT(min_metric, 10),
-		   FFLOAT(min5_metric, 10),
-		   FFLOAT(min15_metric, 10),
-		   pkt_total - pkt_out + pdu_packets,
-		   (traf_total - traf_out + pdu_traf) >> 10,
-		   pdu_packets,
-		   pdu_traf);
+	seq_printf(seq, "Hash: size %u (mem %uK), metric %d.%02d [%d.%02d, %d.%02d, %d.%02d]."
+	    " MemTraf: %llu pkt, %llu K (pdu %llu, %llu).\n",
+	    ipt_netflow_hash_size, 
+	    (unsigned int)((ipt_netflow_hash_size * sizeof(struct hlist_head)) >> 10),
+	    FFLOAT(metric, 100),
+	    FFLOAT(min_metric, 100),
+	    FFLOAT(min5_metric, 100),
+	    FFLOAT(min15_metric, 100),
+	    pkt_total - pkt_out + pdu_packets,
+	    (traf_total - traf_out + pdu_traf) >> 10,
+	    pdu_packets,
+	    pdu_traf);
 
-	seq_printf(seq, "NetFlow protocol version %d", version);
-	if (version == 9)
+	seq_printf(seq, "NetFlow protocol version %d", protocol);
+	if (protocol == 9)
 		seq_printf(seq, ", refresh-rate %d", refresh_rate);
 	seq_printf(seq, ". Timeouts: active %d, inactive %d. Maxflows %u\n",
-		   active_timeout,
-		   inactive_timeout,
-		   maxflows);
+	    active_timeout,
+	    inactive_timeout,
+	    maxflows);
 
-	seq_printf(seq, "Rate: %llu bits/sec, %llu packets/sec; Avg 1 min: %llu bps, %llu pps; 5 min: %llu bps, %llu pps\n",
-		   sec_brate, sec_prate, min_brate, min_prate, min5_brate, min5_prate);
+	seq_printf(seq, "Rate: %llu bits/sec, %llu packets/sec;"
+	    " Avg 1 min: %llu bps, %llu pps; 5 min: %llu bps, %llu pps\n",
+	    sec_brate, sec_prate, min_brate, min_prate, min5_brate, min5_prate);
 
-	seq_printf(seq, "cpu#  stat: <search found new, trunc frag alloc maxflows>, sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
+	seq_printf(seq, "cpu#  stat: <search found new [metric], trunc frag alloc maxflows>,"
+	    " sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
 
-	seq_printf(seq, "Total stat: %6llu %6llu %6llu, %4u %4u %4u %4u, sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
-		   (unsigned long long)searched,
-		   (unsigned long long)found,
-		   (unsigned long long)notfound,
-		   truncated, frags, alloc_err, maxflows_err,
-		   send_success, send_failed, sock_errors,
-		   (unsigned long long)exported_size >> 10,
-		   (unsigned long long)pkt_total, (unsigned long long)traf_total >> 20,
-		   (unsigned long long)pkt_drop, (unsigned long long)traf_drop >> 10);
+#define SAFEDIV(x,y) ((y)? (x) / (y) : 0)
+	seq_printf(seq, "Total stat: %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
+	    " sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
+	    searched,
+	    (unsigned long long)found,
+	    (unsigned long long)notfound,
+	    FFLOAT(SAFEDIV(100LL * (searched + found + notfound), (found + notfound)), 100),
+	    truncated, frags, alloc_err, maxflows_err,
+	    send_success, send_failed, sock_errors,
+	    (unsigned long long)exported_size >> 10,
+	    (unsigned long long)pkt_total, (unsigned long long)traf_total >> 20,
+	    (unsigned long long)pkt_drop, (unsigned long long)traf_drop >> 10);
 
 	if (num_present_cpus() > 1) {
 		for_each_present_cpu(cpu) {
 			struct ipt_netflow_stat *st;
 
 			st = &per_cpu(ipt_netflow_stat, cpu);
-			seq_printf(seq, "cpu%u  stat: %6llu %6llu %6llu, %4u %4u %4u %4u, sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
-				   cpu,
-				   (unsigned long long)st->searched,
-				   (unsigned long long)st->found,
-				   (unsigned long long)st->notfound,
-				   st->truncated, st->frags, st->alloc_err, st->maxflows_err,
-				   st->send_success, st->send_failed, st->sock_errors,
-				   (unsigned long long)st->exported_size >> 10,
-				   (unsigned long long)st->pkt_total, (unsigned long long)st->traf_total >> 20,
-				   (unsigned long long)st->pkt_drop, (unsigned long long)st->traf_drop >> 10);
+			seq_printf(seq, "cpu%u  stat: %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
+			    " sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
+			    cpu,
+			    (unsigned long long)st->searched,
+			    (unsigned long long)st->found,
+			    (unsigned long long)st->notfound,
+			    FFLOAT(SAFEDIV(100LL * (st->searched + st->found + st->notfound), (st->found + st->notfound)), 100),
+			    st->truncated, st->frags, st->alloc_err, st->maxflows_err,
+			    st->send_success, st->send_failed, st->sock_errors,
+			    (unsigned long long)st->exported_size >> 10,
+			    (unsigned long long)st->pkt_total, (unsigned long long)st->traf_total >> 20,
+			    (unsigned long long)st->pkt_drop, (unsigned long long)st->traf_drop >> 10);
 		}
 	}
 
@@ -332,7 +343,8 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		if (usock->sock) {
 			struct sock *sk = usock->sock->sk;
 
-			seq_printf(seq, ", sndbuf %u, filled %u, peak %u; err: sndbuf reached %u, connect %u, other %u\n",
+			seq_printf(seq, ", sndbuf %u, filled %u, peak %u;"
+			    " err: sndbuf reached %u, connect %u, other %u\n",
 			    sk->sk_sndbuf,
 			    atomic_read(&sk->sk_wmem_alloc),
 			    atomic_read(&usock->wmem_peak),
@@ -340,7 +352,8 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 			    atomic_read(&usock->err_connect),
 			    atomic_read(&usock->err_other));
 		} else
-			seq_printf(seq, " unconnected (%u attempts).\n", atomic_read(&usock->err_connect));
+			seq_printf(seq, " unconnected (%u attempts).\n",
+			    atomic_read(&usock->err_connect));
 		snum++;
 	}
 	read_unlock(&sock_lock);
@@ -487,18 +500,18 @@ static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 	if (val > 0) {
 		printk(KERN_INFO "ipt_NETFLOW: forced flush\n");
 		stop_scan_worker();
-		netflow_scan_and_export(1);
+		netflow_scan_and_export(AND_FLUSH);
 		start_scan_worker();
 	}
 
 	return ret;
 }
 
-static int version_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int protocol_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
-	int ver = version;
+	int ver = protocol;
 
 	ctl->data = &ver;
 	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
@@ -511,7 +524,7 @@ static int version_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fi
 		case 9:
 			printk(KERN_INFO "ipt_NETFLOW: forced flush (protocol version change)\n");
 			stop_scan_worker();
-			netflow_scan_and_export(1);
+			netflow_scan_and_export(AND_FLUSH);
 			netflow_switch_version(ver);
 			start_scan_worker();
 			break;
@@ -602,10 +615,10 @@ static struct ctl_table netflow_sysctl_table[] = {
 	},
 	{
 		_CTL_NAME(9)
-		.procname	= "version",
+		.procname	= "protocol",
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
-		.proc_handler	= &version_procctl,
+		.proc_handler	= &protocol_procctl,
 	},
 	{
 		_CTL_NAME(9)
@@ -1234,7 +1247,7 @@ struct data_template {
 	int length; /* number of elements in template */
 	int tpl_size; /* summary size of template */
 	int rec_size; /* summary size of all recods of template */
-	int ntemplate_id; /* assigned from template_ids, network order. */
+	int template_id_n; /* assigned from template_ids, network order. */
 	int		exported_seq;
 	unsigned long	exported_ts; /* jiffies */
 	u_int16_t fields[]; /* {type, size} pairs */
@@ -1259,6 +1272,27 @@ static struct data_template template_ipv4 = {
 		0 /* terminator */
 	}
 };
+/* template with aggregation */
+static struct data_template template_ipv4_aggr = {
+	.fields = {
+		IPV4_SRC_ADDR, 0,
+		IPV4_DST_ADDR, 0,
+		INPUT_SNMP, 0,
+		OUTPUT_SNMP, 0,
+		IN_PKTS, 0,
+		IN_BYTES, 0,
+		FIRST_SWITCHED, 0,
+		LAST_SWITCHED, 0,
+		L4_SRC_PORT, 0,
+		L4_DST_PORT, 0,
+		TCP_FLAGS, 0,
+		PROTOCOL, 0,
+		TOS, 0,
+		SRC_MASK, 0,
+		DST_MASK, 0,
+		0 /* terminator */
+	}
+};
 #define TPL_FIELD_NSIZE 4 /* one complete template field's network size */
 
 static void pdu9_add_template(struct data_template *tpl)
@@ -1269,8 +1303,8 @@ static void pdu9_add_template(struct data_template *tpl)
 	__be16 *sptr;
 
 	/* calc and cache template dimensions */
-	if (!tpl->ntemplate_id) {
-		tpl->ntemplate_id = htons(template_ids++);
+	if (!tpl->template_id_n) {
+		tpl->template_id_n = htons(template_ids++);
 		tpl->length = 0;
 		tpl->rec_size = 0;
 		tpl->tpl_size = 0;
@@ -1293,7 +1327,7 @@ static void pdu9_add_template(struct data_template *tpl)
 	ntpl = (struct flowset_template *)ptr;
 	ntpl->flowset_id  = htons(FLOWSET_TEMPLATE);
 	ntpl->length	  = htons(tpl->tpl_size);
-	ntpl->template_id = tpl->ntemplate_id;
+	ntpl->template_id = tpl->template_id_n;
 	ntpl->field_count = htons(tpl->length);
 	ptr += sizeof(struct flowset_template);
 	sptr = (__be16 *)ptr;
@@ -1340,37 +1374,44 @@ static void netflow_export_flow9(struct ipt_netflow *nf)
 {
 	unsigned char *ptr;
 	int i;
+	struct data_template *tpl;
 
 	if (debug > 2)
 		printk(KERN_INFO "adding flow to export (%d)\n", pdu9.nr_records);
 
-	if (!template_ipv4.ntemplate_id ||
-	    pdu_seq > template_ipv4.exported_seq + refresh_rate)
-		pdu9_add_template(&template_ipv4);
+	if (unlikely(nf->s_mask || nf->d_mask))
+		tpl = &template_ipv4_aggr;
+	else
+		tpl = &template_ipv4;
 
 	if (!pdu9_flowset ||
-	    pdu9_flowset->flowset_id != template_ipv4.ntemplate_id ||
-	    !(ptr = pdu9_alloc_fail(template_ipv4.rec_size))) {
-		ptr = pdu9_alloc(sizeof(struct flowset_data) + template_ipv4.rec_size);
+	    pdu9_flowset->flowset_id != tpl->template_id_n ||
+	    !(ptr = pdu9_alloc_fail(tpl->rec_size))) {
+
+		if (!tpl->template_id_n ||
+		    pdu_seq > tpl->exported_seq + refresh_rate)
+			pdu9_add_template(tpl);
+
+		ptr = pdu9_alloc(sizeof(struct flowset_data) + tpl->rec_size);
 		pdu9_flowset = (struct flowset_data *)ptr;
-		pdu9_flowset->flowset_id = template_ipv4.ntemplate_id;
+		pdu9_flowset->flowset_id = tpl->template_id_n;
 		pdu9_flowset->length	 = htons(sizeof(struct flowset_data));
 		ptr += sizeof(struct flowset_data);
 	}
 
 	/* encode all fields */
 	for (i = 0; ; ) {
-		int type = template_ipv4.fields[i++];
+		int type = tpl->fields[i++];
 
 		if (!type)
 			break;
 		add_ipv4_field(ptr, type, nf);
-		ptr += template_ipv4.fields[i++];
+		ptr += tpl->fields[i++];
 	}
 	ipt_netflow_free(nf);
 
 	pdu9.nr_records++;
-	pdu9_flowset->length = htons(ntohs(pdu9_flowset->length) + template_ipv4.rec_size);
+	pdu9_flowset->length = htons(ntohs(pdu9_flowset->length) + tpl->rec_size);
 
 	pdu_packets += nf->nr_packets;
 	pdu_traf    += nf->nr_bytes;
@@ -1379,16 +1420,18 @@ static void netflow_export_flow9(struct ipt_netflow *nf)
 
 static void netflow_switch_version(int ver)
 {
-	printk(KERN_INFO "netflow protocol version %d -> %d.\n", version, ver);
-	version = ver;
-	if (version == 5) {
+	protocol = ver;
+	if (protocol == 5) {
 		netflow_export_flow = &netflow_export_flow5;
 		netflow_export_pdu = &netflow_export_pdu5;
 	} else {
 		netflow_export_flow = &netflow_export_flow9;
 		netflow_export_pdu = &netflow_export_pdu9;
-		template_ipv4.ntemplate_id = 0; /* renew templates */
+		/* renew templates */
+		template_ipv4.template_id_n = 0;
+		template_ipv4_aggr.template_id_n = 0;
 	}
+	printk(KERN_INFO "netflow protocol version %d enabled.\n", protocol);
 }
 
 static inline int active_needs_export(struct ipt_netflow *nf, long a_timeout)
@@ -1447,7 +1490,7 @@ static void netflow_work_fn(void *dummy)
 static void netflow_work_fn(struct work_struct *dummy)
 #endif
 {
-	netflow_scan_and_export(0);
+	netflow_scan_and_export(DONT_FLUSH);
 	__start_scan_worker();
 }
 
@@ -1500,7 +1543,7 @@ static void rate_timer_calc(unsigned long dummy)
 	old_found = found;
 	old_notfound = notfound;
 	/* if there is no access to hash keep rate steady */
-	metric = (dfnd + dnfnd)? 10 * (dsrch + dfnd + dnfnd) / (dfnd + dnfnd) : metric;
+	metric = (dfnd + dnfnd)? 100 * (dsrch + dfnd + dnfnd) / (dfnd + dnfnd) : metric;
 	CALC_RATE(min15_metric, (unsigned long long)metric, 15);
 	CALC_RATE(min5_metric, (unsigned long long)metric, 5);
 	CALC_RATE(min_metric, (unsigned long long)metric, 1);
@@ -1832,7 +1875,7 @@ static int __init ipt_netflow_init(void)
 	}
 	add_aggregation(aggregation);
 
-	netflow_switch_version(version);
+	netflow_switch_version(protocol);
 	__start_scan_worker();
 	setup_timer(&rate_timer, rate_timer_calc, 0);
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
@@ -1880,7 +1923,7 @@ static void __exit ipt_netflow_fini(void)
 
 	xt_unregister_target(&ipt_netflow_reg);
 	__stop_scan_worker();
-	netflow_scan_and_export(1);
+	netflow_scan_and_export(AND_FLUSH);
 	del_timer_sync(&rate_timer);
 
 	synchronize_sched();

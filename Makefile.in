@@ -1,10 +1,12 @@
-#
+# Edit Makefile.in and run ./configure
 
 KVERSION = @KVERSION@
 KDIR = @KDIR@
 IPTABLES_CFLAGS = @IPTABLES_CFLAGS@
 IPTABLES_MODULES = @IPTABLES_MODULES@
 
+# https://www.kernel.org/doc/Documentation/kbuild/modules.txt
+# https://www.kernel.org/doc/Documentation/kbuild/makefiles.txt
 obj-m = ipt_NETFLOW.o
 
 all: ipt_NETFLOW.ko libipt_NETFLOW.so

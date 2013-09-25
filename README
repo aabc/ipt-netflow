@@ -22,7 +22,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
 2. Run ./configure script and it will create Makefile
 
 3. make all install; depmod
-   This will install kernel module and iptable specific library.
+   This will install kernel module and iptables specific library.
 
 Troubleshooting:
    a) Sometimes you will want to add CC=gcc-3 to make command.
@@ -49,7 +49,7 @@ Troubleshooting:
 
    See, you may add options in insmod/modprobe command line, or add
      them in /etc/ to modules.conf or modprobe.conf like thus:
-   options ipt_NETFLOW destination=127.0.0.1:2055 version=9
+   options ipt_NETFLOW destination=127.0.0.1:2055 protocol=9
 
 2. Statistics is in /proc/net/stat/ipt_netflow
    To view slab statistics: grep ipt_netflow /proc/slabinfo
@@ -67,7 +67,7 @@ Troubleshooting:
 = OPTIONS =
 ===========
 
-   version=5
+   protocol=5
      - what version of NetFlow protocol to use. Default is 5. You
        can choose from 5 or 9.
 
@@ -94,14 +94,14 @@ Troubleshooting:
      - debug level (none).
 
    sndbuf=number
-     - size of output socket buffer in bytes. Recommend you to put
+     - size of output socket buffer in bytes. I recommend you to put
        higher value if you experience netflow packet drops (can be
        seen in statistics as 'sock: fail' number.)
        Default value is system default.
 
    hashsize=number
      - Hash table bucket size. Used for performance tuning.
-       Abstractly speaking, it should be two times bigger than flows
+       Abstractly speaking, it should be minimum two times bigger than flows
        you usually have, but not need to.
        Default is system memory dependent small enough value.
 
@@ -155,7 +155,7 @@ Troubleshooting:
     - one active flow taking 56 bytes of memory.
     - there is system limit on cache size too.
 
-> Hash: size 8192 (mem 32K), metric 1.0, 1.0, 1.0, 1.0. MemTraf: 1420 pkt, 364 K (pdu 0, 0).
+> Hash: size 8192 (mem 32K), metric 1.00, [1.00, 1.00, 1.00]. MemTraf: 1420 pkt, 364 K (pdu 0, 0).
 
   Hash: size X: current hash size/limit.
     - you can control this by sysctl net.netflow.hashsize variable.
@@ -164,11 +164,12 @@ Troubleshooting:
     - optimal value is twice of average of active flows.
   mem XK: how much memory occupied by hash table.
     - hash table is fixed size by nature, taking 4 bytes per entry.
-  metric X, X, X, X: how optimal is your hash table being used.
+  metric X, [X, X, X]: how optimal is your hash table being used.
     - lesser value mean more optimal hash table use, min is 1.0.
-    - this is moving average (EWMA) of hash table access divided
-      by match rate (searches / matches) for 4sec, and 1, 5, 15 minutes.
-      Sort of hash table load average.
+    - last three numbers in squares is moving average (EWMA) of hash table access
+      divided by match rate (searches / matches) for 4sec, and 1, 5, 15 minutes.
+      Sort of hash table load average. First value is instantaneous.
+      You can try to increase hashsize if averages more than 1 (increase certainly if >= 2).
   MemTraf: X pkt, X K: how much traffic accounted for flows that are in memory.
     - these flows that are residing in internal hash table.
   pdu X, X: how much traffic in flows preparing to be exported.
@@ -176,7 +177,7 @@ Troubleshooting:
 
 > NetFlow protocol version 9, refresh-rate 2. Timeout: active 1800, inactive 15. Maxflows 2000000
 
-  Protocol version curently in use. And refresh-rate for v9.
+  Protocol version currently in use. And refresh-rate for v9.
   Timeout: active X: how much seconds to wait before exporting active flow.
     - same as sysctl net.netflow.active_timeout variable.
   inactive X: how much seconds to wait before exporting inactive flow.
@@ -189,12 +190,13 @@ Troubleshooting:
 
   - Module throughput values for 1 second, 1 minute, and 5 minutes.
 
-> cpu#  stat: <search found new, trunc frag alloc maxflows>, sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>
-> cpu0  stat: 980540  10473 180600,    0    0    0    0, sock:   4983 928 0, 7124 K, traffic: 188765, 14 MB, drop: 27863, 1142 K
+> cpu#  stat: <search found new [metric], trunc frag alloc maxflows>, sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>
+> cpu0  stat: 980540  10473 180600 [1.03],    0    0    0    0, sock:   4983 928 0, 7124 K, traffic: 188765, 14 MB, drop: 27863, 1142 K
 
   cpu#: this is Total and per CPU statistics for:
   stat: <search found new, trunc frag alloc maxflows>: internal stat for:
   search found new: hash table searched, found, and not found counters.
+  [metric]: average hash metric since module load.
   trunc: how much truncated packets is ignored
     - these are that possible don't have valid IP header.
     - accounted in drop packets counter but not in drop bytes.
