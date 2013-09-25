@@ -180,6 +180,8 @@ static void netflow_scan_and_export(int flush);
 enum {
 	DONT_FLUSH, AND_FLUSH
 };
+static int template_ids = FLOWSET_DATA_FIRST;
+
 
 static inline __be32 bits2mask(int bits) {
 	return (bits? 0xffffffff << (32 - bits) : 0);
@@ -288,7 +290,9 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 
 	seq_printf(seq, "NetFlow protocol version %d", protocol);
 	if (protocol == 9)
-		seq_printf(seq, ", refresh-rate %d", refresh_rate);
+		seq_printf(seq, ", refresh-rate %d, (templates %d)",
+		    refresh_rate, template_ids - FLOWSET_DATA_FIRST);
+
 	seq_printf(seq, ". Timeouts: active %d, inactive %d. Maxflows %u\n",
 	    active_timeout,
 	    inactive_timeout,
@@ -361,20 +365,22 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	read_lock_bh(&aggr_lock);
 	snum = 0;
 	list_for_each_entry(aggr_n, &aggr_n_list, list) {
-		seq_printf(seq, "aggr#%d net: match %u.%u.%u.%u/%d strip %d\n",
-			   snum,
-			   HIPQUAD(aggr_n->addr),
-			   mask2bits(aggr_n->mask),
-			   mask2bits(aggr_n->aggr_mask));
+		seq_printf(seq, "aggr#%d net: match %u.%u.%u.%u/%d strip %d (usage %u)\n",
+		    snum,
+		    HIPQUAD(aggr_n->addr),
+		    mask2bits(aggr_n->mask),
+		    mask2bits(aggr_n->aggr_mask),
+		    atomic_read(&aggr_n->usage));
 		snum++;
 	}
 	snum = 0;
 	list_for_each_entry(aggr_p, &aggr_p_list, list) {
-		seq_printf(seq, "aggr#%d port: ports %u-%u replace %u\n",
-			   snum,
-			   aggr_p->port1,
-			   aggr_p->port2,
-			   aggr_p->aggr_port);
+		seq_printf(seq, "aggr#%d port: ports %u-%u replace %u (usage %u)\n",
+		    snum,
+		    aggr_p->port1,
+		    aggr_p->port2,
+		    aggr_p->aggr_port,
+		    atomic_read(&aggr_p->usage));
 		snum++;
 	}
 	read_unlock_bh(&aggr_lock);
@@ -903,8 +909,8 @@ static int add_aggregation(char *ptr)
 			}
 			memset(aggr_n, 0, sizeof(*aggr_n));
 
-			aggr_n->addr = ntohl(*(__be32 *)ip);
 			aggr_n->mask = bits2mask(mask);
+			aggr_n->addr = ntohl(*(__be32 *)ip) & aggr_n->mask;
 			aggr_n->aggr_mask = bits2mask(aggr_to);
 			aggr_n->prefix = mask;
 			printk(KERN_INFO "netflow: add aggregation [%u.%u.%u.%u/%u=%u]\n",
@@ -1241,8 +1247,6 @@ static u_int8_t tpl_element_sizes[] = {
 	[IP_PROTOCOL_VERSION] = 1
 };
 
-static int template_ids = FLOWSET_DATA_FIRST;
-
 struct data_template {
 	int length; /* number of elements in template */
 	int tpl_size; /* summary size of template */
@@ -1370,6 +1374,8 @@ static inline void add_ipv4_field(void *ptr, int type, struct ipt_netflow *nf)
 	}
 }
 
+#define PAD_SIZE 4 /* rfc prescribes flowsets to be padded */
+
 static void netflow_export_flow9(struct ipt_netflow *nf)
 {
 	unsigned char *ptr;
@@ -1387,6 +1393,16 @@ static void netflow_export_flow9(struct ipt_netflow *nf)
 	if (!pdu9_flowset ||
 	    pdu9_flowset->flowset_id != tpl->template_id_n ||
 	    !(ptr = pdu9_alloc_fail(tpl->rec_size))) {
+
+		/* if there was previous data template we should pad it to 4 bytes */
+		if (pdu9_flowset) {
+			int padding = (PAD_SIZE - ntohs(pdu9_flowset->length) % PAD_SIZE) % PAD_SIZE;
+			if (padding && (ptr = pdu9_alloc_fail(padding))) {
+				pdu9_flowset->length = htons(ntohs(pdu9_flowset->length) + padding);
+				for (; padding; padding--)
+					*ptr++ = 0;
+			}
+		}
 
 		if (!tpl->template_id_n ||
 		    pdu_seq > tpl->exported_seq + refresh_rate)
@@ -1661,12 +1677,14 @@ static unsigned int netflow_target(
 		if ((ntohl(tuple.s_addr) & aggr_n->mask) == aggr_n->addr) {
 			tuple.s_addr &= htonl(aggr_n->aggr_mask);
 			s_mask = aggr_n->prefix;
+			atomic_inc(&aggr_n->usage);
 			break; 
 		}
 	list_for_each_entry(aggr_n, &aggr_n_list, list)
 		if ((ntohl(tuple.d_addr) & aggr_n->mask) == aggr_n->addr) {
 			tuple.d_addr &= htonl(aggr_n->aggr_mask);
 			d_mask = aggr_n->prefix;
+			atomic_inc(&aggr_n->usage);
 			break; 
 		}
 
@@ -1675,6 +1693,7 @@ static unsigned int netflow_target(
 		if (ntohs(tuple.s_port) >= aggr_p->port1 &&
 		    ntohs(tuple.s_port) <= aggr_p->port2) {
 			tuple.s_port = htons(aggr_p->aggr_port);
+			atomic_inc(&aggr_p->usage);
 			break;
 		}
 
@@ -1682,6 +1701,7 @@ static unsigned int netflow_target(
 		if (ntohs(tuple.d_port) >= aggr_p->port1 &&
 		    ntohs(tuple.d_port) <= aggr_p->port2) {
 			tuple.d_port = htons(aggr_p->aggr_port);
+			atomic_inc(&aggr_p->usage);
 			break;
 		}
 	read_unlock_bh(&aggr_lock);

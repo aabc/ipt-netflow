@@ -174,6 +174,7 @@ struct ipt_netflow_sock {
 
 struct netflow_aggr_n {
 	struct list_head list;
+	atomic_t usage;
 	__u32 mask;
 	__u32 addr;
 	__u32 aggr_mask;
@@ -182,6 +183,7 @@ struct netflow_aggr_n {
 
 struct netflow_aggr_p {
 	struct list_head list;
+	atomic_t usage;
 	__u16 port1;
 	__u16 port2;
 	__u16 aggr_port;
