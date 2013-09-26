@@ -180,9 +180,10 @@ Troubleshooting:
   pdu X, X: how much traffic in flows preparing to be exported.
     - it is included already in aforementioned MemTraf total.
 
-> Protocol version 9 (netflow), refresh-rate 2. Timeout: active 1800, inactive 15. Maxflows 2000000
+> Protocol version 10 (ipfix), refresh-rate 20, timeout-rate 30, (templates 2, active 2). Timeouts: active 5, inactive 15. Maxflows 2000000
 
-  Protocol version currently in use. And refresh-rate for v9 and IPFIX.
+  Protocol version currently in use. Refresh-rate and timeout-rate
+      for v9 and IPFIX. Total templates generated and currently active.
   Timeout: active X: how much seconds to wait before exporting active flow.
     - same as sysctl net.netflow.active_timeout variable.
   inactive X: how much seconds to wait before exporting inactive flow.
