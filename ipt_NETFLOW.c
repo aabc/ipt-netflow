@@ -994,13 +994,15 @@ ipt_netflow_find(const struct ipt_netflow_tuple *tuple, unsigned int hash)
 {
 	struct ipt_netflow *nf;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0)
-#define BEFORE390(x) x
+#define compat_hlist_for_each_entry		      hlist_for_each_entry
+#define compat_hlist_for_each_entry_safe	      hlist_for_each_entry_safe
 	struct hlist_node *pos;
 #else /* since 3.9.0 */
-#define BEFORE390(x)
+#define compat_hlist_for_each_entry(a,pos,c,d)	      hlist_for_each_entry(a,c,d)
+#define compat_hlist_for_each_entry_safe(a,pos,c,d,e) hlist_for_each_entry_safe(a,c,d,e)
 #endif
 
-	hlist_for_each_entry(nf, BEFORE390(pos), &ipt_netflow_hash[hash], hlist) {
+	compat_hlist_for_each_entry(nf, pos, &ipt_netflow_hash[hash], hlist) {
 		if (ipt_netflow_tuple_equal(tuple, &nf->tuple) &&
 		    nf->nr_bytes < FLOW_FULL_WATERMARK) {
 			NETFLOW_STAT_INC(found);
@@ -1399,7 +1401,7 @@ static void free_templates(void)
 		struct hlist_head *thead = &templates_hash[i];
 		struct data_template *tpl;
 
-		hlist_for_each_entry_safe(tpl, BEFORE390(pos), tmp, thead, hlist)
+		compat_hlist_for_each_entry_safe(tpl, pos, tmp, thead, hlist)
 			vfree(tpl);
 		INIT_HLIST_HEAD(thead);
 	}
@@ -1419,7 +1421,7 @@ static struct data_template *get_template(int tmask)
 #endif
 	int hash = hash_32(tmask, TEMPLATES_HASH_BSIZE);
 
-	hlist_for_each_entry(tpl, BEFORE390(pos), &templates_hash[hash], hlist)
+	compat_hlist_for_each_entry(tpl, pos, &templates_hash[hash], hlist)
 		if (tpl->tpl_mask == tmask)
 			return tpl;
 
