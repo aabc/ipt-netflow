@@ -31,6 +31,7 @@
 #include <linux/icmp.h>
 #include <linux/igmp.h>
 #include <linux/inetdevice.h>
+#include <linux/hash.h>
 #include <linux/jhash.h>
 #include <net/icmp.h>
 #include <net/ip.h>
@@ -84,43 +85,43 @@ MODULE_VERSION(IPT_NETFLOW_VERSION);
 #define DST_SIZE 256
 static char destination_buf[DST_SIZE] = "127.0.0.1:2055";
 static char *destination = destination_buf;
-module_param(destination, charp, 0400);
+module_param(destination, charp, 0444);
 MODULE_PARM_DESC(destination, "export destination ipaddress:port");
 
 static int inactive_timeout = 15;
-module_param(inactive_timeout, int, 0600);
+module_param(inactive_timeout, int, 0644);
 MODULE_PARM_DESC(inactive_timeout, "inactive flows timeout in seconds");
 
 static int active_timeout = 30 * 60;
-module_param(active_timeout, int, 0600);
+module_param(active_timeout, int, 0644);
 MODULE_PARM_DESC(active_timeout, "active flows timeout in seconds");
 
 static int debug = 0;
-module_param(debug, int, 0600);
+module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "debug verbosity level");
 
 static int sndbuf;
-module_param(sndbuf, int, 0400);
+module_param(sndbuf, int, 0444);
 MODULE_PARM_DESC(sndbuf, "udp socket SNDBUF size");
 
 static int protocol = 5;
-module_param(protocol, int, 0400);
+module_param(protocol, int, 0444);
 MODULE_PARM_DESC(protocol, "netflow protocol version (5, 9)");
 
-static int refresh_rate = 20;
-module_param(refresh_rate, int, 0400);
+static unsigned int refresh_rate = 20;
+module_param(refresh_rate, uint, 0644);
 MODULE_PARM_DESC(refresh_rate, "netflow v9 refresh rate (packets)");
 
-//static int timeout_rate = 30;
-//module_param(timeout_rate, int, 0400);
-//MODULE_PARM_DESC(timeout_rate, "netflow v9 timeout rate (minutes)");
+static unsigned int timeout_rate = 30;
+module_param(timeout_rate, uint, 0644);
+MODULE_PARM_DESC(timeout_rate, "netflow v9 timeout rate (minutes)");
 
 static int hashsize;
-module_param(hashsize, int, 0400);
+module_param(hashsize, int, 0444);
 MODULE_PARM_DESC(hashsize, "hash table size");
 
 static int maxflows = 2000000;
-module_param(maxflows, int, 0600);
+module_param(maxflows, int, 0644);
 MODULE_PARM_DESC(maxflows, "maximum number of flows");
 static int peakflows = 0;
 static unsigned long peakflows_at;
@@ -136,7 +137,7 @@ static LIST_HEAD(usock_list);
 static DEFINE_RWLOCK(sock_lock);
 
 static unsigned int ipt_netflow_hash_rnd;
-struct hlist_head *ipt_netflow_hash __read_mostly; /* hash table memory */
+static struct hlist_head *ipt_netflow_hash __read_mostly; /* hash table memory */
 static unsigned int ipt_netflow_hash_size __read_mostly = 0; /* buckets */
 static LIST_HEAD(ipt_netflow_list); /* all flows */
 static LIST_HEAD(aggr_n_list);
@@ -191,6 +192,7 @@ enum {
 	DONT_FLUSH, AND_FLUSH
 };
 static int template_ids = FLOWSET_DATA_FIRST;
+static int tpl_count = 0; /* how much active templates */
 
 
 static inline __be32 bits2mask(int bits) {
@@ -298,14 +300,14 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	    pdu_packets,
 	    pdu_traf);
 
-	seq_printf(seq, "Export protocol version %d", protocol);
+	seq_printf(seq, "Protocol version %d", protocol);
 	if (protocol == 10)
 		seq_printf(seq, " (ipfix)");
 	else
 		seq_printf(seq, " (netflow)");
 	if (protocol >= 9)
-		seq_printf(seq, ", refresh-rate %d, (templates %d)",
-		    refresh_rate, template_ids - FLOWSET_DATA_FIRST);
+		seq_printf(seq, ", refresh-rate %u, timeout-rate %u, (templates %d, active %d)",
+		    refresh_rate, timeout_rate, template_ids - FLOWSET_DATA_FIRST, tpl_count);
 
 	seq_printf(seq, ". Timeouts: active %d, inactive %d. Maxflows %u\n",
 	    active_timeout,
@@ -635,17 +637,25 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &flush_procctl,
 	},
 	{
-		_CTL_NAME(9)
+		_CTL_NAME(10)
 		.procname	= "protocol",
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &protocol_procctl,
 	},
 	{
-		_CTL_NAME(9)
+		_CTL_NAME(11)
 		.procname	= "refresh-rate",
 		.mode		= 0644,
 		.data		= &refresh_rate,
+		.maxlen		= sizeof(int),
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		_CTL_NAME(12)
+		.procname	= "timeout-rate",
+		.mode		= 0644,
+		.data		= &timeout_rate,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &proc_dointvec,
 	},
@@ -692,7 +702,7 @@ static void sk_error_report(struct sock *sk)
 	/* clear connection refused errors if any */
 	write_lock_bh(&sk->sk_callback_lock);
 	if (debug > 1)
-		printk(KERN_INFO "NETFLOW: socket error <%d>\n", sk->sk_err);
+		printk(KERN_INFO "ipt_NETFLOW: socket error <%d>\n", sk->sk_err);
 	sk->sk_err = 0;
 	NETFLOW_STAT_INC(sock_errors);
 	write_unlock_bh(&sk->sk_callback_lock);
@@ -706,7 +716,7 @@ static struct socket *_usock_alloc(__be32 ipaddr, unsigned short port)
 	int error;
 
 	if ((error = sock_create_kern(PF_INET, SOCK_DGRAM, IPPROTO_UDP, &sock)) < 0) {
-		printk(KERN_ERR "netflow: sock_create_kern error %d\n", -error);
+		printk(KERN_ERR "ipt_NETFLOW: sock_create_kern error %d\n", -error);
 		return NULL;
 	}
 	sock->sk->sk_allocation = GFP_ATOMIC;
@@ -722,7 +732,7 @@ static struct socket *_usock_alloc(__be32 ipaddr, unsigned short port)
 	sin.sin_port        = htons(port);
 	if ((error = sock->ops->connect(sock, (struct sockaddr *)&sin,
 				  sizeof(sin), 0)) < 0) {
-		printk(KERN_ERR "netflow: error connecting UDP socket %d,"
+		printk(KERN_ERR "ipt_NETFLOW: error connecting UDP socket %d,"
 		    " don't worry, will try reconnect later.\n", -error);
 		/* ENETUNREACH when no interfaces */
 		sock_release(sock);
@@ -736,13 +746,13 @@ static void usock_connect(struct ipt_netflow_sock *usock, int sendmsg)
 	usock->sock = _usock_alloc(usock->ipaddr, usock->port);
 	if (usock->sock) {
 		if (sendmsg || debug)
-			printk(KERN_INFO "netflow: connected %u.%u.%u.%u:%u\n",
+			printk(KERN_INFO "ipt_NETFLOW: connected %u.%u.%u.%u:%u\n",
 			    HIPQUAD(usock->ipaddr),
 			    usock->port);
 	} else {
 		atomic_inc(&usock->err_connect);
 		if (debug)
-			printk(KERN_INFO "netflow: connect to %u.%u.%u.%u:%u failed%s.\n",
+			printk(KERN_INFO "ipt_NETFLOW: connect to %u.%u.%u.%u:%u failed%s.\n",
 			    HIPQUAD(usock->ipaddr),
 			    usock->port,
 			    (sendmsg)? " (pdu lost)" : "");
@@ -785,7 +795,7 @@ static void netflow_sendmsg(void *buffer, int len)
 				suggestion = ": increase sndbuf!";
 			} else
 				atomic_inc(&usock->err_other);
-			printk(KERN_ERR "netflow_sendmsg[%d]: sendmsg error %d: data loss %llu pkt, %llu bytes%s\n",
+			printk(KERN_ERR "ipt_NETFLOW: sendmsg[%d] error %d: data loss %llu pkt, %llu bytes%s\n",
 			       snum, ret, pdu_packets, pdu_traf, suggestion);
 		} else {
 			unsigned int wmem = atomic_read(&usock->sock->sk->sk_wmem_alloc);
@@ -806,7 +816,7 @@ static void netflow_sendmsg(void *buffer, int len)
 
 static void usock_close_free(struct ipt_netflow_sock *usock)
 {
-	printk(KERN_INFO "netflow: removed destination %u.%u.%u.%u:%u\n",
+	printk(KERN_INFO "ipt_NETFLOW: removed destination %u.%u.%u.%u:%u\n",
 	       HIPQUAD(usock->ipaddr),
 	       usock->port);
 	if (usock->sock)
@@ -845,7 +855,7 @@ static void add_usock(struct ipt_netflow_sock *usock)
 		}
 	}
 	list_add_tail(&usock->list, &usock_list);
-	printk(KERN_INFO "netflow: added destination %u.%u.%u.%u:%u%s\n",
+	printk(KERN_INFO "ipt_NETFLOW: added destination %u.%u.%u.%u:%u%s\n",
 	       HIPQUAD(usock->ipaddr),
 	       usock->port,
 	       (!usock->sock)? " (unconnected)" : "");
@@ -866,7 +876,7 @@ static int add_destinations(char *ptr)
 			struct ipt_netflow_sock *usock;
 
 			if (!(usock = vmalloc(sizeof(*usock)))) {
-				printk(KERN_ERR "netflow: can't vmalloc socket\n");
+				printk(KERN_ERR "ipt_NETFLOW: can't vmalloc socket\n");
 				return -ENOMEM;
 			}
 
@@ -919,7 +929,7 @@ static int add_aggregation(char *ptr)
 			   ip, ip + 1, ip + 2, ip + 3, &mask, &aggr_to) == 6) {
 
 			if (!(aggr_n = vmalloc(sizeof(*aggr_n)))) {
-				printk(KERN_ERR "netflow: can't vmalloc aggr\n");
+				printk(KERN_ERR "ipt_NETFLOW: can't vmalloc aggr\n");
 				return -ENOMEM;
 			}
 			memset(aggr_n, 0, sizeof(*aggr_n));
@@ -928,7 +938,7 @@ static int add_aggregation(char *ptr)
 			aggr_n->addr = ntohl(*(__be32 *)ip) & aggr_n->mask;
 			aggr_n->aggr_mask = bits2mask(aggr_to);
 			aggr_n->prefix = mask;
-			printk(KERN_INFO "netflow: add aggregation [%u.%u.%u.%u/%u=%u]\n",
+			printk(KERN_INFO "ipt_NETFLOW: add aggregation [%u.%u.%u.%u/%u=%u]\n",
 			       HIPQUAD(aggr_n->addr), mask, aggr_to);
 			list_add_tail(&aggr_n->list, &new_aggr_n_list);
 
@@ -936,7 +946,7 @@ static int add_aggregation(char *ptr)
 			   sscanf(ptr, "%u=%u", &port2, &aggr_to) == 2) {
 
 			if (!(aggr_p = vmalloc(sizeof(*aggr_p)))) {
-				printk(KERN_ERR "netflow: can't vmalloc aggr\n");
+				printk(KERN_ERR "ipt_NETFLOW: can't vmalloc aggr\n");
 				return -ENOMEM;
 			}
 			memset(aggr_p, 0, sizeof(*aggr_p));
@@ -944,11 +954,11 @@ static int add_aggregation(char *ptr)
 			aggr_p->port1 = port1;
 			aggr_p->port2 = port2;
 			aggr_p->aggr_port = aggr_to;
-			printk(KERN_INFO "netflow: add aggregation [%u-%u=%u]\n",
+			printk(KERN_INFO "ipt_NETFLOW: add aggregation [%u-%u=%u]\n",
 			       port1, port2, aggr_to);
 			list_add_tail(&aggr_p->list, &new_aggr_p_list);
 		} else {
-			printk(KERN_ERR "netflow: bad aggregation rule: %s (ignoring)\n", ptr);
+			printk(KERN_ERR "ipt_NETFLOW: bad aggregation rule: %s (ignoring)\n", ptr);
 			break;
 		}
 
@@ -1011,7 +1021,7 @@ static struct hlist_head *alloc_hashtable(int size)
 		for (i = 0; i < size; i++)
 			INIT_HLIST_HEAD(&hash[i]);
 	} else
-		printk(KERN_ERR "netflow: unable to vmalloc hash table.\n");
+		printk(KERN_ERR "ipt_NETFLOW: unable to vmalloc hash table.\n");
 
 	return hash;
 }
@@ -1023,7 +1033,7 @@ static int set_hashsize(int new_size)
 	struct ipt_netflow *nf;
 	int rnd;
 
-	printk(KERN_INFO "netflow: allocating new hash table %u -> %u buckets\n",
+	printk(KERN_INFO "ipt_NETFLOW: allocating new hash table %u -> %u buckets\n",
 	       ipt_netflow_hash_size, new_size);
 	new_hash = alloc_hashtable(new_size);
 	if (!new_hash)
@@ -1059,7 +1069,7 @@ ipt_netflow_alloc(struct ipt_netflow_tuple *tuple)
 
 	nf = kmem_cache_alloc(ipt_netflow_cachep, GFP_ATOMIC);
 	if (!nf) {
-		printk(KERN_ERR "Can't allocate netflow.\n");
+		printk(KERN_ERR "ipt_NETFLOW: Can't allocate flow.\n");
 		return NULL;
 	}
 
@@ -1275,65 +1285,191 @@ static u_int8_t tpl_element_sizes[] = {
 	[IPV4_DST_ADDR]	= 4,
 	[DST_MASK]	= 1,
 	[OUTPUT_SNMP]	= 2,
+	//[IPV4_NEXT_HOP]	= 4,
+	//[SRC_AS]		= 2,
+	//[DST_AS]		= 2,
+	//[BGP_IPV4_NEXT_HOP]	= 4,
+	//[MUL_DST_PKTS]	= 4,
+	//[MUL_DST_BYTES]	= 4,
 	[LAST_SWITCHED]	= 4,
-	[FIRST_SWITCHED] = 4,
-	[TOTAL_BYTES_EXP] = 4,
-	[TOTAL_PKTS_EXP]  = 4,
-	[TOTAL_FLOWS_EXP] = 4,
-	[IP_PROTOCOL_VERSION] = 1
+	[FIRST_SWITCHED]= 4,
+	[ICMP_TYPE]	= 2,
+	[MUL_IGMP_TYPE]	= 1,
+	//[TOTAL_BYTES_EXP]	= 4,
+	//[TOTAL_PKTS_EXP]	= 4,
+	//[TOTAL_FLOWS_EXP]	= 4,
+	//[IP_PROTOCOL_VERSION]	= 1,
+	//[DIRECTION]		= 1,
+};
+
+#define TEMPLATES_HASH_BSIZE	8
+#define TEMPLATES_HASH_SIZE	(1<<TEMPLATES_HASH_BSIZE)
+static struct hlist_head templates_hash[TEMPLATES_HASH_SIZE];
+
+struct base_template {
+	int length; /* number of elements in template */
+	u_int16_t types[]; /* {type, size} pairs */
+};
+
+/* base templates */
+#define BTPL_IP4	0x00000001	/* IP */
+#define BTPL_MASK	0x00000002	/* Aggregated */
+#define BTPL_PORTS	0x00000004	/* UDP&TCP */
+#define BTPL_ICMP	0x00000008	/* ICMP */
+#define BTPL_IGMP	0x00000010	/* IGMP */
+#define BTPL_MAX	32
+
+static struct base_template template_ipv4 = {
+	.types = {
+		IPV4_SRC_ADDR,
+		IPV4_DST_ADDR,
+		INPUT_SNMP,
+		OUTPUT_SNMP,
+		IN_PKTS,
+		IN_BYTES,
+		FIRST_SWITCHED,
+		LAST_SWITCHED,
+		PROTOCOL,
+		TOS,
+		0
+	}
+};
+static struct base_template template_ipv4_mask = {
+	.types = {
+		SRC_MASK,
+		DST_MASK,
+		0
+	}
+};
+static struct base_template template_ports = {
+	.types = {
+		L4_SRC_PORT,
+		L4_DST_PORT,
+		TCP_FLAGS,
+		0
+	}
+};
+static struct base_template template_icmp = {
+	.types = {
+		ICMP_TYPE,
+		0
+	}
+};
+static struct base_template template_igmp = {
+	.types = {
+		MUL_IGMP_TYPE,
+		0
+	}
 };
 
 struct data_template {
+	struct hlist_node hlist;
+	int tpl_mask;
+
 	int length; /* number of elements in template */
-	int tpl_size; /* summary size of template */
-	int rec_size; /* summary size of all recods of template */
+	int tpl_size; /* summary size of template with flowset header */
+	int rec_size; /* summary size of all recods of template (w/o flowset header) */
 	int template_id_n; /* assigned from template_ids, network order. */
 	int		exported_seq;
 	unsigned long	exported_ts; /* jiffies */
 	u_int16_t fields[]; /* {type, size} pairs */
 } __attribute__ ((packed));
 
-/* default template w/o aggregation */
-static struct data_template template_ipv4 = {
-	.fields = {
-		IPV4_SRC_ADDR, 0,
-		IPV4_DST_ADDR, 0,
-		INPUT_SNMP, 0,
-		OUTPUT_SNMP, 0,
-		IN_PKTS, 0,
-		IN_BYTES, 0,
-		FIRST_SWITCHED, 0,
-		LAST_SWITCHED, 0,
-		L4_SRC_PORT, 0,
-		L4_DST_PORT, 0,
-		TCP_FLAGS, 0,
-		PROTOCOL, 0,
-		TOS, 0,
-		0 /* terminator */
-	}
-};
-/* template with aggregation */
-static struct data_template template_ipv4_aggr = {
-	.fields = {
-		IPV4_SRC_ADDR, 0,
-		IPV4_DST_ADDR, 0,
-		INPUT_SNMP, 0,
-		OUTPUT_SNMP, 0,
-		IN_PKTS, 0,
-		IN_BYTES, 0,
-		FIRST_SWITCHED, 0,
-		LAST_SWITCHED, 0,
-		L4_SRC_PORT, 0,
-		L4_DST_PORT, 0,
-		TCP_FLAGS, 0,
-		PROTOCOL, 0,
-		TOS, 0,
-		SRC_MASK, 0,
-		DST_MASK, 0,
-		0 /* terminator */
-	}
-};
 #define TPL_FIELD_NSIZE 4 /* one complete template field's network size */
+
+static void free_templates(void)
+{
+	int i;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0)
+	struct hlist_node *pos;
+#endif
+	struct hlist_node *tmp;
+
+	for (i = 0; i < TEMPLATES_HASH_SIZE; i++) {
+		struct hlist_head *thead = &templates_hash[i];
+		struct data_template *tpl;
+
+		hlist_for_each_entry_safe(tpl, BEFORE390(pos), tmp, thead, hlist)
+			vfree(tpl);
+		INIT_HLIST_HEAD(thead);
+	}
+	tpl_count = 0;
+}
+
+/* create combined template from mask */
+static struct data_template *get_template(int tmask)
+{
+	struct base_template *tlist[BTPL_MAX];
+	struct data_template *tpl;
+	int tnum;
+	int length;
+	int i, j, k;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0)
+	struct hlist_node *pos;
+#endif
+	int hash = hash_32(tmask, TEMPLATES_HASH_BSIZE);
+
+	hlist_for_each_entry(tpl, BEFORE390(pos), &templates_hash[hash], hlist)
+		if (tpl->tpl_mask == tmask)
+			return tpl;
+
+	tnum = 0;
+	if (tmask & BTPL_IP4)
+		tlist[tnum++] = &template_ipv4;
+	if (tmask & BTPL_MASK)
+		tlist[tnum++] = &template_ipv4_mask;
+	if (tmask & BTPL_PORTS)
+		tlist[tnum++] = &template_ports;
+	if (tmask & BTPL_ICMP)
+		tlist[tnum++] = &template_icmp;
+	if (tmask & BTPL_IGMP)
+		tlist[tnum++] = &template_igmp;
+
+	/* calc memory size */
+	length = 0;
+	for (i = 0; i < tnum; i++) {
+		if (!tlist[i]->length) {
+			for (k = 0; tlist[i]->types[k]; k++);
+			tlist[i]->length = k;
+		}
+		length += tlist[i]->length;
+	}
+	/* elements are pairs + one termiantor */
+	tpl = vmalloc(sizeof(struct data_template) + (length * 2 + 1) * sizeof(u_int16_t));
+	if (!tpl) {
+		printk(KERN_ERR "ipt_NETFLOW: unable to vmalloc template.\n");
+		return NULL;
+	}
+	tpl->tpl_mask = tmask;
+	tpl->length = length;
+	tpl->tpl_size = sizeof(struct flowset_template);
+	tpl->rec_size = 0;
+	tpl->template_id_n = htons(template_ids++);
+	tpl->exported_seq = 0;
+	tpl->exported_ts = 0;
+
+	j = 0;
+	for (i = 0; i < tnum; i++) {
+		struct base_template *btpl = tlist[i];
+
+		for (k = 0; k < btpl->length; k++) {
+			int size;
+			int type = btpl->types[k];
+
+			tpl->fields[j++] = type;
+			size = tpl_element_sizes[type];
+			tpl->fields[j++] = size;
+			tpl->rec_size += size;
+		}
+		tpl->tpl_size += btpl->length * TPL_FIELD_NSIZE;
+	}
+	tpl->fields[j++] = 0;
+
+	hlist_add_head(&tpl->hlist, &templates_hash[hash]);
+	tpl_count++;
+
+	return tpl;
+}
 
 static void pdu_add_template(struct data_template *tpl)
 {
@@ -1341,26 +1477,6 @@ static void pdu_add_template(struct data_template *tpl)
 	unsigned char *ptr;
 	struct flowset_template *ntpl;
 	__be16 *sptr;
-
-	/* calc and cache template dimensions */
-	if (!tpl->template_id_n) {
-		tpl->template_id_n = htons(template_ids++);
-		tpl->length = 0;
-		tpl->rec_size = 0;
-		tpl->tpl_size = 0;
-		for (i = 0; ; ) {
-			int type = tpl->fields[i++];
-			int size;
-
-			if (!type)
-				break;
-			size = tpl_element_sizes[type];
-			tpl->fields[i++] = size;
-			tpl->rec_size += size;
-			tpl->length++;
-		}
-		tpl->tpl_size = sizeof(struct flowset_template) + tpl->length * TPL_FIELD_NSIZE;
-	}
 
 	ptr = pdu_alloc(tpl->tpl_size);
 	ntpl = (struct flowset_template *)ptr;
@@ -1404,6 +1520,8 @@ static inline void add_ipv4_field(void *ptr, int type, struct ipt_netflow *nf)
 		case TOS:	       *(__u8 *)ptr = nf->tuple.tos; break;
 		case SRC_MASK:	       *(__u8 *)ptr = nf->s_mask; break;
 		case DST_MASK:	       *(__u8 *)ptr = nf->d_mask; break;
+		case ICMP_TYPE:	     *(__be16 *)ptr = nf->tuple.d_port; break;
+		case MUL_IGMP_TYPE:    *(__u8 *)ptr = nf->tuple.d_port; break;
 		default:
 					memset(ptr, 0, tpl_element_sizes[type]);
 	}
@@ -1411,19 +1529,49 @@ static inline void add_ipv4_field(void *ptr, int type, struct ipt_netflow *nf)
 
 #define PAD_SIZE 4 /* rfc prescribes flowsets to be padded */
 
-static void netflow_export_flow_v9(struct ipt_netflow *nf)
+/* cache timeout_rate in jiffies */
+static inline unsigned long timeout_rate_j(void)
+{
+	static unsigned int t_rate = 0;
+	static unsigned long t_rate_j;
+
+	if (unlikely(timeout_rate != t_rate)) {
+		struct timeval tv = { .tv_sec = timeout_rate * 60, .tv_usec = 0 };
+
+		t_rate = timeout_rate;
+		t_rate_j = timeval_to_jiffies(&tv);
+	}
+	return t_rate_j;
+}
+
+static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 {
 	unsigned char *ptr;
 	int i;
 	struct data_template *tpl;
+	int tpl_mask = BTPL_IP4;
 
 	if (unlikely(debug > 2))
 		printk(KERN_INFO "adding flow to export (%d)\n", pdu_records);
 
 	if (unlikely(nf->s_mask || nf->d_mask))
-		tpl = &template_ipv4_aggr;
-	else
-		tpl = &template_ipv4;
+		tpl_mask |= BTPL_MASK;
+	if (likely(nf->tuple.protocol == IPPROTO_TCP || nf->tuple.protocol == IPPROTO_UDP))
+		tpl_mask |= BTPL_PORTS;
+	else if (nf->tuple.protocol == IPPROTO_ICMP)
+		tpl_mask |= BTPL_ICMP;
+	else if (nf->tuple.protocol == IPPROTO_IGMP)
+		tpl_mask |= BTPL_IGMP;
+
+	tpl = get_template(tpl_mask);
+	if (unlikely(!tpl)) {
+		printk(KERN_INFO "ipt_NETFLOW: template allocation failed.\n");
+		NETFLOW_STAT_INC(alloc_err);
+		NETFLOW_STAT_ADD_ATOMIC(pkt_drop, nf->nr_packets);
+		NETFLOW_STAT_ADD_ATOMIC(traf_drop, nf->nr_bytes);
+		ipt_netflow_free(nf);
+		return;
+	}
 
 	if (unlikely(!pdu_flowset ||
 	    pdu_flowset->flowset_id != tpl->template_id_n ||
@@ -1439,9 +1587,11 @@ static void netflow_export_flow_v9(struct ipt_netflow *nf)
 			}
 		}
 
-		if (!tpl->template_id_n ||
-		    pdu_seq > tpl->exported_seq + refresh_rate)
+		if (!tpl->exported_seq ||
+		    pdu_seq > (tpl->exported_seq + refresh_rate) ||
+		    time_is_before_jiffies(tpl->exported_ts + timeout_rate_j())) {
 			pdu_add_template(tpl);
+		}
 
 		ptr = pdu_alloc(sizeof(struct flowset_data) + tpl->rec_size);
 		pdu_flowset = (struct flowset_data *)ptr;
@@ -1459,13 +1609,13 @@ static void netflow_export_flow_v9(struct ipt_netflow *nf)
 		add_ipv4_field(ptr, type, nf);
 		ptr += tpl->fields[i++];
 	}
-	ipt_netflow_free(nf);
 
 	pdu_records++;
 	pdu_flowset->length = htons(ntohs(pdu_flowset->length) + tpl->rec_size);
 
 	pdu_packets += nf->nr_packets;
 	pdu_traf    += nf->nr_bytes;
+	ipt_netflow_free(nf);
 	pdu_ts_mod = jiffies;
 }
 
@@ -1479,19 +1629,17 @@ static void netflow_switch_version(int ver)
 		pdu_data_used = pdu.v9.data;
 		pdu_max_size = sizeof(pdu.v9);
 		pdu_high_wm = (unsigned char *)&pdu + pdu_max_size;
-		netflow_export_flow = &netflow_export_flow_v9;
+		netflow_export_flow = &netflow_export_flow_tpl;
 		netflow_export_pdu = &netflow_export_pdu_v9;
 	} else { /* IPFIX */
 		pdu_data_used = pdu.ipfix.data;
 		pdu_max_size = sizeof(pdu.ipfix);
 		pdu_high_wm = (unsigned char *)&pdu + pdu_max_size;
-		netflow_export_flow = &netflow_export_flow_v9;
+		netflow_export_flow = &netflow_export_flow_tpl;
 		netflow_export_pdu = &netflow_export_pdu_ipfix;
 	}
-	if (protocol != 5) {
-		template_ipv4.template_id_n = 0;
-		template_ipv4_aggr.template_id_n = 0;
-	}
+	if (protocol != 5)
+		free_templates();
 	pdu_records = 0;
 	printk(KERN_INFO "ipt_NETFLOW protocol version %d (%s) enabled.\n",
 	    protocol, protocol == 10? "IPFIX" : "NetFlow");
@@ -1705,7 +1853,7 @@ static unsigned int netflow_target(
 			struct icmphdr _hdr, *hp;
 
 			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 2, &_hdr)))
-				tuple.d_port = (hp->type << 8) | hp->code;
+				tuple.d_port = htons((hp->type << 8) | hp->code);
 			break;
 		    }
 		    case IPPROTO_IGMP: {
@@ -1789,7 +1937,7 @@ static unsigned int netflow_target(
 		nf->d_mask = d_mask;
 
 		if (unlikely(debug > 2))
-			printk(KERN_INFO "ipt_netflow: new (%u) %hd:%hd SRC=%u.%u.%u.%u:%u DST=%u.%u.%u.%u:%u\n",
+			printk(KERN_INFO "ipt_NETFLOW: new (%u) %hd:%hd SRC=%u.%u.%u.%u:%u DST=%u.%u.%u.%u:%u\n",
 			       atomic_read(&ipt_netflow_count),
 			       tuple.i_ifc, nf->o_ifc,
 			       NIPQUAD(tuple.s_addr), ntohs(tuple.s_port),
@@ -1869,7 +2017,7 @@ static int __init ipt_netflow_init(void)
 	}
 	if (hashsize < 16)
 		hashsize = 16;
-	printk(KERN_INFO "ipt_netflow version %s (%u buckets)\n",
+	printk(KERN_INFO "ipt_NETFLOW version %s (%u buckets)\n",
 		IPT_NETFLOW_VERSION, hashsize);
 
 	ipt_netflow_hash_size = hashsize;
@@ -1954,12 +2102,13 @@ static int __init ipt_netflow_init(void)
 
 	peakflows_at = jiffies;
 
-	printk(KERN_INFO "ipt_netflow loaded.\n");
+	printk(KERN_INFO "ipt_NETFLOW loaded.\n");
 	return 0;
 
 err_stop_timer:
 	__stop_scan_worker();
 	del_timer_sync(&rate_timer);
+	free_templates();
 	destination_removeall();
 	aggregation_remove(&aggr_n_list);
 	aggregation_remove(&aggr_p_list);
@@ -1981,7 +2130,7 @@ err:
 
 static void __exit ipt_netflow_fini(void)
 {
-	printk(KERN_INFO "ipt_netflow unloading..\n");
+	printk(KERN_INFO "ipt_NETFLOW unloading..\n");
 
 #ifdef CONFIG_SYSCTL
 	unregister_sysctl_table(netflow_sysctl_header);
@@ -1997,6 +2146,7 @@ static void __exit ipt_netflow_fini(void)
 
 	synchronize_sched();
 
+	free_templates();
 	destination_removeall();
 	aggregation_remove(&aggr_n_list);
 	aggregation_remove(&aggr_p_list);
@@ -2004,7 +2154,7 @@ static void __exit ipt_netflow_fini(void)
 	kmem_cache_destroy(ipt_netflow_cachep);
 	vfree(ipt_netflow_hash);
 
-	printk(KERN_INFO "ipt_netflow unloaded.\n");
+	printk(KERN_INFO "ipt_NETFLOW unloaded.\n");
 }
 
 module_init(ipt_netflow_init);
