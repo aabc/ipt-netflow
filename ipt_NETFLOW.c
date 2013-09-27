@@ -1310,6 +1310,7 @@ static u_int8_t tpl_element_sizes[] = {
 	//[TOTAL_FLOWS_EXP]	= 4,
 	//[IP_PROTOCOL_VERSION]	= 1,
 	//[DIRECTION]		= 1,
+	[IPSecSPI]	= 4,
 };
 
 #define TEMPLATES_HASH_BSIZE	8
@@ -1327,6 +1328,7 @@ struct base_template {
 #define BTPL_PORTS	0x00000004	/* UDP&TCP */
 #define BTPL_ICMP	0x00000008	/* ICMP */
 #define BTPL_IGMP	0x00000010	/* IGMP */
+#define BTPL_IPSEC	0x00000020	/* AH&ESP */
 #define BTPL_MAX	32
 
 static struct base_template template_ipv4 = {
@@ -1368,6 +1370,12 @@ static struct base_template template_icmp = {
 static struct base_template template_igmp = {
 	.types = {
 		MUL_IGMP_TYPE,
+		0
+	}
+};
+static struct base_template template_ipsec = {
+	.types = {
+		IPSecSPI,
 		0
 	}
 };
@@ -1434,6 +1442,8 @@ static struct data_template *get_template(int tmask)
 		tlist[tnum++] = &template_icmp;
 	if (tmask & BTPL_IGMP)
 		tlist[tnum++] = &template_igmp;
+	if (tmask & BTPL_IPSEC)
+		tlist[tnum++] = &template_ipsec;
 
 	/* calc memory size */
 	length = 0;
@@ -1532,6 +1542,7 @@ static inline void add_ipv4_field(void *ptr, int type, struct ipt_netflow *nf)
 		case DST_MASK:	       *(__u8 *)ptr = nf->d_mask; break;
 		case ICMP_TYPE:	     *(__be16 *)ptr = nf->tuple.d_port; break;
 		case MUL_IGMP_TYPE:    *(__u8 *)ptr = nf->tuple.d_port; break;
+		case IPSecSPI:        *(__u32 *)ptr = (nf->tuple.s_port << 16) | nf->tuple.d_port; break;
 		default:
 					memset(ptr, 0, tpl_element_sizes[type]);
 	}
@@ -1554,6 +1565,10 @@ static inline unsigned long timeout_rate_j(void)
 	return t_rate_j;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
+#define IPPROTO_UDPLITE 136
+#endif
+
 static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 {
 	unsigned char *ptr;
@@ -1567,7 +1582,10 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 
 	if (unlikely(nf->s_mask || nf->d_mask))
 		tpl_mask |= BTPL_MASK;
-	if (likely(nf->tuple.protocol == IPPROTO_TCP || nf->tuple.protocol == IPPROTO_UDP))
+	if (likely(nf->tuple.protocol == IPPROTO_TCP ||
+		    nf->tuple.protocol == IPPROTO_UDP ||
+		    nf->tuple.protocol == IPPROTO_SCTP ||
+		    nf->tuple.protocol == IPPROTO_UDPLITE))
 		tpl_mask |= BTPL_PORTS;
 	else if (nf->tuple.protocol == IPPROTO_ICMP)
 		tpl_mask |= BTPL_ICMP;
@@ -1854,7 +1872,9 @@ static unsigned int netflow_target(
 			}
 			break;
 		    }
-		    case IPPROTO_UDP: {
+		    case IPPROTO_UDP:
+		    case IPPROTO_UDPLITE:
+		    case IPPROTO_SCTP: {
 			struct udphdr _hdr, *hp;
 
 			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 4, &_hdr))) {
@@ -1871,10 +1891,26 @@ static unsigned int netflow_target(
 			break;
 		    }
 		    case IPPROTO_IGMP: {
-			struct igmphdr *_hdr, *hp;
+			struct igmphdr _hdr, *hp;
 
 			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 1, &_hdr)))
 				tuple.d_port = hp->type;
+			}
+			break;
+		    case IPPROTO_AH: { /* IPSEC */
+			struct ip_auth_hdr _hdr, *hp;
+
+			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 8, &_hdr)))
+				tuple.s_port = hp->spi >> 16;
+				tuple.d_port = hp->spi;
+			}
+			break;
+		    case IPPROTO_ESP: {
+			struct ip_esp_hdr _hdr, *hp;
+
+			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 4, &_hdr)))
+				tuple.s_port = hp->spi >> 16;
+				tuple.d_port = hp->spi;
 			}
 			break;
 	       	}
@@ -1897,7 +1933,10 @@ static unsigned int netflow_target(
 			break; 
 		}
 
-	if (tuple.protocol == IPPROTO_TCP || tuple.protocol == IPPROTO_UDP) {
+	if (tuple.protocol == IPPROTO_TCP ||
+	    tuple.protocol == IPPROTO_UDP ||
+	    tuple.protocol == IPPROTO_SCTP ||
+	    tuple.protocol == IPPROTO_UDPLITE) {
 		/* aggregate ports */
 		list_for_each_entry(aggr_p, &aggr_p_list, list)
 			if (unlikely(ntohs(tuple.s_port) >= aggr_p->port1 &&

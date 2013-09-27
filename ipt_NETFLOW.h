@@ -95,6 +95,8 @@ enum {
 	//TOTAL_FLOWS_EXP = 42,
 	//IP_PROTOCOL_VERSION = 60,
 	//DIRECTION = 61,
+	/* Values 0-127: NFv9-compatible. Below this line is IPFIX only */
+	IPSecSPI = 295,
 };
 
 enum {
