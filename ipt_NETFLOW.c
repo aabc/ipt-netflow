@@ -18,8 +18,6 @@
  *
  */
 
-//#define RAW_PROMISC_HACK
-
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/proc_fs.h>
@@ -1841,9 +1839,10 @@ static unsigned int netflow_target(
 	s_mask		= 0;
 	d_mask		= 0;
 
-	if (unlikely(iph->frag_off & htons(IP_OFFSET)))
+	if (unlikely(iph->frag_off & htons(IP_OFFSET))) {
+		/* if conntrack is enabled it should defrag on pre-routing and local-out */
 		NETFLOW_STAT_INC(frags);
-	else {
+	} else {
 		switch (tuple.protocol) {
 		    case IPPROTO_TCP: {
 			struct tcphdr _hdr, *hp;
@@ -1989,30 +1988,51 @@ static unsigned int netflow_target(
 	return IPT_CONTINUE;
 }
 
-static struct ipt_target ipt_netflow_reg = {
-	.name		= "NETFLOW",
-	.target		= netflow_target,
-	.family		= AF_INET,
-#ifndef RAW_PROMISC_HACK
-	.table		= "filter",
 #ifndef NF_IP_LOCAL_IN /* 2.6.25 */
-	.hooks		= (1 << NF_INET_LOCAL_IN) | (1 << NF_INET_FORWARD) |
-				(1 << NF_INET_LOCAL_OUT),
-#else
-	.hooks		= (1 << NF_IP_LOCAL_IN) | (1 << NF_IP_FORWARD) |
-				(1 << NF_IP_LOCAL_OUT),
-#endif /* NF_IP_LOCAL_IN */
-#else
-	.table          = "raw",
-#ifndef NF_IP_LOCAL_IN
-	.hooks          = (1 << NF_INET_LOCAL_IN) | (1 << NF_INET_FORWARD) |
-				(1 << NF_INET_LOCAL_OUT) | (1 << NF_INET_PRE_ROUTING),
-#else
-	.hooks          = (1 << NF_IP_LOCAL_IN) | (1 << NF_IP_FORWARD) |
-				(1 << NF_IP_LOCAL_OUT) | (1 << NF_IP_PRE_ROUTING),
-#endif /* NF_IP_LOCAL_IN */
-#endif /* !RAW_PROMISC_HACK */
-	.me		= THIS_MODULE
+#define NF_IP_PRE_ROUTING	NF_INET_PRE_ROUTING
+#define NF_IP_LOCAL_IN		NF_INET_LOCAL_IN
+#define NF_IP_FORWARD		NF_INET_FORWARD
+#define NF_IP_LOCAL_OUT		NF_INET_LOCAL_OUT
+#define NF_IP_POST_ROUTING	NF_INET_POST_ROUTING
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
+/* net/netfilter/x_tables.c */
+static int xt_register_targets(struct xt_target *target, unsigned int n)
+{
+	unsigned int i;
+	int err = 0;
+	for (i = 0; i < n; n++)
+		if ((err = xt_register_target(&target[i])))
+			goto err;
+	return err;
+err:
+	if (i > 0)
+		xt_unregister_targets(target, i);
+	return err;
+
+}
+static void xt_unregister_targets(struct xt_target *target, unsigned int n)
+{
+	unsigned int i;
+	for (i = 0; i < n; n++)
+		xt_unregister_target(&target[i]);
+}
+#endif
+
+static struct ipt_target ipt_netflow_reg[] __read_mostly = {
+	{
+		.name		= "NETFLOW",
+		.target		= netflow_target,
+		.family		= AF_INET,
+		.hooks		=
+		       	(1 << NF_IP_PRE_ROUTING) |
+		       	(1 << NF_IP_LOCAL_IN) |
+		       	(1 << NF_IP_FORWARD) |
+			(1 << NF_IP_LOCAL_OUT) |
+			(1 << NF_IP_POST_ROUTING),
+		.me		= THIS_MODULE
+	},
 };
 
 static int __init ipt_netflow_init(void)
@@ -2112,7 +2132,7 @@ static int __init ipt_netflow_init(void)
 	setup_timer(&rate_timer, rate_timer_calc, 0);
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
 
-	if (xt_register_target(&ipt_netflow_reg))
+	if (xt_register_targets(ipt_netflow_reg, ARRAY_SIZE(ipt_netflow_reg)))
 		goto err_stop_timer;
 
 	peakflows_at = jiffies;
@@ -2154,7 +2174,7 @@ static void __exit ipt_netflow_fini(void)
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
 #endif
 
-	xt_unregister_target(&ipt_netflow_reg);
+	xt_unregister_targets(ipt_netflow_reg, ARRAY_SIZE(ipt_netflow_reg));
 	__stop_scan_worker();
 	netflow_scan_and_export(AND_FLUSH);
 	del_timer_sync(&rate_timer);

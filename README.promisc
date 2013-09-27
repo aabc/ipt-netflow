@@ -38,17 +38,7 @@ If you wish to account with netflow module traffic mirrored on switch you may fo
  # /sbin/vconfig add eth1 47
  # /sbin/ifconfig eth1.47 up
 
-5. Recompile ipt_netflow module with #define RAW_PROMISC_HACK uncommented:
-
- Find this line in ipt_NETFLOW.c (should be line 7):
-
-//#define RAW_PROMISC_HACK
-
- And remove two slashes at beginning of the line, so it become like this:
-
-#define RAW_PROMISC_HACK
-
- Re-compile module:
+5. Compile module:
 
  # make clean all install
 
