@@ -2025,6 +2025,9 @@ static int __init ipt_netflow_init(void)
 
 	/* determine hash size (idea from nf_conntrack_core.c) */
 	if (!hashsize) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,11,0)
+#define num_physpages totalram_pages
+#endif
 		hashsize = (((num_physpages << PAGE_SHIFT) / 16384)
 					 / sizeof(struct hlist_head));
 		if (num_physpages > (1024 * 1024 * 1024 / PAGE_SIZE))
