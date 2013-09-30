@@ -321,7 +321,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "cpu#  stat: <search found new [metric], trunc frag alloc maxflows>,"
 	    " sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
 
-#define SAFEDIV(x,y) ((y)? (x) / (y) : 0)
+#define SAFEDIV(x,y) ((y)? ({ u64 __tmp = x; do_div(__tmp, y); (int)__tmp; }) : 0)
 	seq_printf(seq, "Total stat: %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
 	    " sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
 	    searched,
