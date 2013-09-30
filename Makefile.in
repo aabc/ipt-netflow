@@ -36,11 +36,11 @@ Makefile: Makefile.in configure
 	./configure --make
 
 load: all
-	insmod ipt_NETFLOW.ko active_timeout=5
-	iptables -A OUTPUT -d 0/0 -j NETFLOW
-	iptables -A INPUT -d 0/0 -j NETFLOW
+	-insmod ipt_NETFLOW.ko active_timeout=5
+	-iptables -A OUTPUT -j NETFLOW
+	-iptables -A INPUT -j NETFLOW
 
 unload:
-	iptables -D OUTPUT -d 0/0 -j NETFLOW
-	iptables -D INPUT -d 0/0 -j NETFLOW
-	rmmod ipt_NETFLOW.ko
+	-iptables -D OUTPUT -j NETFLOW
+	-iptables -D INPUT -j NETFLOW
+	-rmmod ipt_NETFLOW.ko
