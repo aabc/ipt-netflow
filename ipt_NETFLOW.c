@@ -1161,7 +1161,7 @@ static void netflow_export_flow_v5(struct ipt_netflow *nf)
 	/* make V5 flow record */
 	rec->s_addr	= nf->tuple.s_addr;
 	rec->d_addr	= nf->tuple.d_addr;
-	//rec->nexthop	= 0;
+	rec->nexthop	= nf->nexthop;
 	rec->i_ifc	= htons(nf->tuple.i_ifc);
 	rec->o_ifc	= htons(nf->o_ifc);
 	rec->nr_packets = htonl(nf->nr_packets);
@@ -1295,7 +1295,7 @@ static u_int8_t tpl_element_sizes[] = {
 	[IPV4_DST_ADDR]	= 4,
 	[DST_MASK]	= 1,
 	[OUTPUT_SNMP]	= 2,
-	//[IPV4_NEXT_HOP]	= 4,
+	[IPV4_NEXT_HOP]	= 4,
 	//[SRC_AS]		= 2,
 	//[DST_AS]		= 2,
 	//[BGP_IPV4_NEXT_HOP]	= 4,
@@ -1341,6 +1341,7 @@ static struct base_template template_ipv4 = {
 		IN_BYTES,
 		FIRST_SWITCHED,
 		LAST_SWITCHED,
+		IPV4_NEXT_HOP,
 		PROTOCOL,
 		TOS,
 		0
@@ -1531,6 +1532,7 @@ static inline void add_ipv4_field(void *ptr, int type, struct ipt_netflow *nf)
 		case LAST_SWITCHED:  *(__be32 *)ptr = htonl(jiffies_to_msecs(nf->ts_last)); break;
 		case IPV4_SRC_ADDR:  *(__be32 *)ptr = nf->tuple.s_addr; break;
 		case IPV4_DST_ADDR:  *(__be32 *)ptr = nf->tuple.d_addr; break;
+		case IPV4_NEXT_HOP:  *(__be32 *)ptr = nf->nexthop; break;
 		case L4_SRC_PORT:    *(__be16 *)ptr = nf->tuple.s_port; break;
 		case L4_DST_PORT:    *(__be16 *)ptr = nf->tuple.d_port; break;
 		case INPUT_SNMP:     *(__be16 *)ptr = htons(nf->tuple.i_ifc); break;
@@ -1961,6 +1963,8 @@ static unsigned int netflow_target(
 	/* record */
 	nf = ipt_netflow_find(&tuple, hash);
 	if (unlikely(!nf)) {
+		struct rtable *rt;
+
 		if (unlikely(maxflows > 0 && atomic_read(&ipt_netflow_count) >= maxflows)) {
 			/* This is DOS attack prevention */
 			NETFLOW_STAT_INC(maxflows_err);
@@ -1988,6 +1992,9 @@ static unsigned int netflow_target(
 #endif
 		nf->s_mask = s_mask;
 		nf->d_mask = d_mask;
+		rt = skb_rtable(skb);
+		if (rt)
+			nf->nexthop = rt->rt_gateway;
 
 		if (unlikely(debug > 2))
 			printk(KERN_INFO "ipt_NETFLOW: new (%u) %hd:%hd SRC=%u.%u.%u.%u:%u DST=%u.%u.%u.%u:%u\n",

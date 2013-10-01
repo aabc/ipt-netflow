@@ -80,7 +80,7 @@ enum {
 	IPV4_DST_ADDR = 12,
 	DST_MASK = 13,
 	OUTPUT_SNMP = 14,
-	//IPV4_NEXT_HOP = 15,
+	IPV4_NEXT_HOP = 15,
 	//SRC_AS = 16,
 	//DST_AS = 17,
 	//BGP_IPV4_NEXT_HOP = 18,
@@ -165,6 +165,7 @@ struct ipt_netflow {
 	struct ipt_netflow_tuple tuple;
 
 	/* volatile data */
+	__be32		nexthop;
 	__be16		o_ifc;
 	__u8		s_mask;
 	__u8		d_mask;
