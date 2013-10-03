@@ -94,8 +94,14 @@ enum {
 	//TOTAL_PKTS_EXP = 41,
 	//TOTAL_FLOWS_EXP = 42,
 	//IP_PROTOCOL_VERSION = 60,
-	//DIRECTION = 61,
+	DIRECTION = 61,
 	/* Values 0-127: NFv9-compatible. Below this line is IPFIX only */
+	commonPropertiesId = 137, /* for MARK */
+	postNATSourceIPv4Address = 225,
+	postNATDestinationIPv4Address = 226,
+	postNAPTSourceTransportPort = 227,
+	postNAPTDestinationTransportPort = 228,
+	natEvent = 230,
 	IPSecSPI = 295,
 };
 
@@ -169,14 +175,43 @@ struct ipt_netflow {
 	__be16		o_ifc;
 	__u8		s_mask;
 	__u8		d_mask;
+	__u8		tcp_flags; /* `OR' of all tcp flags */
 
 	/* flow statistics */
 	u_int32_t	nr_packets;
 	u_int32_t	nr_bytes;
 	unsigned long	ts_first;
 	unsigned long	ts_last;
-	__u8		tcp_flags; /* `OR' of all tcp flags */
+#ifdef CONFIG_NF_CONNTRACK_MARK
+	u_int32_t	mark;
+#endif
+#ifdef CONFIG_NF_NAT_NEEDED
+	__be32		s_as;
+	__be32		d_as;
+	struct nat_event *nat;
+#endif
 };
+
+#ifdef CONFIG_NF_NAT_NEEDED
+enum {
+	NAT_CREATE, NAT_DESTROY, NAT_POOLEXHAUSTED
+};
+struct nat_event {
+	struct list_head list;
+	struct {
+		__be32	s_addr;
+		__be32	d_addr;
+		__be16	s_port;
+		__be16	d_port;
+	} pre, post;
+	unsigned long	ts;
+	__u8	protocol;
+	__u8	nat_event;
+};
+#define IS_DUMMY_NF(nf) (nf->nat)
+#else
+#define IS_DUMMY_NF(nf) 0
+#endif
 
 static inline int ipt_netflow_tuple_equal(const struct ipt_netflow_tuple *t1,
 				    const struct ipt_netflow_tuple *t2)
