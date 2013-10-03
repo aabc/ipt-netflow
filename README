@@ -1,7 +1,9 @@
 ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
 
    High performance NetFlow v5, v9, IPFIX data exporter module for Linux kernel.
-   It should be used as iptables target.
+   It should be used as iptables target. Also can export NAT translation events
+   as NetFlow Event Logging (NEL) for v9, IPFIX or specially crafted v5 flows.
+
 
 ============================
 = OBTAINING LATEST VERSION =
@@ -81,6 +83,21 @@ Troubleshooting:
    destination=127.0.0.1:2055,192.0.0.1:2055
      - mirror flows to two (can be more) addresses,
        separate addresses with comma.
+
+   natevents=1
+     - Collect and send NAT translation events as NetFlow Event Logging (NEL)
+       for NetFlow v9/IPFIX, or as dummy flows compatible with NetFlow v5. This
+       overall feature is only supported for kernels below 3.2.
+       Default is 0 (don't send).
+
+       For NetFlow v5 protocol meaning of fields in dummy flows is such:
+         Src IP, Src Port is Pre-nat source address.
+         Dst IP, Dst Port is Post-nat destination address.
+           - These two fields made equal to data flows catched in FORWARD chain.
+	 Nexthop, Src AS is Post-nat source address for SNAT. Or,
+	 Nexthop, Dst AS is Pre-nat destination address for DNAT.
+	 TCP Flags is SYN+SCK for start event, RST+FIN for stop event.
+	 Pkt/Traffic size is 0 (zero), so it won't interfere with accounting.
 
    inactive_timeout=15
      - export flow after it's inactive 15 seconds. Default value is 15.
@@ -243,6 +260,11 @@ Troubleshooting:
       packet is for new flow but failed to allocate memory for it,
       packet is for new flow but maxflows is already reached,
       all flows in export packets that got socket error.
+
+> Natevents disabled, count start 0, stop 0.
+
+    - Natevents mode disabled or enabled, and how much start or stop events
+      are reported.
 
 > sock0: 10.0.0.2:2055 unconnected (1 attempts).
 
