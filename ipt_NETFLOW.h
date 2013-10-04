@@ -156,8 +156,6 @@ struct ipt_netflow_tuple {
 	__u8		protocol;
 	__u8		tos;
 };
-/* tuple size is rounded to u32s */
-#define NETFLOW_TUPLE_SIZE (sizeof(struct ipt_netflow_tuple) / 4)
 
 /* maximum bytes flow can have, after it reached flow become not searchable and will be exported soon */
 #define FLOW_FULL_WATERMARK 0xffefffff

@@ -30,7 +30,6 @@
 #include <linux/igmp.h>
 #include <linux/inetdevice.h>
 #include <linux/hash.h>
-#include <linux/jhash.h>
 #include <linux/delay.h>
 #include <net/icmp.h>
 #include <net/ip.h>
@@ -46,6 +45,7 @@
 #include <linux/version.h>
 #include <asm/unaligned.h>
 #include "ipt_NETFLOW.h"
+#include "murmur3.h"
 #ifdef CONFIG_BRIDGE_NETFILTER
 #include <linux/netfilter_bridge.h>
 #endif
@@ -1027,8 +1027,7 @@ static int add_aggregation(char *ptr)
 
 static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple)
 {
-	/* tuple is rounded to u32s */
-	return jhash2((u32 *)tuple, NETFLOW_TUPLE_SIZE, ipt_netflow_hash_rnd) % ipt_netflow_hash_size;
+	return murmur3(tuple, sizeof(struct ipt_netflow_tuple), ipt_netflow_hash_rnd) % ipt_netflow_hash_size;
 }
 
 static struct ipt_netflow *
