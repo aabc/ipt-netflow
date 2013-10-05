@@ -147,9 +147,13 @@ static LIST_HEAD(usock_list);
 static DEFINE_RWLOCK(sock_lock);
 
 static unsigned int ipt_netflow_hash_rnd;
+#define LOCK_COUNT (1<<9)
+#define LOCK_COUNT_MASK (LOCK_COUNT-1)
+static spinlock_t htable_locks[] = { [0 ... LOCK_COUNT - 1] = SPIN_LOCK_UNLOCKED };
 static struct hlist_head *ipt_netflow_hash __read_mostly; /* hash table memory */
 static unsigned int ipt_netflow_hash_size __read_mostly = 0; /* buckets */
 static LIST_HEAD(ipt_netflow_list); /* all flows */
+static DEFINE_SPINLOCK(hlist_lock);
 static LIST_HEAD(aggr_n_list);
 static LIST_HEAD(aggr_p_list);
 static DEFINE_RWLOCK(aggr_lock);
@@ -167,7 +171,6 @@ static unsigned long nat_events_stop = 0;
 #endif
 static struct kmem_cache *ipt_netflow_cachep __read_mostly; /* ipt_netflow memory */
 static atomic_t ipt_netflow_count = ATOMIC_INIT(0);
-static DEFINE_SPINLOCK(ipt_netflow_lock); /* hash table lock */
 
 static long long pdu_packets = 0, pdu_traf = 0; /* how much accounted traffic in pdu */
 static unsigned int pdu_count = 0;
@@ -212,7 +215,7 @@ static void destination_removeall(void);
 static int add_destinations(char *ptr);
 static void aggregation_remove(struct list_head *list);
 static int add_aggregation(char *ptr);
-static void netflow_scan_and_export(int flush);
+static int netflow_scan_and_export(int flush);
 enum {
 	DONT_FLUSH, AND_FLUSH
 };
@@ -235,20 +238,34 @@ static inline int mask2bits(__be32 mask) {
 /* under that lock worker is always stopped and not rescheduled,
  * and we can call worker sub-functions manually */
 static DEFINE_MUTEX(worker_lock);
-static inline void __start_scan_worker(void)
+#define MIN_DELAY 1
+#define MAX_DELAY (HZ / 10)
+static int worker_delay = HZ / 10;
+static inline void _schedule_scan_worker(int status)
 {
-	schedule_delayed_work(&netflow_work, HZ / 10);
+	/* rudimentary congestion avoidance */
+	if (status > 0)
+		worker_delay -= status;
+	else if (status < 0)
+		worker_delay /= 2;
+	else
+		worker_delay++;
+	if (worker_delay < MIN_DELAY)
+		worker_delay = MIN_DELAY;
+	else if (worker_delay > MAX_DELAY)
+		worker_delay = MAX_DELAY;
+	schedule_delayed_work(&netflow_work, worker_delay);
 }
 
 static inline void start_scan_worker(void)
 {
-	__start_scan_worker();
+	_schedule_scan_worker(0);
 	mutex_unlock(&worker_lock);
 }
 
 /* we always stop scanner before write_lock(&sock_lock)
  * to let it never hold that spin lock */
-static inline void __stop_scan_worker(void)
+static inline void _unschedule_scan_worker(void)
 {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,23)
 	cancel_rearming_delayed_work(&netflow_work);
@@ -260,7 +277,7 @@ static inline void __stop_scan_worker(void)
 static inline void stop_scan_worker(void)
 {
 	mutex_lock(&worker_lock);
-	__stop_scan_worker();
+	_unschedule_scan_worker();
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
@@ -287,11 +304,12 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	int snum = 0;
 	int peak = (jiffies - peakflows_at) / HZ;
 
-	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK\n",
+	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d.\n",
 		   nr_flows,
 		   peakflows,
 		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
-		   (unsigned int)((nr_flows * sizeof(struct ipt_netflow)) >> 10));
+		   (unsigned int)((nr_flows * sizeof(struct ipt_netflow)) >> 10),
+		   worker_delay, HZ);
 
 	for_each_present_cpu(cpu) {
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
@@ -1055,6 +1073,20 @@ ipt_netflow_find(const struct ipt_netflow_tuple *tuple, unsigned int hash)
 	return NULL;
 }
 
+enum { LOCKALL, UNLOCKALL };
+/* Only used in set_hashsize() */
+static void htable_lock(int unlock)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(htable_locks); i++) {
+		if (unlock)
+			spin_unlock_bh(&htable_locks[i]);
+		else
+			spin_lock_bh(&htable_locks[i]);
+	}
+}
+
 static struct hlist_head *alloc_hashtable(int size)
 {
 	struct hlist_head *hash;
@@ -1087,19 +1119,22 @@ static int set_hashsize(int new_size)
 	get_random_bytes(&rnd, 4);
 
 	/* rehash */
-	spin_lock_bh(&ipt_netflow_lock);
+	htable_lock(LOCKALL);
 	old_hash = ipt_netflow_hash;
 	ipt_netflow_hash = new_hash;
 	ipt_netflow_hash_size = new_size;
 	ipt_netflow_hash_rnd = rnd;
 	/* hash_netflow() is dependent on ipt_netflow_hash_* values */
+	spin_lock_bh(&hlist_lock);
 	list_for_each_entry(nf, &ipt_netflow_list, list) {
 		hash = hash_netflow(&nf->tuple);
 		/* hlist_add_head overwrites hlist pointers for this node
 		 * so it's good */
 		hlist_add_head(&nf->hlist, &new_hash[hash]);
+		nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
 	}
-	spin_unlock_bh(&ipt_netflow_lock);
+	spin_unlock_bh(&hlist_lock);
+	htable_lock(UNLOCKALL);
 
 	vfree(old_hash);
 
@@ -1132,7 +1167,7 @@ ipt_netflow_alloc(struct ipt_netflow_tuple *tuple)
 
 static void ipt_netflow_free(struct ipt_netflow *nf)
 {
-	if (IS_DUMMY_NF(nf))
+	if (IS_DUMMY_FLOW(nf))
 		return;
 	atomic_dec(&ipt_netflow_count);
 	kmem_cache_free(ipt_netflow_cachep, nf);
@@ -1148,8 +1183,11 @@ init_netflow(struct ipt_netflow_tuple *tuple,
 	if (!nf)
 		return NULL;
 
+	nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
 	hlist_add_head(&nf->hlist, &ipt_netflow_hash[hash]);
+	spin_lock_bh(&hlist_lock);
 	list_add(&nf->list, &ipt_netflow_list);
+	spin_unlock_bh(&hlist_lock);
 
 	return nf;
 }
@@ -1828,37 +1866,52 @@ static void export_nat_event(struct nat_event *nel)
 
 /* could be called with zero to flush cache and pdu */
 /* this function is guaranteed to be called non-concurrently */
-static void netflow_scan_and_export(int flush)
+/* return -1 is trylockfailed, 0 if nothin gexported, >=1 if exported something */
+static int netflow_scan_and_export(int flush)
 {
 	long i_timeout = inactive_timeout * HZ;
 	long a_timeout = active_timeout * HZ;
+	int trylock_failed = 0;
+	int pdu_c = pdu_count;
 
 	if (flush)
 		i_timeout = 0;
 
-	spin_lock_bh(&ipt_netflow_lock);
+	spin_lock_bh(&hlist_lock);
+	/* This is different order of locking than elsewhere,
+	 * so we trylock&break to avoid deadlock. */
+
 	while (likely(!list_empty(&ipt_netflow_list))) {
 		struct ipt_netflow *nf;
-	       
+
+		/* Last entry, which is usually oldest. */
 		nf = list_entry(ipt_netflow_list.prev, struct ipt_netflow, list);
+		if (!spin_trylock_bh(nf->lock)) {
+			trylock_failed = 1;
+			break;
+		}
 		/* Note: i_timeout checked with >= to allow specifying zero timeout
 		 * to purge all flows on module unload */
 		if (((jiffies - nf->ts_last) >= i_timeout) ||
 		    active_needs_export(nf, a_timeout)) {
 			hlist_del(&nf->hlist);
+			spin_unlock_bh(nf->lock);
+
 			list_del(&nf->list);
+			spin_unlock_bh(&hlist_lock);
+
 			NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
 			NETFLOW_STAT_ADD(traf_out, nf->nr_bytes);
-			spin_unlock_bh(&ipt_netflow_lock);
 			netflow_export_flow(nf);
-			spin_lock_bh(&ipt_netflow_lock);
+			spin_lock_bh(&hlist_lock);
 		} else {
+			spin_unlock_bh(nf->lock);
 			/* all flows which need to be exported is always at the tail
 			 * so if no more exportable flows we can break */
 			break;
 		}
 	}
-	spin_unlock_bh(&ipt_netflow_lock);
+	spin_unlock_bh(&hlist_lock);
 
 #ifdef CONFIG_NF_NAT_NEEDED
 	write_lock_bh(&nat_lock);
@@ -1877,6 +1930,8 @@ static void netflow_scan_and_export(int flush)
 	/* Note: using >= to allow flow purge on zero timeout */
 	if ((jiffies - pdu_ts_mod) >= i_timeout)
 		netflow_export_pdu();
+
+	return trylock_failed? -1 : pdu_count - pdu_c;
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
@@ -1885,8 +1940,10 @@ static void netflow_work_fn(void *dummy)
 static void netflow_work_fn(struct work_struct *dummy)
 #endif
 {
-	netflow_scan_and_export(DONT_FLUSH);
-	__start_scan_worker();
+	int status;
+
+	status = netflow_scan_and_export(DONT_FLUSH);
+	_schedule_scan_worker(status);
 }
 
 #define RATESHIFT 2
@@ -2060,6 +2117,7 @@ static unsigned int netflow_target(
 	struct netflow_aggr_p *aggr_p;
 	__u8 s_mask, d_mask;
 	unsigned int hash;
+	spinlock_t *lock;
 
 	iph = skb_header_pointer(skb, 0, sizeof(_iph), &_iph); //iph = ip_hdr(skb);
 
@@ -2184,7 +2242,8 @@ static unsigned int netflow_target(
 	read_unlock_bh(&aggr_lock);
 
 	hash = hash_netflow(&tuple);
-	spin_lock_bh(&ipt_netflow_lock);
+	lock = &htable_locks[hash & LOCK_COUNT_MASK];
+	spin_lock_bh(lock);
 	/* record */
 	nf = ipt_netflow_find(&tuple, hash);
 	if (unlikely(!nf)) {
@@ -2195,7 +2254,7 @@ static unsigned int netflow_target(
 			NETFLOW_STAT_INC(maxflows_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, ntohs(iph->tot_len));
-			spin_unlock_bh(&ipt_netflow_lock);
+			spin_unlock_bh(&htable_locks[hash & LOCK_COUNT_MASK]);
 			return IPT_CONTINUE;
 		}
 
@@ -2204,7 +2263,7 @@ static unsigned int netflow_target(
 			NETFLOW_STAT_INC(alloc_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, ntohs(iph->tot_len));
-			spin_unlock_bh(&ipt_netflow_lock);
+			spin_unlock_bh(&htable_locks[hash & LOCK_COUNT_MASK]);
 			return IPT_CONTINUE;
 		}
 
@@ -2231,7 +2290,9 @@ static unsigned int netflow_target(
 		/* ipt_netflow_list is sorted by access time:
 		 * most recently accessed flows are at head, old flows remain at tail
 		 * this function bubble up flow to the head */
+		spin_lock_bh(&hlist_lock);
 		list_move(&nf->list, &ipt_netflow_list);
+		spin_unlock_bh(&hlist_lock);
 	}
 
 #if defined(CONFIG_NF_CONNTRACK_MARK)
@@ -2255,7 +2316,9 @@ static unsigned int netflow_target(
 	if (likely(active_needs_export(nf, active_timeout * HZ))) {
 		/* ok, if this active flow to be exported
 		 * bubble it to the tail */
+		spin_lock_bh(&hlist_lock);
 		list_move_tail(&nf->list, &ipt_netflow_list);
+		spin_unlock_bh(&hlist_lock);
 
 		/* Blog: I thought about forcing timer to wake up sooner if we have
 		 * enough exportable flows, but in fact this doesn't have much sense,
@@ -2264,7 +2327,7 @@ static unsigned int netflow_target(
 		 * limited size). But yes, this is disputable. */
 	}
 
-	spin_unlock_bh(&ipt_netflow_lock);
+	spin_unlock_bh(lock);
 
 	return IPT_CONTINUE;
 }
@@ -2413,7 +2476,7 @@ static int __init ipt_netflow_init(void)
 	add_aggregation(aggregation);
 
 	netflow_switch_version(protocol);
-	__start_scan_worker();
+	_schedule_scan_worker(0);
 	setup_timer(&rate_timer, rate_timer_calc, 0);
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
 
@@ -2430,7 +2493,7 @@ static int __init ipt_netflow_init(void)
 	return 0;
 
 err_stop_timer:
-	__stop_scan_worker();
+	_unschedule_scan_worker();
 	del_timer_sync(&rate_timer);
 	free_templates();
 	destination_removeall();
@@ -2467,7 +2530,7 @@ static void __exit ipt_netflow_fini(void)
 #ifdef CONFIG_NF_NAT_NEEDED
 	nf_conntrack_unregister_notifier(&ctnl_notifier);
 #endif
-	__stop_scan_worker();
+	_unschedule_scan_worker();
 	netflow_scan_and_export(AND_FLUSH);
 	del_timer_sync(&rate_timer);
 

@@ -188,6 +188,7 @@ struct ipt_netflow {
 	__be32		d_as;
 	struct nat_event *nat;
 #endif
+	spinlock_t	*lock;
 };
 
 #ifdef CONFIG_NF_NAT_NEEDED
@@ -206,9 +207,9 @@ struct nat_event {
 	__u8	protocol;
 	__u8	nat_event;
 };
-#define IS_DUMMY_NF(nf) (nf->nat)
+#define IS_DUMMY_FLOW(nf) (nf->nat)
 #else
-#define IS_DUMMY_NF(nf) 0
+#define IS_DUMMY_FLOW(nf) 0
 #endif
 
 static inline int ipt_netflow_tuple_equal(const struct ipt_netflow_tuple *t1,

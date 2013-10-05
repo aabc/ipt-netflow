@@ -166,7 +166,7 @@ Troubleshooting:
 
   How to interpret the data:
 
-> Flows: active 5187 (peak 83905 reached 0d0h1m ago, maxflows 2000000), mem 283K
+> Flows: active 5187 (peak 83905 reached 0d0h1m ago, maxflows 2000000), mem 283K, worker delay 100/1000.
 
   active X: currently active flows in memory cache.
     - for optimum CPU performance it is recommended to set hash table size to
@@ -175,6 +175,7 @@ Troubleshooting:
   mem XK: how much kilobytes of memory currently taken by active flows.
     - one active flow taking 56 bytes of memory.
     - there is system limit on cache size too.
+  worker delay X/HZ: how frequently exporter scan flows table per second.
 
 > Hash: size 8192 (mem 32K), metric 1.00, [1.00, 1.00, 1.00]. MemTraf: 1420 pkt, 364 K (pdu 0, 0).
 
