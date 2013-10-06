@@ -224,8 +224,14 @@ kernel_find_version() {
   KHOW=requested
   test "$KVERSION" && return 0
 
-  KVERSION=`uname -r`
-  KHOW=system
+  if grep -q Debian /proc/version; then
+    KHOW=proc
+    KVERSION=`sed -n 's/.*#.*Debian \([0-9\.]\+\)-.*/\1/p' /proc/version`
+    KLIBMOD=`uname -r`
+  else
+    KHOW=uname
+    KVERSION=`uname -r`
+  fi
   test "$KDIR" || return 0
 
   test -s $KDIR/Makefile || return 1
@@ -246,6 +252,7 @@ kernel_find_source() {
   KSHOW=requested
   test "$KDIR" && return 0
   KSHOW=found
+  kernel_check_src /lib/modules/$KLIBMOD/build && return 0
   kernel_check_src /lib/modules/$KVERSION/build && return 0
   kernel_check_src /usr/src/kernels/$KVERSION && return 0
   kernel_check_src /usr/src/linux-$KVERSION && return 0
@@ -264,6 +271,7 @@ kernel_check_consistency() {
 }
 
 kernel_find_version	#KVERSION
+test "$KLIBMOD" || KLIBMOD=$KVERSION
 echo "Kernel version: $KVERSION ($KHOW)"
 kernel_find_source	#KDIR
 echo "Kernel sources: $KDIR ($KSHOW)"
