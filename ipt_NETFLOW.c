@@ -2067,11 +2067,25 @@ static struct nf_ct_event_notifier ctnl_notifier = {
 #endif /* since 2.6.31 */
 #endif /* CONFIG_NF_NAT_NEEDED */
 
-static bool netflow_target_check(const struct xt_tgchk_param *par)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,23) && \
+    LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
+static bool
+#else
+static int
+#endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
+netflow_target_check(const char *tablename, const void *entry, const struct xt_target *target,
+    void *targinfo, unsigned int targinfosize, unsigned int hook_mask)
 {
+#else
+netflow_target_check(const struct xt_tgchk_param *par)
+{
+	const char *tablename = par->table;
+	const struct xt_target *target = par->target;
+#endif
 	if (strcmp("nat", par->table) == 0) {
 		/* In the nat table we only see single packet per flow, which is useless. */
-		printk(KERN_ERR "%s target: is not valid in %s table\n", par->target->name, par->table);
+		printk(KERN_ERR "%s target: is not valid in %s table\n", target->name, tablename);
 		return false;
 	}
 	return true;
