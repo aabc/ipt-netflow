@@ -1,8 +1,9 @@
 ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
 
-   High performance NetFlow v5, v9, IPFIX data exporter module for Linux kernel.
-   It should be used as iptables target. Also can export NAT translation events
-   as NetFlow Event Logging (NEL) for v9, IPFIX or specially crafted v5 flows.
+   High performance NetFlow v5, v9, IPFIX flow data export module for Linux
+   kernel. Created to be useful for highly loaded linux router. It should be
+   used as iptables target. Also can export NAT translation events using
+   NetFlow Event Logging (NEL) for v9, IPFIX or specially crafted v5 flows.
 
 
 ============================
@@ -17,25 +18,73 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
 = INSTALLATION =
 ================
 
-1. Besides kernel source (or kernel-devel package of your distro matching
-   varsion of your kernel exactly) you will need iptables/netfilter source (or
-   devel package) matching, again, your installation, or just fresh install from
-   there: ftp://ftp.netfilter.org/pub/iptables/snapshot/ Unpack it somewhere and
-   build with make.
+   Four easy steps.
 
-2. Run ./configure script and it will create Makefile
+1. (Kernel)
+   If you have package system install kernel-devel package, otherwise install
+   kernel source from http://kernel.org matching _exactly_ version of your
+   installed kernel.
 
-3. make all install; depmod
+   a) Example for Centos:
+
+      ~# yum install kernel-devel
+
+   b) For Debian:
+
+      ~# apt-get install module-assistant
+      ~# m-a prepare
+
+   c) For raw kernel sources don't forget to create .config by copying it from
+    your distribution's kernel. Its copy could reside in /boot or in /proc,
+    examples:
+
+      ~# zcat /proc/config.gz > /usr/src/linux/.config
+    or
+      ~# cp /boot/config-`uname -r` /usr/src/linux/
+
+    Assuming you unpacked kernel source into /usr/src/linux/ directory.
+    Then run:
+
+      /usr/src/linux# make oldconfig
+
+    After that you'll need to prepare kernel for modules build:
+
+      /usr/src/linux# make prepare modules-prepare
+
+2. (Iptables)
+   Before this step it also would be useful to install pkg-config if don't
+   already have.
+
+   If you have package system just install iptables-devel (or iptables-dev)
+   package, otherwise install iptables source matching version of your
+   installation from ftp://ftp.netfilter.org/pub/iptables/
+
+   a) Example for Centos:
+
+      # yum install iptables-devel
+
+   b) Debian:
+
+      # apt-get install iptables-dev pkg-config
+
+   c) For raw iptables source build it and make install
+
+3. Now to build module run
+
+      ~/ipt-netflow# ./configure
+      ~/ipt-netflow# make all install; depmod
+
    This will install kernel module and iptables specific library.
 
-Troubleshooting:
-   a) Sometimes you will want to add CC=gcc-3 to make command.
-   Example: make CC=gcc-3.3
+   Troubleshooting:
 
-   b) Compile module with actual kernel source compiled.
-   I.e. first compile kernel and boot into it, and then compile module.
-   If you are using kernel-devel package check that its version matches
-    your kernel package.
+     a) Sometimes you will want to add CC=gcc-3 to make command.
+     Example: make CC=gcc-3.3
+
+     b) Compile module with actual kernel source compiled.
+     I.e. first compile kernel and boot into it, and then compile module.
+     If you are using kernel-devel package check that its version matches
+     your kernel package.
 
 4. After this point you should be able to load module
      and use -j NETFLOW target in your iptables. See next section.
@@ -45,26 +94,38 @@ Troubleshooting:
 = RUNNING =
 ===========
 
-1. You can load module by insmod like this:
-   # insmod ipt_NETFLOW.ko destination=127.0.0.1:2055 debug=1
+1. You can load module directly by insmod like this:
+
+     # insmod ipt_NETFLOW.ko destination=127.0.0.1:2055 debug=1
 
    Or if properly installed (make install; depmod) by this:
-   # modprobe ipt_NETFLOW destination=127.0.0.1:2055
+
+     # modprobe ipt_NETFLOW destination=127.0.0.1:2055
 
    See, you may add options in insmod/modprobe command line, or add
-     them in /etc/ to modules.conf or modprobe.conf like thus:
-   options ipt_NETFLOW destination=127.0.0.1:2055 protocol=9
+   them in /etc/modprobe.conf or /etc/modprobe.d/ipt_NETFLOW.conf
+   like thus:
+
+     options ipt_NETFLOW destination=127.0.0.1:2055 protocol=9 natevents=1
 
 2. Statistics is in /proc/net/stat/ipt_netflow
-   To view slab statistics: grep ipt_netflow /proc/slabinfo
+   To view boring slab statistics: grep ipt_netflow /proc/slabinfo
 
 3. You can view parameters and control them via sysctl, example:
-   # sysctl -w net.netflow.hashsize=32768
 
-4. Example of directing all traffic into module:
-   # iptables -A FORWARD -j NETFLOW
-   # iptables -A INPUT -j NETFLOW
-   # iptables -A OUTPUT -j NETFLOW
+     # sysctl net.netflow
+     # sysctl net.netflow.hashsize=32768
+
+   Note: For after-reboot configuration I recommend to store module parameters
+   in modprobe configs instead of storing them in /etc/sysctl.conf, as it's
+   less clear when init process will apply sysctl.conf, before of after
+   module's load.
+
+4. Example of directing all traffic into the module:
+
+     # iptables -I FORWARD -j NETFLOW
+     # iptables -I INPUT -j NETFLOW
+     # iptables -I OUTPUT -j NETFLOW
 
 
 ===========
@@ -73,7 +134,7 @@ Troubleshooting:
 
    protocol=5
      - what version of NetFlow protocol to use. Default is 5. You
-       can choose from 5, 9, or 10 (IPFIX).
+       can choose from 5, 9, or 10 (where 10 is IPFIX).
 
    destination=127.0.0.1:2055
      - where to export netflow, to this ip address
@@ -81,8 +142,8 @@ Troubleshooting:
        udp 0 0 127.0.0.1:32772 127.0.0.1:2055 ESTABLISHED 
 
    destination=127.0.0.1:2055,192.0.0.1:2055
-     - mirror flows to two (can be more) addresses,
-       separate addresses with comma.
+     - mirror flows to two (can be more) addresses, separate addresses
+       with comma.
 
    natevents=1
      - Collect and send NAT translation events as NetFlow Event Logging (NEL)
