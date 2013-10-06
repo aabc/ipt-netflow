@@ -3,7 +3,7 @@
 PATH=$PATH:/bin:/usr/bin:/usr/sbin:/sbin:/usr/local/sbin
 
 error() {
-  echo "! Error: $@"
+  echo -e "! Error: $@"
   exit 1
 }
 
@@ -107,6 +107,13 @@ try_dir2() {
   test -d "$1" && try_dir `dirname $1` && return 0
 }
 
+check_pkg_config() {
+  test "$PKGWARN" && return 1
+  if ! which pkg-config >/dev/null 2>&1; then
+    echo "! You don't have pkg-config, it may be useful to install it."
+    PKGWARN=1
+  fi
+}
 iptables_find_version() {
   echo -n "Iptables binary version: "
   if [ "$IPTVER" ]; then
@@ -119,6 +126,7 @@ iptables_find_version() {
     else
       echo "no iptables binary found"
     fi
+    check_pkg_config
     PKGVER=`pkg-config --modversion xtables 2>/dev/null`
     if [ "$PKGVER" ]; then
       IPTVER="$PKGVER"
@@ -131,6 +139,8 @@ iptables_find_version() {
 
 iptables_try_pkgconfig() {
   if [ ! "$PKGVER" ]; then
+    check_pkg_config
+    PKGVER=`pkg-config --modversion xtables 2>/dev/null`
     TRYPKGVER=`pkg-config --modversion xtables 2>/dev/null`
     echo -n "pkg-config for version $IPTVER exists: "
     pkg-config --exact-version=$IPTVER xtables
@@ -142,6 +152,8 @@ iptables_try_pkgconfig() {
     fi
   fi
   if [ "$PKGVER" ]; then
+    check_pkg_config
+    PKGVER=`pkg-config --modversion xtables 2>/dev/null`
     PKGINC=`pkg-config --cflags xtables`
     PKGLIB=`pkg-config --variable=xtlibdir xtables`
     IPTCFLAGS="-DXTABLES"
@@ -208,11 +220,54 @@ do
   esac
 done
 
-test "$KVERSION" || KVERSION=`uname -r`
-echo Kernel version: $KVERSION
+kernel_find_version() {
+  KHOW=requested
+  test "$KVERSION" && return 0
 
-test "$KDIR" || KDIR=/lib/modules/$KVERSION/build
-echo Kernel sources: $KDIR
+  KVERSION=`uname -r`
+  KHOW=system
+  test "$KDIR" || return 0
+
+  test -s $KDIR/Makefile || return 1
+  test -s $KDIR/include/config/kernel.release || return 1
+  KVERSION=`cat $KDIR/include/config/kernel.release`
+  KHOW=sources
+}
+
+kernel_check_src() {
+  if [ -s "$1/Makefile" ]; then
+    KDIR="$1"
+    return 0
+  fi
+  return 1
+}
+
+kernel_find_source() {
+  KSHOW=requested
+  test "$KDIR" && return 0
+  KSHOW=found
+  kernel_check_src /lib/modules/$KVERSION/build && return 0
+  kernel_check_src /usr/src/kernels/$KVERSION && return 0
+  kernel_check_src /usr/src/linux-$KVERSION && return 0
+  error "Linux source not found. Specify kernel source directory with --kdir=...\n" \
+	" or try to install kernel-devel package or sources for linux-$KVERSION"
+}
+
+kernel_check_consistency() {
+  if test -s $KDIR/include/config/kernel.release; then
+    SRCVER=`cat $KDIR/include/config/kernel.release`
+    test "$KVERSION" != "$SRCVER" && error "$KHOW kernel version ($KVERSION) and $KSHOW version of kernel source ($SRCVER) doesn't match!"
+  else
+    test -e "$KDIR/.config" || error ".config in kernel source not found, run  make menuconfig  in $KDIR"
+    test -d "$KDIR/include/config" || error "kernel is not prepared, run  make prepare modules_prepare  in $KDIR"
+  fi
+}
+
+kernel_find_version	#KVERSION
+echo "Kernel version: $KVERSION ($KHOW)"
+kernel_find_source	#KDIR
+echo "Kernel sources: $KDIR ($KSHOW)"
+kernel_check_consistency
 
 test "$IPTBIN" || IPTBIN=`which iptables`
 
