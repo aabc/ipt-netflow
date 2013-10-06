@@ -31,6 +31,7 @@
 #include <linux/inetdevice.h>
 #include <linux/hash.h>
 #include <linux/delay.h>
+#include <linux/spinlock_types.h>
 #include <net/icmp.h>
 #include <net/ip.h>
 #include <net/tcp.h>
@@ -149,7 +150,9 @@ static DEFINE_RWLOCK(sock_lock);
 static unsigned int ipt_netflow_hash_rnd;
 #define LOCK_COUNT (1<<9)
 #define LOCK_COUNT_MASK (LOCK_COUNT-1)
-static spinlock_t htable_locks[] = { [0 ... LOCK_COUNT - 1] = SPIN_LOCK_UNLOCKED };
+static spinlock_t htable_locks[LOCK_COUNT] = {
+	[0 ... LOCK_COUNT - 1] = __SPIN_LOCK_UNLOCKED(htable_locks)
+};
 static struct hlist_head *ipt_netflow_hash __read_mostly; /* hash table memory */
 static unsigned int ipt_netflow_hash_size __read_mostly = 0; /* buckets */
 static LIST_HEAD(ipt_netflow_list); /* all flows */
@@ -1716,8 +1719,10 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 		tpl_mask |= BTPL_ICMP;
 	else if (nf->tuple.protocol == IPPROTO_IGMP)
 		tpl_mask |= BTPL_IGMP;
+#ifdef CONFIG_NF_CONNTRACK_MARK
 	if (nf->mark)
 		tpl_mask |= BTPL_MARK;
+#endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	if (nf->nat)
 		tpl_mask ^= BTPL_BASE | BTPL_NAT;
@@ -2083,12 +2088,12 @@ netflow_target_check(const struct xt_tgchk_param *par)
 	const char *tablename = par->table;
 	const struct xt_target *target = par->target;
 #endif
-	if (strcmp("nat", par->table) == 0) {
+	if (strcmp("nat", tablename) == 0) {
 		/* In the nat table we only see single packet per flow, which is useless. */
 		printk(KERN_ERR "%s target: is not valid in %s table\n", target->name, tablename);
-		return false;
+		return 0;
 	}
-	return true;
+	return 1;
 }
 
 /* packet receiver */
@@ -2290,7 +2295,16 @@ static unsigned int netflow_target(
 #endif
 		nf->s_mask = s_mask;
 		nf->d_mask = d_mask;
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)
+		rt = (struct rtable *)skb->dst;
+#else
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,21)
+		rt = skb->rtable;
+#else
 		rt = skb_rtable(skb);
+#endif
+#endif
 		if (rt)
 			nf->nexthop = rt->rt_gateway;
 
@@ -2309,7 +2323,7 @@ static unsigned int netflow_target(
 		spin_unlock_bh(&hlist_lock);
 	}
 
-#if defined(CONFIG_NF_CONNTRACK_MARK)
+#ifdef CONFIG_NF_CONNTRACK_MARK
 	{
 		struct nf_conn *ct;
 		enum ip_conntrack_info ctinfo;
@@ -2356,6 +2370,12 @@ static unsigned int netflow_target(
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
 /* net/netfilter/x_tables.c */
+static void xt_unregister_targets(struct xt_target *target, unsigned int n)
+{
+	unsigned int i;
+	for (i = 0; i < n; n++)
+		xt_unregister_target(&target[i]);
+}
 static int xt_register_targets(struct xt_target *target, unsigned int n)
 {
 	unsigned int i;
@@ -2369,12 +2389,6 @@ err:
 		xt_unregister_targets(target, i);
 	return err;
 
-}
-static void xt_unregister_targets(struct xt_target *target, unsigned int n)
-{
-	unsigned int i;
-	for (i = 0; i < n; n++)
-		xt_unregister_target(&target[i]);
 }
 #endif
 
