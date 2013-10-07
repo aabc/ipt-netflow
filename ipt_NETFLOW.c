@@ -2091,9 +2091,16 @@ netflow_target_check(const struct xt_tgchk_param *par)
 	if (strcmp("nat", tablename) == 0) {
 		/* In the nat table we only see single packet per flow, which is useless. */
 		printk(KERN_ERR "%s target: is not valid in %s table\n", target->name, tablename);
-		return 0;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
+#define CHECK_FAIL	0
+#define CHECK_OK	1
+#else
+#define CHECK_FAIL	-EINVAL
+#define CHECK_OK	0
+#endif
+		return CHECK_FAIL;
 	}
-	return 1;
+	return CHECK_OK;
 }
 
 /* packet receiver */
