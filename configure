@@ -256,14 +256,16 @@ kernel_find_source() {
   kernel_check_src /lib/modules/$KVERSION/build && return 0
   kernel_check_src /usr/src/kernels/$KVERSION && return 0
   kernel_check_src /usr/src/linux-$KVERSION && return 0
-  error "Linux source not found. Specify kernel source directory with --kdir=...\n" \
-	" or try to install kernel-devel package or sources for linux-$KVERSION"
+  error "Linux source not found. Specify kernel source directory with --kdir=...\n!" \
+	"or try to install kernel-devel package or sources for linux-$KVERSION"
 }
 
 kernel_check_consistency() {
   if test -s $KDIR/include/config/kernel.release; then
     SRCVER=`cat $KDIR/include/config/kernel.release`
-    test "$KVERSION" != "$SRCVER" && error "$KHOW kernel version ($KVERSION) and $KSHOW version of kernel source ($SRCVER) doesn't match!"
+    test "$KVERSION" != "$SRCVER" && error "$KHOW kernel version ($KVERSION) and $KSHOW version of kernel source ($SRCVER) doesn't match!\n!" \
+      "You may try to specify only kernel source tree with --kdir=$KDIR\n!" \
+      "and configure will pick up version propely."
   else
     test -e "$KDIR/.config" || error ".config in kernel source not found, run  make menuconfig  in $KDIR"
     test -d "$KDIR/include/config" || error "kernel is not prepared, run  make prepare modules_prepare  in $KDIR"
