@@ -161,9 +161,6 @@ static LIST_HEAD(aggr_n_list);
 static LIST_HEAD(aggr_p_list);
 static DEFINE_RWLOCK(aggr_lock);
 #if defined(CONFIG_NF_NAT_NEEDED) && LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
-	/* Linux e34d5c1a is craziest thing I have seen,
-	 * since 3.2 there can not be multiple ct notifiers,
-	 * but api is same. */
 #undef CONFIG_NF_NAT_NEEDED
 #endif
 #ifdef CONFIG_NF_NAT_NEEDED
@@ -2009,28 +2006,37 @@ static void rate_timer_calc(unsigned long dummy)
 }
 
 #ifdef CONFIG_NF_NAT_NEEDED
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
+struct nf_ct_event_notifier *netlink_event_cb;
+#endif
 static int netflow_conntrack_event(unsigned int events, struct nf_ct_event *item)
 {
 	struct nf_conn *ct = item->ct;
 	struct nat_event *nel;
 	const struct nf_conntrack_tuple *t;
+	int ret = NOTIFY_DONE;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
+	/* Call netlink first. */
+	if (netlink_event_cb != NULL)
+		ret = netlink_event_cb->fcn(events, item);
+#endif
 	if (!natevents)
-		return NOTIFY_DONE;
+		return ret;
 
 	if (!(events & ((1 << IPCT_NEW) | (1 << IPCT_RELATED) | (1 << IPCT_DESTROY))))
-		return NOTIFY_DONE;
+		return ret;
 
 	if (!(ct->status & IPS_NAT_MASK))
-		return NOTIFY_DONE;
+		return ret;
 
 	if (ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.l3num != AF_INET ||
 	    ct->tuplehash[IP_CT_DIR_REPLY].tuple.src.l3num != AF_INET)
-		return NOTIFY_DONE;
+		return ret;
 
 	if (!(nel = kmalloc(sizeof(struct nat_event), GFP_ATOMIC))) {
 		printk(KERN_ERR "ipt_NETFLOW: can't kmalloc nat event\n");
-		return NOTIFY_DONE;
+		return ret;
 	}
 	memset(nel, 0, sizeof(struct nat_event));
 	nel->ts = jiffies;
@@ -2058,7 +2064,7 @@ static int netflow_conntrack_event(unsigned int events, struct nf_ct_event *item
 	list_add_tail(&nel->list, &nat_list);
 	write_unlock_bh(&nat_lock);
 
-	return NOTIFY_DONE;
+	return ret;
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,31)
@@ -2515,20 +2521,52 @@ static int __init ipt_netflow_init(void)
 	setup_timer(&rate_timer, rate_timer_calc, 0);
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
 
+	peakflows_at = jiffies;
 	if (xt_register_targets(ipt_netflow_reg, ARRAY_SIZE(ipt_netflow_reg)))
 		goto err_stop_timer;
 
 #ifdef CONFIG_NF_NAT_NEEDED
-	if (nf_conntrack_register_notifier(&ctnl_notifier) < 0)
-		goto err_stop_timer;
-#endif
-	peakflows_at = jiffies;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
+#define NETLINK_M "nf_conntrack_netlink"
+	{
+		struct module *netlink_m;
 
-	printk(KERN_INFO "ipt_NETFLOW loaded.\n");
+		/* To use nf_conntrack_register_notifier after 2.6.31 we need to do some tricks.
+		 * Pre-load netlink module who will be first notifier user,
+		 * and then hijack nf_conntrack_event_cb from it. */
+		if (!(netlink_m = find_module(NETLINK_M))) {
+			printk("Loading " NETLINK_M "\n");
+			request_module(NETLINK_M);
+		}
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)
+#define use_module ref_module
+#endif
+		/* Reference netlink module to prevent it's unsafe unload before us. */
+		if ((netlink_m = find_module(NETLINK_M)))
+			use_module(THIS_MODULE, netlink_m);
+
+		netlink_event_cb = rcu_dereference(nf_conntrack_event_cb);
+		rcu_assign_pointer(nf_conntrack_event_cb, &ctnl_notifier);
+		printk("netlink hijacked %p\n", netlink_event_cb);
+	}
+#else
+	if (nf_conntrack_register_notifier(&ctnl_notifier) < 0)
+		goto err_unregister;
+#endif
+#endif
+
+	printk(KERN_INFO "ipt_NETFLOW is loaded.\n");
 	return 0;
 
+#ifdef CONFIG_NF_NAT_NEEDED
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,31)
+err_unregister:
+	xt_unregister_targets(ipt_netflow_reg, ARRAY_SIZE(ipt_netflow_reg));
+#endif
+#endif
 err_stop_timer:
 	_unschedule_scan_worker();
+	netflow_scan_and_export(AND_FLUSH);
 	del_timer_sync(&rate_timer);
 	free_templates();
 	destination_removeall();
@@ -2547,6 +2585,7 @@ err_free_netflow_slab:
 err_free_hash:
 	vfree(ipt_netflow_hash);
 err:
+	printk(KERN_INFO "ipt_NETFLOW is not loaded.\n");
 	return -ENOMEM;
 }
 
@@ -2560,10 +2599,13 @@ static void __exit ipt_netflow_fini(void)
 #ifdef CONFIG_PROC_FS
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
 #endif
-
 	xt_unregister_targets(ipt_netflow_reg, ARRAY_SIZE(ipt_netflow_reg));
 #ifdef CONFIG_NF_NAT_NEEDED
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
+	rcu_assign_pointer(nf_conntrack_event_cb, netlink_event_cb);
+#else
 	nf_conntrack_unregister_notifier(&ctnl_notifier);
+#endif
 #endif
 	_unschedule_scan_worker();
 	netflow_scan_and_export(AND_FLUSH);
