@@ -1075,16 +1075,20 @@ ipt_netflow_find(const struct ipt_netflow_tuple *tuple, unsigned int hash)
 
 enum { LOCKALL, UNLOCKALL };
 /* Only used in set_hashsize() */
-static void htable_lock(int unlock)
+static void htable_lock_bh(int op)
 {
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(htable_locks); i++) {
-		if (unlock)
-			spin_unlock_bh(&htable_locks[i]);
+	if (op == LOCKALL)
+		local_bh_disable();
+	for (i = 0; i < LOCK_COUNT; i++) {
+		if (op == LOCKALL)
+			spin_lock(&htable_locks[i]);
 		else
-			spin_lock_bh(&htable_locks[i]);
+			spin_unlock(&htable_locks[i]);
 	}
+	if (op == UNLOCKALL)
+		local_bh_enable();
 }
 
 static struct hlist_head *alloc_hashtable(int size)
@@ -1106,7 +1110,6 @@ static struct hlist_head *alloc_hashtable(int size)
 static int set_hashsize(int new_size)
 {
 	struct hlist_head *new_hash, *old_hash;
-	unsigned int hash;
 	struct ipt_netflow *nf;
 	int rnd;
 
@@ -1119,7 +1122,7 @@ static int set_hashsize(int new_size)
 	get_random_bytes(&rnd, 4);
 
 	/* rehash */
-	htable_lock(LOCKALL);
+	htable_lock_bh(LOCKALL);
 	old_hash = ipt_netflow_hash;
 	ipt_netflow_hash = new_hash;
 	ipt_netflow_hash_size = new_size;
@@ -1127,6 +1130,8 @@ static int set_hashsize(int new_size)
 	/* hash_netflow() is dependent on ipt_netflow_hash_* values */
 	spin_lock_bh(&hlist_lock);
 	list_for_each_entry(nf, &ipt_netflow_list, list) {
+		unsigned int hash;
+
 		hash = hash_netflow(&nf->tuple);
 		/* hlist_add_head overwrites hlist pointers for this node
 		 * so it's good */
@@ -1134,7 +1139,7 @@ static int set_hashsize(int new_size)
 		nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
 	}
 	spin_unlock_bh(&hlist_lock);
-	htable_lock(UNLOCKALL);
+	htable_lock_bh(UNLOCKALL);
 
 	vfree(old_hash);
 
@@ -2286,7 +2291,7 @@ static unsigned int netflow_target(
 			NETFLOW_STAT_INC(maxflows_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, ntohs(iph->tot_len));
-			spin_unlock_bh(&htable_locks[hash & LOCK_COUNT_MASK]);
+			spin_unlock_bh(lock);
 			return IPT_CONTINUE;
 		}
 
@@ -2295,7 +2300,7 @@ static unsigned int netflow_target(
 			NETFLOW_STAT_INC(alloc_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, ntohs(iph->tot_len));
-			spin_unlock_bh(&htable_locks[hash & LOCK_COUNT_MASK]);
+			spin_unlock_bh(lock);
 			return IPT_CONTINUE;
 		}
 
