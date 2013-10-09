@@ -115,16 +115,16 @@ MODULE_PARM_DESC(protocol, "netflow protocol version (5, 9)");
 
 static unsigned int refresh_rate = 20;
 module_param(refresh_rate, uint, 0644);
-MODULE_PARM_DESC(refresh_rate, "netflow v9 refresh rate (packets)");
+MODULE_PARM_DESC(refresh_rate, "NetFlow v9/IPFIX refresh rate (packets)");
 
 static unsigned int timeout_rate = 30;
 module_param(timeout_rate, uint, 0644);
-MODULE_PARM_DESC(timeout_rate, "netflow v9 timeout rate (minutes)");
+MODULE_PARM_DESC(timeout_rate, "NetFlow v9/IPFIX timeout rate (minutes)");
 
 #ifdef CONFIG_NF_NAT_NEEDED
 static int natevents = 0;
-module_param(natevents, int, 0644);
-MODULE_PARM_DESC(natevents, "send nat events");
+module_param(natevents, int, 0444);
+MODULE_PARM_DESC(natevents, "send NAT Events");
 #endif
 
 static int hashsize;
@@ -562,9 +562,8 @@ static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
-	int val;
+	int val = 0;
 
-	val = 0;
 	ctl->data = &val;
 	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 
@@ -606,6 +605,28 @@ static int protocol_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *f
 		default:
 			return -EPERM;
 	}
+
+	return ret;
+}
+
+static void register_ct_events(void);
+static void unregister_ct_events(void);
+static int natevents_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+			 void __user *buffer, size_t *lenp, loff_t *fpos)
+{
+	int ret;
+	int val = natevents;
+
+	ctl->data = &val;
+	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+
+	if (!write)
+		return ret;
+
+	if (natevents && !val)
+		unregister_ct_events();
+	else if (!natevents && val)
+		register_ct_events();
 
 	return ret;
 }
@@ -713,12 +734,11 @@ static struct ctl_table netflow_sysctl_table[] = {
 	},
 #ifdef CONFIG_NF_NAT_NEEDED
 	{
-		_CTL_NAME(12)
+		_CTL_NAME(13)
 		.procname	= "natevents",
 		.mode		= 0644,
-		.data		= &natevents,
 		.maxlen		= sizeof(int),
-		.proc_handler	= &proc_dointvec,
+		.proc_handler	= &natevents_procctl,
 	},
 #endif
 	{ }
@@ -2012,7 +2032,7 @@ static void rate_timer_calc(unsigned long dummy)
 
 #ifdef CONFIG_NF_NAT_NEEDED
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
-struct nf_ct_event_notifier *netlink_event_cb;
+struct nf_ct_event_notifier *saved_event_cb __read_mostly = NULL;
 #endif
 static int netflow_conntrack_event(unsigned int events, struct nf_ct_event *item)
 {
@@ -2020,11 +2040,13 @@ static int netflow_conntrack_event(unsigned int events, struct nf_ct_event *item
 	struct nat_event *nel;
 	const struct nf_conntrack_tuple *t;
 	int ret = NOTIFY_DONE;
-
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
+	struct nf_ct_event_notifier *notifier;
+
 	/* Call netlink first. */
-	if (netlink_event_cb != NULL)
-		ret = netlink_event_cb->fcn(events, item);
+	notifier = rcu_dereference(saved_event_cb);
+	if (notifier != NULL)
+		ret = notifier->fcn(events, item);
 #endif
 	if (!natevents)
 		return ret;
@@ -2378,6 +2400,87 @@ static unsigned int netflow_target(
 	return IPT_CONTINUE;
 }
 
+#ifdef CONFIG_NF_NAT_NEEDED
+static DEFINE_MUTEX(events_lock);
+/* Both functions can be called multiple times. */
+static void register_ct_events(void)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
+#define NETLINK_M "nf_conntrack_netlink"
+	struct module *netlink_m;
+	struct nf_ct_event_notifier *notifier;
+	static int referenced = 0;
+#endif
+
+	printk(KERN_INFO "ipt_NETFLOW: enable natevents.\n");
+	mutex_lock(&events_lock);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
+	/* Instead of unsing nf_conntrack_register_notifier after 2.6.31 we need
+	 * to do some tricks. Pre-load netlink module who will be first notifier
+	 * user, and then hijack nf_conntrack_event_cb from it. */
+
+	notifier = rcu_dereference(nf_conntrack_event_cb);
+	/* If notifier is NULL then netlink is not loaded. Try to load it. */
+
+	if (!notifier || !(netlink_m = find_module(NETLINK_M))) {
+		printk("Loading " NETLINK_M "\n");
+		request_module(NETLINK_M);
+	}
+	/* Reference netlink module to prevent it's unsafe unload before us. */
+	if (!referenced && (netlink_m = find_module(NETLINK_M))) {
+		referenced++;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)
+#define use_module ref_module
+#endif
+		use_module(THIS_MODULE, netlink_m);
+	}
+
+	notifier = rcu_dereference(nf_conntrack_event_cb);
+	if (notifier != &ctnl_notifier) {
+		if (notifier == NULL) {
+			/* Still we are first. */
+			nf_conntrack_register_notifier(&ctnl_notifier);
+			/* In that case saved_event_cb is NULL */
+		} else {
+			saved_event_cb = notifier;
+			rcu_assign_pointer(nf_conntrack_event_cb, &ctnl_notifier);
+		}
+	} else
+		printk(KERN_ERR "ipt_NETFLOW: natevents already enabled.\n");
+#else /* < v2.6.31 */
+	if (!natevents && nf_conntrack_register_notifier(&ctnl_notifier) < 0)
+		printk(KERN_ERR "Can't register conntrack notifier, natevents disabled.\n");
+#endif
+	natevents = 1;
+	mutex_unlock(&events_lock);
+}
+
+static void unregister_ct_events(void)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
+	struct nf_ct_event_notifier *notifier;
+#endif
+	printk(KERN_INFO "ipt_NETFLOW: disable natevents.\n");
+	mutex_lock(&events_lock);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
+	notifier = rcu_dereference(nf_conntrack_event_cb);
+	if (notifier == &ctnl_notifier) {
+		if (saved_event_cb == NULL) {
+			nf_conntrack_unregister_notifier(&ctnl_notifier);
+		} else {
+			rcu_assign_pointer(nf_conntrack_event_cb, saved_event_cb);
+			rcu_assign_pointer(saved_event_cb, NULL);
+		}
+	} else
+		printk(KERN_ERR "ipt_NETFLOW: natevents already disabled.\n");
+#else
+	nf_conntrack_unregister_notifier(&ctnl_notifier);
+#endif
+	natevents = 0;
+	mutex_unlock(&events_lock);
+}
+#endif /* CONFIG_NF_NAT_NEEDED */
+
 #ifndef NF_IP_LOCAL_IN /* 2.6.25 */
 #define NF_IP_PRE_ROUTING	NF_INET_PRE_ROUTING
 #define NF_IP_LOCAL_IN		NF_INET_LOCAL_IN
@@ -2531,44 +2634,13 @@ static int __init ipt_netflow_init(void)
 		goto err_stop_timer;
 
 #ifdef CONFIG_NF_NAT_NEEDED
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
-#define NETLINK_M "nf_conntrack_netlink"
-	{
-		struct module *netlink_m;
-
-		/* To use nf_conntrack_register_notifier after 2.6.31 we need to do some tricks.
-		 * Pre-load netlink module who will be first notifier user,
-		 * and then hijack nf_conntrack_event_cb from it. */
-		if (!(netlink_m = find_module(NETLINK_M))) {
-			printk("Loading " NETLINK_M "\n");
-			request_module(NETLINK_M);
-		}
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)
-#define use_module ref_module
-#endif
-		/* Reference netlink module to prevent it's unsafe unload before us. */
-		if ((netlink_m = find_module(NETLINK_M)))
-			use_module(THIS_MODULE, netlink_m);
-
-		netlink_event_cb = rcu_dereference(nf_conntrack_event_cb);
-		rcu_assign_pointer(nf_conntrack_event_cb, &ctnl_notifier);
-		printk("netlink hijacked %p\n", netlink_event_cb);
-	}
-#else
-	if (nf_conntrack_register_notifier(&ctnl_notifier) < 0)
-		goto err_unregister;
-#endif
+	if (natevents)
+		register_ct_events();
 #endif
 
 	printk(KERN_INFO "ipt_NETFLOW is loaded.\n");
 	return 0;
 
-#ifdef CONFIG_NF_NAT_NEEDED
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,31)
-err_unregister:
-	xt_unregister_targets(ipt_netflow_reg, ARRAY_SIZE(ipt_netflow_reg));
-#endif
-#endif
 err_stop_timer:
 	_unschedule_scan_worker();
 	netflow_scan_and_export(AND_FLUSH);
@@ -2606,11 +2678,8 @@ static void __exit ipt_netflow_fini(void)
 #endif
 	xt_unregister_targets(ipt_netflow_reg, ARRAY_SIZE(ipt_netflow_reg));
 #ifdef CONFIG_NF_NAT_NEEDED
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
-	rcu_assign_pointer(nf_conntrack_event_cb, netlink_event_cb);
-#else
-	nf_conntrack_unregister_notifier(&ctnl_notifier);
-#endif
+	if (natevents)
+		unregister_ct_events();
 #endif
 	_unschedule_scan_worker();
 	netflow_scan_and_export(AND_FLUSH);
