@@ -160,9 +160,6 @@ static DEFINE_SPINLOCK(hlist_lock);
 static LIST_HEAD(aggr_n_list);
 static LIST_HEAD(aggr_p_list);
 static DEFINE_RWLOCK(aggr_lock);
-#if defined(CONFIG_NF_NAT_NEEDED) && LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
-#undef CONFIG_NF_NAT_NEEDED
-#endif
 #ifdef CONFIG_NF_NAT_NEEDED
 static LIST_HEAD(nat_list); /* nat events */
 static DEFINE_RWLOCK(nat_lock);
@@ -609,6 +606,7 @@ static int protocol_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *f
 	return ret;
 }
 
+#ifdef CONFIG_NF_NAT_NEEDED
 static void register_ct_events(void);
 static void unregister_ct_events(void);
 static int natevents_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
@@ -630,6 +628,7 @@ static int natevents_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *
 
 	return ret;
 }
+#endif
 
 static struct ctl_table_header *netflow_sysctl_header;
 
@@ -2401,28 +2400,75 @@ static unsigned int netflow_target(
 }
 
 #ifdef CONFIG_NF_NAT_NEEDED
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
+#define NET_STRUCT struct net *net
+#define NET_ARG net,
+#define nf_conntrack_event_cb net->ct.nf_conntrack_event_cb
+#else
+#define NET_STRUCT void
+#define NET_ARG
+#endif
+static int set_notifier_cb(NET_STRUCT)
+{
+	struct nf_ct_event_notifier *notifier;
+
+	notifier = rcu_dereference(nf_conntrack_event_cb);
+	if (notifier == NULL) {
+		/* Polite mode. */
+		nf_conntrack_register_notifier(NET_ARG &ctnl_notifier);
+	} else if (notifier != &ctnl_notifier) {
+		if (!saved_event_cb)
+			saved_event_cb = notifier;
+		else if (saved_event_cb != notifier)
+			printk(KERN_ERR "natevents_net_init: %p != %p (report error.)\n",
+			    saved_event_cb, notifier);
+		rcu_assign_pointer(nf_conntrack_event_cb, &ctnl_notifier);
+	} else
+		printk(KERN_ERR "ipt_NETFLOW: natevents already enabled.\n");
+	return 0;
+}
+static void unset_notifier_cb(NET_STRUCT)
+{
+	struct nf_ct_event_notifier *notifier;
+
+	notifier = rcu_dereference(nf_conntrack_event_cb);
+	if (notifier == &ctnl_notifier) {
+		if (saved_event_cb == NULL)
+			nf_conntrack_unregister_notifier(NET_ARG &ctnl_notifier);
+		else
+			rcu_assign_pointer(nf_conntrack_event_cb, saved_event_cb);
+	} else
+		printk(KERN_ERR "ipt_NETFLOW: natevents already disabled.\n");
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
+#undef nf_conntrack_event_cb
+static struct pernet_operations natevents_net_ops = {
+	.init = set_notifier_cb,
+	.exit = unset_notifier_cb
+};
+#endif
 static DEFINE_MUTEX(events_lock);
-/* Both functions can be called multiple times. */
+/* Both functions may be called multiple times. */
 static void register_ct_events(void)
 {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
 #define NETLINK_M "nf_conntrack_netlink"
 	struct module *netlink_m;
-	struct nf_ct_event_notifier *notifier;
 	static int referenced = 0;
 #endif
 
 	printk(KERN_INFO "ipt_NETFLOW: enable natevents.\n");
 	mutex_lock(&events_lock);
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
-	/* Instead of unsing nf_conntrack_register_notifier after 2.6.31 we need
-	 * to do some tricks. Pre-load netlink module who will be first notifier
+	/* Pre-load netlink module who will be first notifier
 	 * user, and then hijack nf_conntrack_event_cb from it. */
-
-	notifier = rcu_dereference(nf_conntrack_event_cb);
-	/* If notifier is NULL then netlink is not loaded. Try to load it. */
-
-	if (!notifier || !(netlink_m = find_module(NETLINK_M))) {
+	if (
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,2,0)
+	    !rcu_dereference(nf_conntrack_event_cb) ||
+#endif
+	    !(netlink_m = find_module(NETLINK_M))) {
 		printk("Loading " NETLINK_M "\n");
 		request_module(NETLINK_M);
 	}
@@ -2435,21 +2481,15 @@ static void register_ct_events(void)
 		use_module(THIS_MODULE, netlink_m);
 	}
 
-	notifier = rcu_dereference(nf_conntrack_event_cb);
-	if (notifier != &ctnl_notifier) {
-		if (notifier == NULL) {
-			/* Still we are first. */
-			nf_conntrack_register_notifier(&ctnl_notifier);
-			/* In that case saved_event_cb is NULL */
-		} else {
-			saved_event_cb = notifier;
-			rcu_assign_pointer(nf_conntrack_event_cb, &ctnl_notifier);
-		}
-	} else
-		printk(KERN_ERR "ipt_NETFLOW: natevents already enabled.\n");
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
+	register_pernet_subsys(&natevents_net_ops);
+#else
+	set_notifier_cb();
+#endif
 #else /* < v2.6.31 */
 	if (!natevents && nf_conntrack_register_notifier(&ctnl_notifier) < 0)
 		printk(KERN_ERR "Can't register conntrack notifier, natevents disabled.\n");
+	else
 #endif
 	natevents = 1;
 	mutex_unlock(&events_lock);
@@ -2457,23 +2497,16 @@ static void register_ct_events(void)
 
 static void unregister_ct_events(void)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
-	struct nf_ct_event_notifier *notifier;
-#endif
 	printk(KERN_INFO "ipt_NETFLOW: disable natevents.\n");
 	mutex_lock(&events_lock);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
-	notifier = rcu_dereference(nf_conntrack_event_cb);
-	if (notifier == &ctnl_notifier) {
-		if (saved_event_cb == NULL) {
-			nf_conntrack_unregister_notifier(&ctnl_notifier);
-		} else {
-			rcu_assign_pointer(nf_conntrack_event_cb, saved_event_cb);
-			rcu_assign_pointer(saved_event_cb, NULL);
-		}
-	} else
-		printk(KERN_ERR "ipt_NETFLOW: natevents already disabled.\n");
-#else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
+	unregister_pernet_subsys(&natevents_net_ops);
+#else /* < v3.2 */
+	unset_notifier_cb();
+#endif /* v3.2 */
+	rcu_assign_pointer(saved_event_cb, NULL);
+#else /* < v2.6.31 */
 	nf_conntrack_unregister_notifier(&ctnl_notifier);
 #endif
 	natevents = 0;
