@@ -9,7 +9,7 @@ IPTABLES_MODULES = @IPTABLES_MODULES@
 # https://www.kernel.org/doc/Documentation/kbuild/makefiles.txt
 obj-m = ipt_NETFLOW.o
 
-all: ipt_NETFLOW.ko libipt_NETFLOW.so
+all: ipt_NETFLOW.ko libipt_NETFLOW.so libip6t_NETFLOW.so
 ipt_NETFLOW.ko: ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	@echo Compiling for kernel $(KVERSION)
 	make -C $(KDIR) M=$(CURDIR) modules
@@ -23,12 +23,15 @@ lclean:
 clean: mclean lclean
 	-rm -f *.so *.o modules.order
 
-libipt_NETFLOW.so: libipt_NETFLOW.c Makefile
-	gcc -O2 -Wall -Wunused $(IPTABLES_CFLAGS) -fPIC -o libipt_NETFLOW_sh.o -c libipt_NETFLOW.c
-	gcc -shared  -o libipt_NETFLOW.so libipt_NETFLOW_sh.o
+%_sh.o: %.c
+	gcc -O2 -Wall -Wunused $(IPTABLES_CFLAGS) -fPIC -o $@ -c libipt_NETFLOW.c
 
-linstall: | libipt_NETFLOW.so
+%.so: %_sh.o
+	gcc -shared -o $@ $<
+
+linstall: | libipt_NETFLOW.so libip6t_NETFLOW.so
 	install -D libipt_NETFLOW.so $(DESTDIR)$(IPTABLES_MODULES)/libipt_NETFLOW.so
+	install -D libip6t_NETFLOW.so $(DESTDIR)$(IPTABLES_MODULES)/libip6t_NETFLOW.so
 
 install: minstall linstall
 
