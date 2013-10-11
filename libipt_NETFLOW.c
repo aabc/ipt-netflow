@@ -58,24 +58,24 @@
 #define _IPT_IP struct ipt_ip
 #endif
 
+#ifndef IPTABLES_VERSION
+#define IPTABLES_VERSION XTABLES_VERSION
+#endif
+
 static struct option opts[] = {
-  {0}
+  { 0 }
 };
 
 static void help(void)
 {
-	printf( "NETFLOW target\n");
+	printf("NETFLOW target\n");
 }
 
-//static int parse(int c, char **argv, int invert, unsigned int *flags,
-//      const _IPT_ENTRY *entry,
-//      struct ipt_entry_target **target)
 static int parse(int c, char **argv, int invert, unsigned int *flags,
 	     const _IPT_ENTRY  *entry,
 	     struct ipt_entry_target **targetinfo)
 
 {
-
 	return 1;
 }
 
@@ -95,16 +95,9 @@ static void print(const _IPT_IP *ip,
 }
 
 static struct iptables_target netflow = { 
-#ifdef MOD140
-	.family		= AF_INET,
-#endif
 	.next		= NULL,
 	.name		= "NETFLOW",
-#ifdef XTABLES_VERSION
-	.version	= XTABLES_VERSION,
-#else
 	.version	= IPTABLES_VERSION,
-#endif
 	.size           = IPT_ALIGN(0),
 	.userspacesize  = IPT_ALIGN(0),
 	.help		= &help,
