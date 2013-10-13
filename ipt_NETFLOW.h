@@ -88,20 +88,26 @@ enum {
 	//MUL_DST_BYTES = 20,
 	LAST_SWITCHED = 21,
 	FIRST_SWITCHED = 22,
+	IPV6_SRC_ADDR = 27,
+	IPV6_DST_ADDR = 28,
+	IPV6_FLOW_LABEL = 31,
 	ICMP_TYPE = 32,
 	MUL_IGMP_TYPE = 33,
 	//TOTAL_BYTES_EXP = 40,
 	//TOTAL_PKTS_EXP = 41,
 	//TOTAL_FLOWS_EXP = 42,
 	//IP_PROTOCOL_VERSION = 60,
-	DIRECTION = 61,
-	/* Values 0-127: NFv9-compatible. Below this line is IPFIX only */
+	IPV6_NEXT_HOP = 62,
+	IPV6_OPTION_HEADERS = 64,
 	commonPropertiesId = 137, /* for MARK */
+	ipv4Options = 208,
 	postNATSourceIPv4Address = 225,
 	postNATDestinationIPv4Address = 226,
 	postNAPTSourceTransportPort = 227,
 	postNAPTDestinationTransportPort = 228,
 	natEvent = 230,
+	postNATSourceIPv6Address = 281,
+	postNATDestinationIPv6Address = 282,
 	IPSecSPI = 295,
 };
 
@@ -146,30 +152,32 @@ struct ipfix_pdu {
 	__u8		data[1400];
 } __attribute__ ((packed));
 
+/* Maximum bytes flow can have, after it's reached flow will become
+ * not searchable and will be exported soon. */
+#define FLOW_FULL_WATERMARK 0xffefffff
+
 /* hashed data which identify unique flow */
+/* 16+16 + 2+2 + 2+1+1+1 = 41 */
 struct ipt_netflow_tuple {
-	__be32		s_addr;	// Network byte order
-	__be32		d_addr; // -"-
+	union nf_inet_addr src;
+	union nf_inet_addr dst;
 	__be16		s_port; // -"-
 	__be16		d_port; // -"-
 	__be16		i_ifc;	// Local byte order
 	__u8		protocol;
 	__u8		tos;
-};
+	__u8		l3proto;
+} __attribute__ ((packed));
 
-/* maximum bytes flow can have, after it reached flow become not searchable and will be exported soon */
-#define FLOW_FULL_WATERMARK 0xffefffff
-
-/* flow entry */
+/* hlist[2] + tuple[]: 8+8 + 41 = 57 (less than usual cache line, 64) */
 struct ipt_netflow {
 	struct hlist_node hlist; // hashtable search chain
-	struct list_head list; // all flows chain
 
 	/* unique per flow data (hashed, NETFLOW_TUPLE_SIZE) */
 	struct ipt_netflow_tuple tuple;
 
 	/* volatile data */
-	__be32		nexthop;
+	union nf_inet_addr nh;
 	__be16		o_ifc;
 	__u8		s_mask;
 	__u8		d_mask;
@@ -180,6 +188,8 @@ struct ipt_netflow {
 	u_int32_t	nr_bytes;
 	unsigned long	ts_first;
 	unsigned long	ts_last;
+	u_int32_t	flow_label; /* ipv6 */
+	u_int32_t	options;
 #ifdef CONFIG_NF_CONNTRACK_MARK
 	u_int32_t	mark;
 #endif
@@ -188,6 +198,7 @@ struct ipt_netflow {
 	__be32		d_as;
 	struct nat_event *nat;
 #endif
+	struct list_head list; // all flows chain
 	spinlock_t	*lock;
 };
 

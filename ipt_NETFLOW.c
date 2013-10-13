@@ -34,8 +34,10 @@
 #include <linux/spinlock_types.h>
 #include <net/icmp.h>
 #include <net/ip.h>
+#include <net/ipv6.h>
 #include <net/tcp.h>
 #include <net/route.h>
+#include <net/ip6_fib.h>
 #include <net/dst.h>
 #include <linux/netfilter_ipv4/ip_tables.h>
 #if defined(CONFIG_NF_NAT_NEEDED) || defined(CONFIG_NF_CONNTRACK_MARK)
@@ -86,6 +88,7 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("<abc@telekom.ru>");
 MODULE_DESCRIPTION("iptables NETFLOW target module");
 MODULE_VERSION(IPT_NETFLOW_VERSION);
+MODULE_ALIAS("ip6t_NETFLOW");
 
 #define DST_SIZE 256
 static char destination_buf[DST_SIZE] = "127.0.0.1:2055";
@@ -333,7 +336,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 #define FFLOAT(x, prec) (int)(x) / prec, (int)(x) % prec
 	seq_printf(seq, "Hash: size %u (mem %uK), metric %d.%02d [%d.%02d, %d.%02d, %d.%02d]."
 	    " MemTraf: %llu pkt, %llu K (pdu %llu, %llu).\n",
-	    ipt_netflow_hash_size, 
+	    ipt_netflow_hash_size,
 	    (unsigned int)((ipt_netflow_hash_size * sizeof(struct hlist_head)) >> 10),
 	    FFLOAT(metric, 100),
 	    FFLOAT(min_metric, 100),
@@ -498,7 +501,7 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 {
 	int ret;
 	struct ipt_netflow_sock *usock;
-       
+
 	read_lock(&sock_lock);
 	if (list_empty(&usock_list)) {
 		read_unlock(&sock_lock);
@@ -903,7 +906,7 @@ static void usock_close_free(struct ipt_netflow_sock *usock)
 	if (usock->sock)
 		sock_release(usock->sock);
 	usock->sock = NULL;
-	vfree(usock); 
+	vfree(usock);
 }
 
 static void destination_removeall(void)
@@ -947,7 +950,7 @@ static void add_usock(struct ipt_netflow_sock *usock)
 static int add_destinations(char *ptr)
 {
 	while (ptr) {
-		unsigned char ip[4]; 
+		unsigned char ip[4];
 		unsigned short port;
 
 		ptr += strspn(ptr, SEPARATORS);
@@ -999,7 +1002,7 @@ static int add_aggregation(char *ptr)
 	LIST_HEAD(old_aggr_list);
 
 	while (ptr && *ptr) {
-		unsigned char ip[4]; 
+		unsigned char ip[4];
 		unsigned int mask;
 		unsigned int port1, port2;
 		unsigned int aggr_to;
@@ -1266,9 +1269,9 @@ static void netflow_export_flow_v5(struct ipt_netflow *nf)
 	rec = &pdu.v5.flow[pdu_data_records++];
 
 	/* make V5 flow record */
-	rec->s_addr	= nf->tuple.s_addr;
-	rec->d_addr	= nf->tuple.d_addr;
-	rec->nexthop	= nf->nexthop;
+	rec->s_addr	= nf->tuple.src.ip;
+	rec->d_addr	= nf->tuple.dst.ip;
+	rec->nexthop	= nf->nh.ip;
 	rec->i_ifc	= htons(nf->tuple.i_ifc);
 	rec->o_ifc	= htons(nf->o_ifc);
 	rec->nr_packets = htonl(nf->nr_packets);
@@ -1410,20 +1413,27 @@ static u_int8_t tpl_element_sizes[] = {
 	//[MUL_DST_BYTES]	= 4,
 	[LAST_SWITCHED]	= 4,
 	[FIRST_SWITCHED]= 4,
+	[IPV6_SRC_ADDR]	= 16,
+	[IPV6_DST_ADDR]	= 16,
+	[IPV6_FLOW_LABEL] = 3,
 	[ICMP_TYPE]	= 2,
 	[MUL_IGMP_TYPE]	= 1,
 	//[TOTAL_BYTES_EXP]	= 4,
 	//[TOTAL_PKTS_EXP]	= 4,
 	//[TOTAL_FLOWS_EXP]	= 4,
 	//[IP_PROTOCOL_VERSION]	= 1,
-	//[DIRECTION]		= 1,
+	[IPV6_NEXT_HOP]	= 16,
+	[IPV6_OPTION_HEADERS]		   = 2,
+	[commonPropertiesId]		   = 4,
+	[ipv4Options]			   = 4,
 	[postNATSourceIPv4Address]	   = 4,
 	[postNATDestinationIPv4Address]	   = 4,
 	[postNAPTSourceTransportPort]	   = 2,
 	[postNAPTDestinationTransportPort] = 2,
 	[natEvent]			   = 1,
+	[postNATSourceIPv6Address]	   = 16,
+	[postNATDestinationIPv6Address]	   = 16,
 	[IPSecSPI]			   = 4,
-	[commonPropertiesId]		   = 4,
 };
 
 #define TEMPLATES_HASH_BSIZE	8
@@ -1436,15 +1446,19 @@ struct base_template {
 };
 
 /* base templates */
-#define BTPL_BASE	0x00000001	/* base */
-#define BTPL_IP4	0x00000002	/* IP */
-#define BTPL_MASK	0x00000004	/* Aggregated */
+#define BTPL_BASE	0x00000001	/* base stat */
+#define BTPL_IP4	0x00000002	/* IPv4 */
+#define BTPL_MASK4	0x00000004	/* Aggregated */
 #define BTPL_PORTS	0x00000008	/* UDP&TCP */
-#define BTPL_ICMP	0x00000010	/* ICMP */
-#define BTPL_IGMP	0x00000020	/* IGMP */
-#define BTPL_IPSEC	0x00000040	/* AH&ESP */
-#define BTPL_NAT	0x00000080	/* natEvent */
-#define BTPL_MARK	0x00000100	/* connmark */
+#define BTPL_IP6	0x00000010	/* IPv6 */
+#define BTPL_ICMP	0x00000020	/* ICMP */
+#define BTPL_IGMP	0x00000040	/* IGMP */
+#define BTPL_IPSEC	0x00000080	/* AH&ESP */
+#define BTPL_NAT4	0x00000100	/* NAT IPv4 */
+#define BTPL_NAT6	0x00000200	/* NAT IPv6 */
+#define BTPL_MARK	0x00000400	/* connmark */
+#define BTPL_LABEL6	0x00000800	/* IPv6 flow label */
+#define BTPL_OPTIONS4	0x00001000	/* IPv4 Options */
 #define BTPL_MAX	32
 
 static struct base_template template_base = {
@@ -1455,7 +1469,7 @@ static struct base_template template_base = {
 		IN_BYTES,
 		FIRST_SWITCHED,
 		LAST_SWITCHED,
-		IPV4_NEXT_HOP,
+		PROTOCOL,
 		TOS,
 		0
 	}
@@ -1464,9 +1478,24 @@ static struct base_template template_ipv4 = {
 	.types = {
 		IPV4_SRC_ADDR,
 		IPV4_DST_ADDR,
-		PROTOCOL,
+		IPV4_NEXT_HOP,
 		0
 	}
+};
+static struct base_template template_options4 = {
+	.types = { ipv4Options, 0 }
+};
+static struct base_template template_ipv6 = {
+	.types = {
+		IPV6_SRC_ADDR,
+		IPV6_DST_ADDR,
+		IPV6_NEXT_HOP,
+		IPV6_OPTION_HEADERS,
+		0
+	}
+};
+static struct base_template template_label6 = {
+	.types = { IPV6_FLOW_LABEL, 0 }
 };
 static struct base_template template_ipv4_mask = {
 	.types = {
@@ -1490,15 +1519,30 @@ static struct base_template template_igmp = {
 	.types = { MUL_IGMP_TYPE, 0 }
 };
 static struct base_template template_ipsec = {
-	.types = { IPSecSPI, 0
-	}
+	.types = { IPSecSPI, 0 }
 };
-static struct base_template template_nat = {
+static struct base_template template_nat4 = {
 	.types = {
+		IPV4_SRC_ADDR,
+		IPV4_DST_ADDR,
 		postNATSourceIPv4Address,
 		postNATDestinationIPv4Address,
 		postNAPTSourceTransportPort,
 		postNAPTDestinationTransportPort,
+		PROTOCOL,
+		natEvent,
+		0
+	}
+};
+static struct base_template template_nat6 = {
+	.types = {
+		IPV6_SRC_ADDR,
+		IPV6_DST_ADDR,
+		postNATSourceIPv6Address,
+		postNATDestinationIPv6Address,
+		postNAPTSourceTransportPort,
+		postNAPTDestinationTransportPort,
+		PROTOCOL,
 		natEvent,
 		0
 	}
@@ -1561,11 +1605,17 @@ static struct data_template *get_template(int tmask)
 	tnum = 0;
 	if (tmask & BTPL_IP4)
 		tlist[tnum++] = &template_ipv4;
+	if (tmask & BTPL_IP6)
+		tlist[tnum++] = &template_ipv6;
 	if (tmask & BTPL_PORTS)
 		tlist[tnum++] = &template_ports;
 	if (tmask & BTPL_BASE)
 		tlist[tnum++] = &template_base;
-	if (tmask & BTPL_MASK)
+	if (tmask & BTPL_LABEL6)
+		tlist[tnum++] = &template_label6;
+	if (tmask & BTPL_OPTIONS4)
+		tlist[tnum++] = &template_options4;
+	if (tmask & BTPL_MASK4)
 		tlist[tnum++] = &template_ipv4_mask;
 	if (tmask & BTPL_ICMP)
 		tlist[tnum++] = &template_icmp;
@@ -1573,8 +1623,10 @@ static struct data_template *get_template(int tmask)
 		tlist[tnum++] = &template_igmp;
 	if (tmask & BTPL_IPSEC)
 		tlist[tnum++] = &template_ipsec;
-	if (tmask & BTPL_NAT)
-		tlist[tnum++] = &template_nat;
+	if (tmask & BTPL_NAT4)
+		tlist[tnum++] = &template_nat4;
+	if (tmask & BTPL_NAT6)
+		tlist[tnum++] = &template_nat6;
 	if (tmask & BTPL_MARK)
 		tlist[tnum++] = &template_mark;
 
@@ -1655,37 +1707,48 @@ static void pdu_add_template(struct data_template *tpl)
 }
 
 /* encode one field */
-static inline void add_ipv4_field(void *ptr, int type, struct ipt_netflow *nf)
+typedef struct in6_addr in6_t;
+static inline void add_ipv4_field(__u8 *ptr, int type, struct ipt_netflow *nf)
 {
 	switch (type) {
 		case IN_BYTES:	     *(__be32 *)ptr = htonl(nf->nr_bytes); break;
 		case IN_PKTS:	     *(__be32 *)ptr = htonl(nf->nr_packets); break;
 		case FIRST_SWITCHED: *(__be32 *)ptr = htonl(jiffies_to_msecs(nf->ts_first)); break;
 		case LAST_SWITCHED:  *(__be32 *)ptr = htonl(jiffies_to_msecs(nf->ts_last)); break;
-		case IPV4_SRC_ADDR:  *(__be32 *)ptr = nf->tuple.s_addr; break;
-		case IPV4_DST_ADDR:  *(__be32 *)ptr = nf->tuple.d_addr; break;
-		case IPV4_NEXT_HOP:  *(__be32 *)ptr = nf->nexthop; break;
+		case IPV4_SRC_ADDR:  *(__be32 *)ptr = nf->tuple.src.ip; break;
+		case IPV4_DST_ADDR:  *(__be32 *)ptr = nf->tuple.dst.ip; break;
+		case IPV4_NEXT_HOP:  *(__be32 *)ptr = nf->nh.ip; break;
 		case L4_SRC_PORT:    *(__be16 *)ptr = nf->tuple.s_port; break;
 		case L4_DST_PORT:    *(__be16 *)ptr = nf->tuple.d_port; break;
 		case INPUT_SNMP:     *(__be16 *)ptr = htons(nf->tuple.i_ifc); break;
 		case OUTPUT_SNMP:    *(__be16 *)ptr = htons(nf->o_ifc); break;
-		case PROTOCOL:	       *(__u8 *)ptr = nf->tuple.protocol; break;
-		case TCP_FLAGS:	       *(__u8 *)ptr = nf->tcp_flags; break;
-		case TOS:	       *(__u8 *)ptr = nf->tuple.tos; break;
+		case PROTOCOL:	               *ptr = nf->tuple.protocol; break;
+		case TCP_FLAGS:	               *ptr = nf->tcp_flags; break;
+		case TOS:	               *ptr = nf->tuple.tos; break;
+		case IPV6_SRC_ADDR:   *(in6_t *)ptr = nf->tuple.src.in6; break;
+		case IPV6_DST_ADDR:   *(in6_t *)ptr = nf->tuple.dst.in6; break;
+		case IPV6_NEXT_HOP:   *(in6_t *)ptr = nf->nh.in6; break;
+		case IPV6_FLOW_LABEL:        *ptr++ = nf->flow_label >> 16;
+				     *(__be16 *)ptr = nf->flow_label;
+				      break;
+		case ipv4Options:    *(__be32 *)ptr = htonl(nf->options); break;
+		case IPV6_OPTION_HEADERS: *(__be16 *)ptr = htons(nf->options); break;
 #ifdef CONFIG_NF_CONNTRACK_MARK
 		case commonPropertiesId:
 				     *(__be32 *)ptr = htonl(nf->mark); break;
 #endif
-		case SRC_MASK:	       *(__u8 *)ptr = nf->s_mask; break;
-		case DST_MASK:	       *(__u8 *)ptr = nf->d_mask; break;
+		case SRC_MASK:	               *ptr = nf->s_mask; break;
+		case DST_MASK:	               *ptr = nf->d_mask; break;
 		case ICMP_TYPE:	     *(__be16 *)ptr = nf->tuple.d_port; break;
-		case MUL_IGMP_TYPE:    *(__u8 *)ptr = nf->tuple.d_port; break;
+		case MUL_IGMP_TYPE:            *ptr = nf->tuple.d_port; break;
 #ifdef CONFIG_NF_NAT_NEEDED
-		case postNATSourceIPv4Address:		*(__be32 *)ptr = nf->nat->post.s_addr; break;
-		case postNATDestinationIPv4Address:	*(__be32 *)ptr = nf->nat->post.d_addr; break;
-		case postNAPTSourceTransportPort:	*(__be16 *)ptr = nf->nat->post.s_port; break;
-		case postNAPTDestinationTransportPort:	*(__be16 *)ptr = nf->nat->post.d_port; break;
-		case natEvent:				  *(__u8 *)ptr = nf->nat->nat_event; break;
+		case postNATSourceIPv4Address:	       *(__be32 *)ptr = nf->nat->post.s_addr; break;
+		case postNATDestinationIPv4Address:    *(__be32 *)ptr = nf->nat->post.d_addr; break;
+//		case postNATSourceIPv6Address:	        *(in6_t *)ptr = nf->nat->post.s_addr6; break;
+//		case postNATDestinationIPv6Address:     *(in6_t *)ptr = nf->nat->post.d_addr6; break;
+		case postNAPTSourceTransportPort:      *(__be16 *)ptr = nf->nat->post.s_port; break;
+		case postNAPTDestinationTransportPort: *(__be16 *)ptr = nf->nat->post.d_port; break;
+		case natEvent:				         *ptr = nf->nat->nat_event; break;
 #endif
 		case IPSecSPI:        *(__u32 *)ptr = (nf->tuple.s_port << 16) | nf->tuple.d_port; break;
 		default:
@@ -1723,14 +1786,23 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 	unsigned char *ptr;
 	int i;
 	struct data_template *tpl;
-	int tpl_mask = BTPL_BASE | BTPL_IP4;
+	int tpl_mask = BTPL_BASE;
 
 	if (unlikely(debug > 2))
 		printk(KERN_INFO "adding flow to export (%d)\n",
 		    pdu_data_records + pdu_tpl_records);
 
+	if (likely(nf->tuple.l3proto == AF_INET)) {
+		tpl_mask |= BTPL_IP4;
+		if (unlikely(nf->options))
+			tpl_mask |= BTPL_OPTIONS4;
+	} else {
+		tpl_mask |= BTPL_IP6;
+		if (nf->flow_label)
+			tpl_mask |= BTPL_LABEL6;
+	}
 	if (unlikely(nf->s_mask || nf->d_mask))
-		tpl_mask |= BTPL_MASK;
+		tpl_mask |= BTPL_MASK4;
 	if (likely(nf->tuple.protocol == IPPROTO_TCP ||
 		    nf->tuple.protocol == IPPROTO_UDP ||
 		    nf->tuple.protocol == IPPROTO_SCTP ||
@@ -1746,7 +1818,7 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 #endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	if (nf->nat)
-		tpl_mask ^= BTPL_BASE | BTPL_NAT;
+		tpl_mask = likely(nf->tuple.l3proto == AF_INET)? BTPL_NAT4 : BTPL_NAT6;
 #endif
 
 	tpl = get_template(tpl_mask);
@@ -1834,29 +1906,20 @@ static void netflow_switch_version(int ver)
 	    protocol, protocol == 10? "IPFIX" : "NetFlow");
 }
 
-static inline int active_needs_export(struct ipt_netflow *nf, long a_timeout)
-{
-	/* active too long, finishing, or having too much bytes */
-	return ((jiffies - nf->ts_first) > a_timeout) ||
-		(nf->tuple.protocol == IPPROTO_TCP &&
-		 (nf->tcp_flags & TCP_FIN_RST) &&
-		 (jiffies - nf->ts_last) > (1 * HZ)) ||
-		nf->nr_bytes >= FLOW_FULL_WATERMARK;
-}
-
 #ifdef CONFIG_NF_NAT_NEEDED
 static void export_nat_event(struct nat_event *nel)
 {
 	static struct ipt_netflow nf = { { 0 } };
 
+	nf.tuple.l3proto = AF_INET;
 	nf.tuple.protocol = nel->protocol;
 	nf.ts_first = nel->ts;
 	nf.ts_last = nel->ts;
 	nf.nat = nel; /* this is also flag of dummy flow */
 	nf.tcp_flags = (nel->nat_event == NAT_DESTROY)? TCP_FIN_RST : TCP_SYN_ACK;
 	if (protocol >= 9) {
-		nf.tuple.s_addr = nel->pre.s_addr;
-		nf.tuple.d_addr = nel->pre.d_addr;
+		nf.tuple.src.ip = nel->pre.s_addr;
+		nf.tuple.dst.ip = nel->pre.d_addr;
 		nf.tuple.s_port = nel->pre.s_port;
 		nf.tuple.d_port = nel->pre.d_port;
 		netflow_export_flow(&nf);
@@ -1868,27 +1931,37 @@ static void export_nat_event(struct nat_event *nel)
 		 * pre-nat dst ip for DNAT. We will put this into Nexthop field
 		 * with port into src/dst AS field. tcp_flags will distinguish it's
 		 * start or stop event. Two flows in case of full nat. */
-		nf.tuple.s_addr = nel->pre.s_addr;
+		nf.tuple.src.ip = nel->pre.s_addr;
 		nf.tuple.s_port = nel->pre.s_port;
-		nf.tuple.d_addr = nel->post.d_addr;
+		nf.tuple.dst.ip = nel->post.d_addr;
 		nf.tuple.d_port = nel->post.d_port;
 
 		if (nel->pre.s_addr != nel->post.s_addr ||
 		    nel->pre.s_port != nel->post.s_port) {
-			nf.nexthop = nel->post.s_addr;
-			nf.s_as    = nel->post.s_port;
+			nf.nh.ip = nel->post.s_addr;
+			nf.s_as  = nel->post.s_port;
 			netflow_export_flow(&nf);
 		}
 		if (nel->pre.d_addr != nel->post.d_addr ||
 		    nel->pre.d_port != nel->post.d_port) {
-			nf.nexthop = nel->pre.d_addr;
-			nf.d_as    = nel->pre.d_port;
+			nf.nh.ip = nel->pre.d_addr;
+			nf.d_as  = nel->pre.d_port;
 			netflow_export_flow(&nf);
 		}
 	}
 	kfree(nel);
 }
 #endif /* CONFIG_NF_NAT_NEEDED */
+
+static inline int active_needs_export(struct ipt_netflow *nf, long a_timeout)
+{
+	/* active too long, finishing, or having too much bytes */
+	return ((jiffies - nf->ts_first) > a_timeout) ||
+		(nf->tuple.protocol == IPPROTO_TCP &&
+		 (nf->tcp_flags & TCP_FIN_RST) &&
+		 (jiffies - nf->ts_last) > (1 * HZ)) ||
+		nf->nr_bytes >= FLOW_FULL_WATERMARK;
+}
 
 /* could be called with zero to flush cache and pdu */
 /* this function is guaranteed to be called non-concurrently */
@@ -2135,6 +2208,73 @@ netflow_target_check(const struct xt_tgchk_param *par)
 	return CHECK_OK;
 }
 
+static inline __u32 observed_hdrs(__u8 currenthdr)
+{
+	switch (currenthdr) {
+	case IPPROTO_DSTOPTS:  return 1;
+	case IPPROTO_HOPOPTS:  return 1<<1;
+	case IPPROTO_ROUTING:  return 1<<5;
+	case IPPROTO_ESP:      return 1<<13;
+	case IPPROTO_AH:       return 1<<14;
+	case IPPROTO_MH:       return 1<<12;
+	case 108:              return 1<<15;
+	case IPPROTO_FRAGMENT: return 0; /* Handled elsewhere. */
+	}
+	return 1<<3;
+}
+
+/* http://www.iana.org/assignments/ip-parameters/ip-parameters.xhtml */
+static const __u8 ip4_opt_table[] = {
+	[7]	= 0,	/* RR */
+	[134]	= 1,	/* CIPSO */
+	[133]	= 2,	/* E-SEC */
+	[68]	= 3,	/* TS */
+	[131]	= 4,	/* LSR */
+	[130]	= 5,	/* SEC */
+	[1]	= 6,	/* NOP */
+	[0]	= 7,	/* EOOL */
+	[15]	= 8,	/* ENCODE */
+	[142]	= 9,	/* VISA */
+	[205]	= 10,	/* FINN */
+	[12]	= 11,	/* MTUR */
+	[11]	= 12,	/* MTUP */
+	[10]	= 13,	/* ZSU */
+	[137]	= 14,	/* SSR */
+	[136]	= 15,	/* SID */
+	[151]	= 16,	/* DPS */
+	[150]	= 17,	/* NSAPA */
+	[149]	= 18,	/* SDB */
+	[147]	= 19,	/* ADDEXT */
+	[148]	= 20,	/* RTRALT */
+	[82]	= 21,	/* TR */
+	[145]	= 22,	/* EIP */
+	[144]	= 23,	/* IMITD */
+	[30]	= 25,	/* EXP */
+	[94]	= 25,	/* EXP */
+	[158]	= 25,	/* EXP */
+	[222]	= 25,	/* EXP */
+	[25]	= 30,	/* QS */
+	[152]	= 31,	/* UMP */
+};
+/* Parse IPv4 Options array int ipv4Options IPFIX value. */
+static inline __u32 ip4_options(const unsigned char *p, const int optsize)
+{
+	__u32 ret = 0;
+	int i;
+
+	for (i = 0; i < optsize; ) {
+		__u8 op = p[i++];
+		if (op < ARRAY_SIZE(ip4_opt_table))
+			ret |= 1 << ip4_opt_table[op];
+		if (i >= optsize || op == 0)
+			break;
+		else if (op == 1)
+			continue;
+		i += p[i] - 1;
+	}
+	return ret;
+}
+
 /* packet receiver */
 static unsigned int netflow_target(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
@@ -2165,28 +2305,34 @@ static unsigned int netflow_target(
 		)
 {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
-	struct sk_buff *skb = *pskb;
+	const struct sk_buff *skb = *pskb;
 #endif
-	struct iphdr _iph, *iph;
+	union {
+		struct iphdr ip;
+		struct ipv6hdr ip6;
+	} _iph, *iph;
+	unsigned int hash;
+	spinlock_t *lock;
+	const int family = par->family;
 	struct ipt_netflow_tuple tuple;
 	struct ipt_netflow *nf;
 	__u8 tcp_flags;
 	struct netflow_aggr_n *aggr_n;
 	struct netflow_aggr_p *aggr_p;
 	__u8 s_mask, d_mask;
-	unsigned int hash;
-	spinlock_t *lock;
+	unsigned int ptr;
+	int fragment;
+	size_t pkt_len;
+	int options = 0;
 
-	iph = skb_header_pointer(skb, 0, sizeof(_iph), &_iph); //iph = ip_hdr(skb);
-
+	iph = skb_header_pointer(skb, 0, (likely(family == AF_INET))? sizeof(_iph.ip) : sizeof(_iph.ip6), &iph);
 	if (unlikely(iph == NULL)) {
 		NETFLOW_STAT_INC(truncated);
 		NETFLOW_STAT_INC(pkt_drop);
 		return IPT_CONTINUE;
 	}
 
-	tuple.s_addr	= iph->saddr;
-	tuple.d_addr	= iph->daddr;
+	tuple.l3proto	= family;
 	tuple.s_port	= 0;
 	tuple.d_port	= 0;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
@@ -2194,13 +2340,95 @@ static unsigned int netflow_target(
 #else
 	tuple.i_ifc	= par->in? par->in->ifindex : -1;
 #endif
-	tuple.protocol	= iph->protocol;
-	tuple.tos	= iph->tos;
 	tcp_flags	= 0; /* Cisco sometimes have TCP ACK for non TCP packets, don't get it */
 	s_mask		= 0;
 	d_mask		= 0;
 
-	if (unlikely(iph->frag_off & htons(IP_OFFSET))) {
+	if (likely(family == AF_INET)) {
+		tuple.src	= (union nf_inet_addr){ .ip = iph->ip.saddr };
+		tuple.dst	= (union nf_inet_addr){ .ip = iph->ip.daddr };
+		tuple.tos	= iph->ip.tos;
+		tuple.protocol	= iph->ip.protocol;
+		fragment	= unlikely(iph->ip.frag_off & htons(IP_OFFSET));
+		ptr		= iph->ip.ihl * 4;
+		pkt_len		= ntohs(iph->ip.tot_len);
+
+#define IPHDR_MAXSIZE (4 * 15)
+		if (iph->ip.ihl * 4 > sizeof(struct iphdr)) {
+			unsigned char _opt[IPHDR_MAXSIZE - sizeof(struct iphdr)];
+			const unsigned char *op;
+			unsigned int optsize = iph->ip.ihl * 4 - sizeof(struct iphdr);
+
+			op = skb_header_pointer(skb, sizeof(_iph), optsize, _opt);
+			if (op != NULL)
+				options = ip4_options(op, optsize);
+		}
+	} else {
+		__u8 currenthdr;
+
+		tuple.src.in6	= iph->ip6.saddr;
+		tuple.dst.in6	= iph->ip6.daddr;
+		tuple.tos	= iph->ip6.priority;
+		fragment	= 0;
+		ptr		= sizeof(struct ipv6hdr);
+		pkt_len		= ntohs(iph->ip6.payload_len) + sizeof(struct ipv6hdr);
+
+		currenthdr	= iph->ip6.nexthdr;
+		while (currenthdr != NEXTHDR_NONE && ipv6_ext_hdr(currenthdr)) {
+			struct ipv6_opt_hdr _hdr;
+			const struct ipv6_opt_hdr *hp;
+			unsigned int hdrlen = 0;
+
+			options |= observed_hdrs(currenthdr);
+			hp = skb_header_pointer(skb, ptr, sizeof(_hdr), &_hdr);
+			if (hp == NULL) {
+				/* We have src/dst, so must account something. */
+				tuple.protocol = currenthdr;
+				fragment = 3;
+				goto do_protocols;
+			}
+
+			switch (currenthdr) {
+			case IPPROTO_FRAGMENT: {
+				struct frag_hdr _fhdr;
+				const struct frag_hdr *fh;
+
+				fh = skb_header_pointer(skb, ptr, sizeof(_fhdr),
+						&_fhdr);
+				if (fh == NULL) {
+					tuple.protocol = currenthdr;
+					fragment = 2;
+					goto do_protocols;
+				}
+				fragment = 1;
+#define FRA0 (1<<4) /* Fragment header - first fragment */
+#define FRA1 (1<<6) /* Fragmentation header - not first fragment */
+				options |= (ntohs(fh->frag_off) & 0xFFF8)? FRA1 : FRA0;
+				hdrlen = 8;
+				break;
+			}
+			case IPPROTO_AH: {
+				struct ip_auth_hdr _hdr, *hp;
+
+				if (likely(hp = skb_header_pointer(skb, ptr, 8, &_hdr))) {
+					tuple.s_port = hp->spi >> 16;
+					tuple.d_port = hp->spi;
+				}
+				hdrlen = (hp->hdrlen + 2) << 2;
+				break;
+			}
+			default:
+				hdrlen = ipv6_optlen(hp);
+			}
+			currenthdr = hp->nexthdr;
+			ptr += hdrlen;
+		}
+		tuple.protocol	= currenthdr;
+		options |= observed_hdrs(currenthdr);
+	}
+
+do_protocols:
+	if (fragment) {
 		/* if conntrack is enabled it should defrag on pre-routing and local-out */
 		NETFLOW_STAT_INC(frags);
 	} else {
@@ -2208,7 +2436,7 @@ static unsigned int netflow_target(
 		    case IPPROTO_TCP: {
 			struct tcphdr _hdr, *hp;
 
-			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 14, &_hdr))) {
+			if (likely(hp = skb_header_pointer(skb, ptr, 14, &_hdr))) {
 				tuple.s_port = hp->source;
 				tuple.d_port = hp->dest;
 				tcp_flags = (u_int8_t)(ntohl(tcp_flag_word(hp)) >> 16);
@@ -2220,7 +2448,7 @@ static unsigned int netflow_target(
 		    case IPPROTO_SCTP: {
 			struct udphdr _hdr, *hp;
 
-			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 4, &_hdr))) {
+			if (likely(hp = skb_header_pointer(skb, ptr, 4, &_hdr))) {
 				tuple.s_port = hp->source;
 				tuple.d_port = hp->dest;
 			}
@@ -2229,29 +2457,40 @@ static unsigned int netflow_target(
 		    case IPPROTO_ICMP: {
 			struct icmphdr _hdr, *hp;
 
-			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 2, &_hdr)))
+			if (likely(family == AF_INET &&
+				    (hp = skb_header_pointer(skb, ptr, 2, &_hdr))))
 				tuple.d_port = htons((hp->type << 8) | hp->code);
 			break;
+		    }
+		    case IPPROTO_ICMPV6: {
+			    struct icmp6hdr _icmp6h, *ic;
+
+			    if (likely(family == AF_INET6 &&
+					(ic = skb_header_pointer(skb, ptr, 2, &_icmp6h))))
+				    tuple.d_port = htons((ic->icmp6_type << 8) | ic->icmp6_code);
+			    break;
 		    }
 		    case IPPROTO_IGMP: {
 			struct igmphdr _hdr, *hp;
 
-			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 1, &_hdr)))
+			if (likely(hp = skb_header_pointer(skb, ptr, 1, &_hdr)))
 				tuple.d_port = hp->type;
 			}
 			break;
 		    case IPPROTO_AH: { /* IPSEC */
 			struct ip_auth_hdr _hdr, *hp;
 
-			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 8, &_hdr)))
+			if (likely(family == AF_INET && /* For IPv6 it's parsed above. */
+				    (hp = skb_header_pointer(skb, ptr, 8, &_hdr)))) {
 				tuple.s_port = hp->spi >> 16;
 				tuple.d_port = hp->spi;
 			}
 			break;
+		    }
 		    case IPPROTO_ESP: {
 			struct ip_esp_hdr _hdr, *hp;
 
-			if (likely(hp = skb_header_pointer(skb, iph->ihl * 4, 4, &_hdr)))
+			if (likely(hp = skb_header_pointer(skb, ptr, 4, &_hdr)))
 				tuple.s_port = hp->spi >> 16;
 				tuple.d_port = hp->spi;
 			}
@@ -2261,20 +2500,22 @@ static unsigned int netflow_target(
 
 	/* aggregate networks */
 	read_lock_bh(&aggr_lock);
-	list_for_each_entry(aggr_n, &aggr_n_list, list)
-		if (unlikely((ntohl(tuple.s_addr) & aggr_n->mask) == aggr_n->addr)) {
-			tuple.s_addr &= htonl(aggr_n->aggr_mask);
-			s_mask = aggr_n->prefix;
-			atomic_inc(&aggr_n->usage);
-			break; 
-		}
-	list_for_each_entry(aggr_n, &aggr_n_list, list)
-		if (unlikely((ntohl(tuple.d_addr) & aggr_n->mask) == aggr_n->addr)) {
-			tuple.d_addr &= htonl(aggr_n->aggr_mask);
-			d_mask = aggr_n->prefix;
-			atomic_inc(&aggr_n->usage);
-			break; 
-		}
+	if (family == AF_INET) {
+		list_for_each_entry(aggr_n, &aggr_n_list, list)
+			if (unlikely((ntohl(tuple.src.ip) & aggr_n->mask) == aggr_n->addr)) {
+				tuple.src.ip &= htonl(aggr_n->aggr_mask);
+				s_mask = aggr_n->prefix;
+				atomic_inc(&aggr_n->usage);
+				break;
+			}
+		list_for_each_entry(aggr_n, &aggr_n_list, list)
+			if (unlikely((ntohl(tuple.dst.ip) & aggr_n->mask) == aggr_n->addr)) {
+				tuple.dst.ip &= htonl(aggr_n->aggr_mask);
+				d_mask = aggr_n->prefix;
+				atomic_inc(&aggr_n->usage);
+				break;
+			}
+	}
 
 	if (tuple.protocol == IPPROTO_TCP ||
 	    tuple.protocol == IPPROTO_UDP ||
@@ -2311,7 +2552,7 @@ static unsigned int netflow_target(
 			/* This is DOS attack prevention */
 			NETFLOW_STAT_INC(maxflows_err);
 			NETFLOW_STAT_INC(pkt_drop);
-			NETFLOW_STAT_ADD(traf_drop, ntohs(iph->tot_len));
+			NETFLOW_STAT_ADD(traf_drop, pkt_len);
 			spin_unlock_bh(lock);
 			return IPT_CONTINUE;
 		}
@@ -2320,7 +2561,7 @@ static unsigned int netflow_target(
 		if (unlikely(!nf || IS_ERR(nf))) {
 			NETFLOW_STAT_INC(alloc_err);
 			NETFLOW_STAT_INC(pkt_drop);
-			NETFLOW_STAT_ADD(traf_drop, ntohs(iph->tot_len));
+			NETFLOW_STAT_ADD(traf_drop, pkt_len);
 			spin_unlock_bh(lock);
 			return IPT_CONTINUE;
 		}
@@ -2344,15 +2585,23 @@ static unsigned int netflow_target(
 		rt = skb_rtable(skb);
 #endif
 #endif
-		if (rt)
-			nf->nexthop = rt->rt_gateway;
-
+		if (likely(family == AF_INET)) {
+			if (rt)
+				nf->nh.ip = rt->rt_gateway;
+		} else {
+			if (rt)
+				nf->nh.in6 = ((struct rt6_info *)rt)->rt6i_gateway;
+			nf->flow_label = (iph->ip6.flow_lbl[0] << 16) |
+			       	(iph->ip6.flow_lbl[1] << 8) | (iph->ip6.flow_lbl[2]);
+		}
+#if 0
 		if (unlikely(debug > 2))
 			printk(KERN_INFO "ipt_NETFLOW: new (%u) %hd:%hd SRC=%u.%u.%u.%u:%u DST=%u.%u.%u.%u:%u\n",
 			       atomic_read(&ipt_netflow_count),
 			       tuple.i_ifc, nf->o_ifc,
 			       NIPQUAD(tuple.s_addr), ntohs(tuple.s_port),
 			       NIPQUAD(tuple.d_addr), ntohs(tuple.d_port));
+#endif
 	} else {
 		/* ipt_netflow_list is sorted by access time:
 		 * most recently accessed flows are at head, old flows remain at tail
@@ -2373,12 +2622,13 @@ static unsigned int netflow_target(
 #endif
 
 	nf->nr_packets++;
-	nf->nr_bytes += ntohs(iph->tot_len);
+	nf->nr_bytes += pkt_len;
 	nf->ts_last = jiffies;
 	nf->tcp_flags |= tcp_flags;
+	nf->options |= options;
 
 	NETFLOW_STAT_INC(pkt_total);
-	NETFLOW_STAT_ADD(traf_total, ntohs(iph->tot_len));
+	NETFLOW_STAT_ADD(traf_total, ntohs(pkt_len));
 
 	if (likely(active_needs_export(nf, active_timeout * HZ))) {
 		/* ok, if this active flow to be exported
@@ -2560,6 +2810,19 @@ static struct ipt_target ipt_netflow_reg[] __read_mostly = {
 			(1 << NF_IP_POST_ROUTING),
 		.me		= THIS_MODULE
 	},
+	{
+		.name		= "NETFLOW",
+		.target		= netflow_target,
+		.checkentry	= netflow_target_check,
+		.family		= AF_INET6,
+		.hooks		=
+		       	(1 << NF_IP_PRE_ROUTING) |
+		       	(1 << NF_IP_LOCAL_IN) |
+		       	(1 << NF_IP_FORWARD) |
+			(1 << NF_IP_LOCAL_OUT) |
+			(1 << NF_IP_POST_ROUTING),
+		.me		= THIS_MODULE
+	},
 };
 
 static int __init ipt_netflow_init(void)
@@ -2690,7 +2953,7 @@ err_free_proc_stat:
 #ifdef CONFIG_PROC_FS
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
 err_free_netflow_slab:
-#endif  
+#endif
 	kmem_cache_destroy(ipt_netflow_cachep);
 err_free_hash:
 	vfree(ipt_netflow_hash);
