@@ -82,7 +82,7 @@
 #define ipt_target xt_target
 #endif
 
-#define IPT_NETFLOW_VERSION "1.8.1"
+#define IPT_NETFLOW_VERSION "1.8.2"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("<abc@telekom.ru>");
@@ -2216,6 +2216,10 @@ netflow_target_check(const struct xt_tgchk_param *par)
 #define CHECK_FAIL	-EINVAL
 #define CHECK_OK	0
 #endif
+		return CHECK_FAIL;
+	}
+	if (target->family == AF_INET6 && protocol == 5) {
+		printk(KERN_ERR "IPv6 target is meaningless for protocol=5, enable protocol 9 or 10.\n");
 		return CHECK_FAIL;
 	}
 	return CHECK_OK;

@@ -1,9 +1,10 @@
 ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
 
    High performance NetFlow v5, v9, IPFIX flow data export module for Linux
-   kernel. Created to be useful for highly loaded linux router. It should be
-   used as iptables target. Also can export NAT translation events using
-   NetFlow Event Logging (NEL) for v9, IPFIX or specially crafted v5 flows.
+   kernel. Supporting IPv4 and IPv6. Created to be useful for highly loaded
+   linux router. It should be used as iptables target. Also can export NAT
+   translation events using NetFlow Event Logging (NEL) for v9, IPFIX, or
+   specially crafted v5 flows.
 
 
 ============================
@@ -121,20 +122,32 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
    less clear when init process will apply sysctl.conf, before of after
    module's load.
 
-4. Example of directing all traffic into the module:
+4. Example of directing all IPv4 traffic into the module:
 
      # iptables -I FORWARD -j NETFLOW
      # iptables -I INPUT -j NETFLOW
      # iptables -I OUTPUT -j NETFLOW
 
+5. If you want to account IPv6 traffic you should use protocol 9 or 10.
+   Example of directing all IPv6 traffic into the module:
+
+     # sysctl net.netflow.protocol=10
+     # ip6tables -I FORWARD -j NETFLOW
+     # ip6tables -I INPUT -j NETFLOW
+     # ip6tables -I OUTPUT -j NETFLOW
+
+   Note: First enable right version of protocol and after that add ip6tables
+     rules, otherwise you will get errors in dmesg.
 
 ===========
 = OPTIONS =
 ===========
 
    protocol=5
-     - what version of NetFlow protocol to use. Default is 5. You
-       can choose from 5, 9, or 10 (where 10 is IPFIX).
+     - what version of NetFlow protocol to use. Default is 5.
+       You can choose from 5, 9, or 10 (where 10 is IPFIX). If you plan
+       to account IPv6 traffic you should use protocol 9 or 10 (IPFIX),
+       because NetFlow v5 isn't compatible with IPv6.
 
    destination=127.0.0.1:2055
      - where to export netflow, to this ip address
@@ -147,8 +160,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
 
    natevents=1
      - Collect and send NAT translation events as NetFlow Event Logging (NEL)
-       for NetFlow v9/IPFIX, or as dummy flows compatible with NetFlow v5. This
-       overall feature is only supported for kernels below 3.2.
+       for NetFlow v9/IPFIX, or as dummy flows compatible with NetFlow v5.
        Default is 0 (don't send).
 
        For NetFlow v5 protocol meaning of fields in dummy flows is such:
@@ -168,8 +180,12 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
        is 1800.
 
    refresh-rate=20
-     - for NetFlow v9 or IPFIX it's rate how frequently to send templates (per
-       packets). You probably don't need to change default (which is 20).
+     - for NetFlow v9 and IPFIX it's rate how frequently to re-send templates
+       (per packets). You probably don't need to change default (which is 20).
+
+   timeout-rate=30
+     - for NetFlow v9 and IPFIX it's rate when to re-send old templates (in
+       minutes). No need to change it.
 
    debug=0
      - debug level (none).
