@@ -1280,12 +1280,14 @@ static void netflow_export_flow_v5(struct ipt_netflow *nf)
 	rec->ts_last	= htonl(jiffies_to_msecs(nf->ts_last));
 	rec->s_port	= nf->tuple.s_port;
 	rec->d_port	= nf->tuple.d_port;
-	//rec->reserved	= 0;
+	//rec->reserved	= 0; /* pdu is always zeroized for v5 in netflow_switch_version */
 	rec->tcp_flags	= nf->tcp_flags;
 	rec->protocol	= nf->tuple.protocol;
 	rec->tos	= nf->tuple.tos;
-	//rec->s_as	= 0;
-	//rec->d_as	= 0;
+#ifdef CONFIG_NF_NAT_NEEDED
+	rec->s_as	= nf->s_as;
+	rec->d_as	= nf->d_as;
+#endif
 	rec->s_mask	= nf->s_mask;
 	rec->d_mask	= nf->d_mask;
 	//rec->padding	= 0;
@@ -1421,8 +1423,7 @@ static u_int8_t tpl_element_sizes[] = {
 	//[TOTAL_BYTES_EXP]	= 4,
 	//[TOTAL_PKTS_EXP]	= 4,
 	//[TOTAL_FLOWS_EXP]	= 4,
-	//[IP_PROTOCOL_VERSION]	= 1,
-	[IPV6_NEXT_HOP]	= 16,
+	[IPV6_NEXT_HOP]			   = 16,
 	[IPV6_OPTION_HEADERS]		   = 2,
 	[commonPropertiesId]		   = 4,
 	[ipv4Options]			   = 4,
@@ -1923,7 +1924,7 @@ static void export_nat_event(struct nat_event *nel)
 		nf.tuple.s_port = nel->pre.s_port;
 		nf.tuple.d_port = nel->pre.d_port;
 		netflow_export_flow(&nf);
-	} else {
+	} else { /* v5 */
 		/* The weird v5 packet(s).
 		 * src and dst will be same as in data flow from the FORWARD chain
 		 * where src is pre-nat src ip and dst is post-nat dst ip.
@@ -2117,10 +2118,10 @@ static int netflow_conntrack_event(unsigned int events, struct nf_ct_event *item
 
 	/* Call netlink first. */
 	notifier = rcu_dereference(saved_event_cb);
-	if (notifier != NULL)
+	if (likely(notifier))
 		ret = notifier->fcn(events, item);
 #endif
-	if (!natevents)
+	if (unlikely(!natevents))
 		return ret;
 
 	if (!(events & ((1 << IPCT_NEW) | (1 << IPCT_RELATED) | (1 << IPCT_DESTROY))))
@@ -2129,9 +2130,11 @@ static int netflow_conntrack_event(unsigned int events, struct nf_ct_event *item
 	if (!(ct->status & IPS_NAT_MASK))
 		return ret;
 
-	if (ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.l3num != AF_INET ||
-	    ct->tuplehash[IP_CT_DIR_REPLY].tuple.src.l3num != AF_INET)
+	if (unlikely(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.l3num != AF_INET ||
+		    ct->tuplehash[IP_CT_DIR_REPLY].tuple.src.l3num != AF_INET)) {
+		/* Well, there is no linux NAT for IPv6 anyway. */
 		return ret;
+	}
 
 	if (!(nel = kmalloc(sizeof(struct nat_event), GFP_ATOMIC))) {
 		printk(KERN_ERR "ipt_NETFLOW: can't kmalloc nat event\n");
@@ -2208,19 +2211,20 @@ netflow_target_check(const struct xt_tgchk_param *par)
 	return CHECK_OK;
 }
 
-static inline __u32 observed_hdrs(__u8 currenthdr)
+#define SetXBit(x) (0x8000 >> (x)) /* Proper bit for htons later. */
+static inline __u16 observed_hdrs(const __u8 currenthdr)
 {
 	switch (currenthdr) {
-	case IPPROTO_DSTOPTS:  return 1;
-	case IPPROTO_HOPOPTS:  return 1<<1;
-	case IPPROTO_ROUTING:  return 1<<5;
-	case IPPROTO_ESP:      return 1<<13;
-	case IPPROTO_AH:       return 1<<14;
-	case IPPROTO_MH:       return 1<<12;
-	case 108:              return 1<<15;
+	case IPPROTO_DSTOPTS:  return SetXBit(0);
+	case IPPROTO_HOPOPTS:  return SetXBit(1);
+	case IPPROTO_ROUTING:  return SetXBit(5);
+	case IPPROTO_ESP:      return SetXBit(13);
+	case IPPROTO_AH:       return SetXBit(14);
+	case IPPROTO_MH:       return SetXBit(12);
+	case 108: /* PAY */    return SetXBit(15);
 	case IPPROTO_FRAGMENT: return 0; /* Handled elsewhere. */
 	}
-	return 1<<3;
+	return SetXBit(3);
 }
 
 /* http://www.iana.org/assignments/ip-parameters/ip-parameters.xhtml */
@@ -2264,8 +2268,15 @@ static inline __u32 ip4_options(const unsigned char *p, const int optsize)
 
 	for (i = 0; i < optsize; ) {
 		__u8 op = p[i++];
-		if (op < ARRAY_SIZE(ip4_opt_table))
-			ret |= 1 << ip4_opt_table[op];
+		if (op < ARRAY_SIZE(ip4_opt_table)) {
+			/* Btw, IANA doc is messed up in crazy way:
+			 *   http://www.ietf.org/mail-archive/web/ipfix/current/msg06008.html (2011)
+			 * I decided to follow IANA _text_ description from
+			 *   http://www.iana.org/assignments/ipfix/ipfix.xhtml (2013-09-18)
+			 *
+			 * Set proper bit for htonl later. */
+			ret |= 1 << (32 - ip4_opt_table[op]);
+		}
 		if (i >= optsize || op == 0)
 			break;
 		else if (op == 1)
@@ -2401,8 +2412,8 @@ static unsigned int netflow_target(
 					goto do_protocols;
 				}
 				fragment = 1;
-#define FRA0 (1<<4) /* Fragment header - first fragment */
-#define FRA1 (1<<6) /* Fragmentation header - not first fragment */
+#define FRA0 SetXBit(4) /* Fragment header - first fragment */
+#define FRA1 SetXBit(6) /* Fragmentation header - not first fragment */
 				options |= (ntohs(fh->frag_off) & 0xFFF8)? FRA1 : FRA0;
 				hdrlen = 8;
 				break;

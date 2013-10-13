@@ -96,7 +96,6 @@ enum {
 	//TOTAL_BYTES_EXP = 40,
 	//TOTAL_PKTS_EXP = 41,
 	//TOTAL_FLOWS_EXP = 42,
-	//IP_PROTOCOL_VERSION = 60,
 	IPV6_NEXT_HOP = 62,
 	IPV6_OPTION_HEADERS = 64,
 	commonPropertiesId = 137, /* for MARK */
@@ -188,10 +187,11 @@ struct ipt_netflow {
 	u_int32_t	nr_bytes;
 	unsigned long	ts_first;
 	unsigned long	ts_last;
-	u_int32_t	flow_label; /* ipv6 */
-	u_int32_t	options;
+	u_int32_t	flow_label; /* IPv6 */
+	u_int32_t	options; /* IPv4(16) & IPv6(32) Options */
+	u_int32_t	tcpoptions;
 #ifdef CONFIG_NF_CONNTRACK_MARK
-	u_int32_t	mark;
+	u_int32_t	mark; /* Exported as commonPropertiesId */
 #endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	__be32		s_as;
