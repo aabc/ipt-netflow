@@ -100,6 +100,7 @@ enum {
 	IPV6_OPTION_HEADERS = 64,
 	commonPropertiesId = 137, /* for MARK */
 	ipv4Options = 208,
+	tcpOptions = 209,
 	postNATSourceIPv4Address = 225,
 	postNATDestinationIPv4Address = 226,
 	postNAPTSourceTransportPort = 227,
@@ -166,7 +167,7 @@ struct ipt_netflow_tuple {
 	__u8		protocol;
 	__u8		tos;
 	__u8		l3proto;
-} __attribute__ ((packed));
+};
 
 /* hlist[2] + tuple[]: 8+8 + 41 = 57 (less than usual cache line, 64) */
 struct ipt_netflow {

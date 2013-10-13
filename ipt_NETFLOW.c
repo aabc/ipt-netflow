@@ -1427,6 +1427,7 @@ static u_int8_t tpl_element_sizes[] = {
 	[IPV6_OPTION_HEADERS]		   = 2,
 	[commonPropertiesId]		   = 4,
 	[ipv4Options]			   = 4,
+	[tcpOptions]			   = 4,
 	[postNATSourceIPv4Address]	   = 4,
 	[postNATDestinationIPv4Address]	   = 4,
 	[postNAPTSourceTransportPort]	   = 2,
@@ -1460,6 +1461,7 @@ struct base_template {
 #define BTPL_MARK	0x00000400	/* connmark */
 #define BTPL_LABEL6	0x00000800	/* IPv6 flow label */
 #define BTPL_OPTIONS4	0x00001000	/* IPv4 Options */
+#define BTPL_TCPOPTIONS	0x00002000	/* TCP Options */
 #define BTPL_MAX	32
 
 static struct base_template template_base = {
@@ -1485,6 +1487,9 @@ static struct base_template template_ipv4 = {
 };
 static struct base_template template_options4 = {
 	.types = { ipv4Options, 0 }
+};
+static struct base_template template_tcpoptions = {
+	.types = { tcpOptions, 0 }
 };
 static struct base_template template_ipv6 = {
 	.types = {
@@ -1616,6 +1621,8 @@ static struct data_template *get_template(int tmask)
 		tlist[tnum++] = &template_label6;
 	if (tmask & BTPL_OPTIONS4)
 		tlist[tnum++] = &template_options4;
+	if (tmask & BTPL_TCPOPTIONS)
+		tlist[tnum++] = &template_tcpoptions;
 	if (tmask & BTPL_MASK4)
 		tlist[tnum++] = &template_ipv4_mask;
 	if (tmask & BTPL_ICMP)
@@ -1732,6 +1739,7 @@ static inline void add_ipv4_field(__u8 *ptr, int type, struct ipt_netflow *nf)
 		case IPV6_FLOW_LABEL:        *ptr++ = nf->flow_label >> 16;
 				     *(__be16 *)ptr = nf->flow_label;
 				      break;
+		case tcpOptions:     *(__be32 *)ptr = htonl(nf->tcpoptions); break;
 		case ipv4Options:    *(__be32 *)ptr = htonl(nf->options); break;
 		case IPV6_OPTION_HEADERS: *(__be16 *)ptr = htons(nf->options); break;
 #ifdef CONFIG_NF_CONNTRACK_MARK
@@ -1802,6 +1810,8 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 		if (nf->flow_label)
 			tpl_mask |= BTPL_LABEL6;
 	}
+	if (unlikely(nf->tcpoptions))
+		tpl_mask |= BTPL_TCPOPTIONS;
 	if (unlikely(nf->s_mask || nf->d_mask))
 		tpl_mask |= BTPL_MASK4;
 	if (likely(nf->tuple.protocol == IPPROTO_TCP ||
@@ -2215,16 +2225,32 @@ netflow_target_check(const struct xt_tgchk_param *par)
 static inline __u16 observed_hdrs(const __u8 currenthdr)
 {
 	switch (currenthdr) {
+	case IPPROTO_TCP:
+	case IPPROTO_UDP:
+		/* For speed, in case switch is not optimized. */
+		return 0;
 	case IPPROTO_DSTOPTS:  return SetXBit(0);
 	case IPPROTO_HOPOPTS:  return SetXBit(1);
 	case IPPROTO_ROUTING:  return SetXBit(5);
+	case IPPROTO_MH:       return SetXBit(12);
 	case IPPROTO_ESP:      return SetXBit(13);
 	case IPPROTO_AH:       return SetXBit(14);
-	case IPPROTO_MH:       return SetXBit(12);
-	case 108: /* PAY */    return SetXBit(15);
-	case IPPROTO_FRAGMENT: return 0; /* Handled elsewhere. */
+	case IPPROTO_COMP:     return SetXBit(15);
+	case IPPROTO_FRAGMENT: /* Handled elsewhere. */
+		/* Next is known headers. */
+	case IPPROTO_ICMPV6:
+	case IPPROTO_UDPLITE:
+	case IPPROTO_IPIP:
+	case IPPROTO_PIM:
+	case IPPROTO_GRE:
+	case IPPROTO_SCTP:
+#ifdef IPPROTO_L2TP
+	case IPPROTO_L2TP:
+#endif
+	case IPPROTO_DCCP:
+	       return 0;
 	}
-	return SetXBit(3);
+	return SetXBit(3); /* Unknown header. */
 }
 
 /* http://www.iana.org/assignments/ip-parameters/ip-parameters.xhtml */
@@ -2266,10 +2292,10 @@ static inline __u32 ip4_options(const unsigned char *p, const int optsize)
 	__u32 ret = 0;
 	int i;
 
-	for (i = 0; i < optsize; ) {
+	for (i = 0; likely(i < optsize); ) {
 		__u8 op = p[i++];
-		if (op < ARRAY_SIZE(ip4_opt_table)) {
-			/* Btw, IANA doc is messed up in crazy way:
+		if (likely(op < ARRAY_SIZE(ip4_opt_table))) {
+			/* Btw, IANA doc is messed up in a crazy way:
 			 *   http://www.ietf.org/mail-archive/web/ipfix/current/msg06008.html (2011)
 			 * I decided to follow IANA _text_ description from
 			 *   http://www.iana.org/assignments/ipfix/ipfix.xhtml (2013-09-18)
@@ -2277,15 +2303,43 @@ static inline __u32 ip4_options(const unsigned char *p, const int optsize)
 			 * Set proper bit for htonl later. */
 			ret |= 1 << (32 - ip4_opt_table[op]);
 		}
-		if (i >= optsize || op == 0)
-			break;
-		else if (op == 1)
+		if (likely(i >= optsize || op == 0))
+			return ret;
+		else if (unlikely(op == 1))
 			continue;
 		i += p[i] - 1;
 	}
 	return ret;
 }
 
+#define TCPHDR_MAXSIZE (4 * 15)
+/* List of options: http://www.iana.org/assignments/tcp-parameters/tcp-parameters.xhtml */
+static inline __u32 tcp_options(const struct sk_buff *skb, const unsigned int ptr, const struct tcphdr *th)
+{
+	const unsigned int optsize = th->doff * 4 - sizeof(struct tcphdr);
+	__u8 _opt[optsize];
+	const __u8 *p;
+	__u32 ret;
+	int i;
+
+	p = skb_header_pointer(skb, ptr + sizeof(struct tcphdr), optsize, _opt);
+	if (unlikely(!p))
+		return 0;
+	ret = 0;
+	for (i = 0; likely(i < optsize); ) {
+		__u8 opt = p[i++];
+		if (likely(opt < 32)) {
+			/* IANA doc is messed up, see above. */
+			ret |= 1 << (32 - opt);
+		}
+		if (likely(i >= optsize || opt == 0))
+			return ret;
+		else if (unlikely(opt == 1))
+			continue;
+		i += p[i] - 1;
+	}
+	return ret;
+}
 /* packet receiver */
 static unsigned int netflow_target(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
@@ -2335,6 +2389,7 @@ static unsigned int netflow_target(
 	int fragment;
 	size_t pkt_len;
 	int options = 0;
+	int tcpoptions = 0;
 
 	iph = skb_header_pointer(skb, 0, (likely(family == AF_INET))? sizeof(_iph.ip) : sizeof(_iph.ip6), &iph);
 	if (unlikely(iph == NULL)) {
@@ -2365,13 +2420,13 @@ static unsigned int netflow_target(
 		pkt_len		= ntohs(iph->ip.tot_len);
 
 #define IPHDR_MAXSIZE (4 * 15)
-		if (iph->ip.ihl * 4 > sizeof(struct iphdr)) {
+		if (unlikely(iph->ip.ihl * 4 > sizeof(struct iphdr))) {
 			unsigned char _opt[IPHDR_MAXSIZE - sizeof(struct iphdr)];
 			const unsigned char *op;
 			unsigned int optsize = iph->ip.ihl * 4 - sizeof(struct iphdr);
 
 			op = skb_header_pointer(skb, sizeof(_iph), optsize, _opt);
-			if (op != NULL)
+			if (likely(op))
 				options = ip4_options(op, optsize);
 		}
 	} else {
@@ -2452,6 +2507,8 @@ do_protocols:
 				tuple.d_port = hp->dest;
 				tcp_flags = (u_int8_t)(ntohl(tcp_flag_word(hp)) >> 16);
 			}
+			if (unlikely(hp->doff * 4 > sizeof(struct tcphdr)))
+				tcpoptions = tcp_options(skb, ptr, hp);
 			break;
 		    }
 		    case IPPROTO_UDP:
@@ -2637,6 +2694,8 @@ do_protocols:
 	nf->ts_last = jiffies;
 	nf->tcp_flags |= tcp_flags;
 	nf->options |= options;
+	if (tuple.protocol == IPPROTO_TCP)
+		nf->tcpoptions |= tcpoptions;
 
 	NETFLOW_STAT_INC(pkt_total);
 	NETFLOW_STAT_ADD(traf_total, ntohs(pkt_len));
