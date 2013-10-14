@@ -23,7 +23,7 @@ lclean:
 clean: mclean lclean
 	-rm -f *.so *.o modules.order
 
-%_sh.o: %.c
+%_sh.o: libipt_NETFLOW.c
 	gcc -O2 -Wall -Wunused $(IPTABLES_CFLAGS) -fPIC -o $@ -c libipt_NETFLOW.c
 
 %.so: %_sh.o
