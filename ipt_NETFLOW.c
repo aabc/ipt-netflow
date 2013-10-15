@@ -1461,7 +1461,8 @@ struct base_template {
 #define BTPL_MARK	0x00000400	/* connmark */
 #define BTPL_LABEL6	0x00000800	/* IPv6 flow label */
 #define BTPL_OPTIONS4	0x00001000	/* IPv4 Options */
-#define BTPL_TCPOPTIONS	0x00002000	/* TCP Options */
+#define BTPL_OPTIONS6	0x00002000	/* IPv6 Options */
+#define BTPL_TCPOPTIONS	0x00004000	/* TCP Options */
 #define BTPL_MAX	32
 
 static struct base_template template_base = {
@@ -1496,9 +1497,11 @@ static struct base_template template_ipv6 = {
 		IPV6_SRC_ADDR,
 		IPV6_DST_ADDR,
 		IPV6_NEXT_HOP,
-		IPV6_OPTION_HEADERS,
 		0
 	}
+};
+static struct base_template template_options6 = {
+	.types = { IPV6_OPTION_HEADERS, 0 }
 };
 static struct base_template template_label6 = {
 	.types = { IPV6_FLOW_LABEL, 0 }
@@ -1621,6 +1624,8 @@ static struct data_template *get_template(int tmask)
 		tlist[tnum++] = &template_label6;
 	if (tmask & BTPL_OPTIONS4)
 		tlist[tnum++] = &template_options4;
+	if (tmask & BTPL_OPTIONS6)
+		tlist[tnum++] = &template_options6;
 	if (tmask & BTPL_TCPOPTIONS)
 		tlist[tnum++] = &template_tcpoptions;
 	if (tmask & BTPL_MASK4)
@@ -1807,7 +1812,9 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 			tpl_mask |= BTPL_OPTIONS4;
 	} else {
 		tpl_mask |= BTPL_IP6;
-		if (nf->flow_label)
+		if (unlikely(nf->options))
+			tpl_mask |= BTPL_OPTIONS6;
+		if (unlikely(nf->flow_label))
 			tpl_mask |= BTPL_LABEL6;
 	}
 	if (unlikely(nf->tcpoptions))
