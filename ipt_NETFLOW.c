@@ -1457,7 +1457,6 @@ struct base_template {
 #define BTPL_IGMP	0x00000040	/* IGMP */
 #define BTPL_IPSEC	0x00000080	/* AH&ESP */
 #define BTPL_NAT4	0x00000100	/* NAT IPv4 */
-#define BTPL_NAT6	0x00000200	/* NAT IPv6 */
 #define BTPL_MARK	0x00000400	/* connmark */
 #define BTPL_LABEL6	0x00000800	/* IPv6 flow label */
 #define BTPL_OPTIONS4	0x00001000	/* IPv4 Options */
@@ -1543,19 +1542,6 @@ static struct base_template template_nat4 = {
 		0
 	}
 };
-static struct base_template template_nat6 = {
-	.types = {
-		IPV6_SRC_ADDR,
-		IPV6_DST_ADDR,
-		postNATSourceIPv6Address,
-		postNATDestinationIPv6Address,
-		postNAPTSourceTransportPort,
-		postNAPTDestinationTransportPort,
-		PROTOCOL,
-		natEvent,
-		0
-	}
-};
 static struct base_template template_mark = {
 	.types = { commonPropertiesId, 0 }
 };
@@ -1612,34 +1598,32 @@ static struct data_template *get_template(int tmask)
 			return tpl;
 
 	tnum = 0;
-	if (tmask & BTPL_IP4)
+	if (tmask & BTPL_IP4) {
 		tlist[tnum++] = &template_ipv4;
-	if (tmask & BTPL_IP6)
+		if (tmask & BTPL_OPTIONS4)
+			tlist[tnum++] = &template_options4;
+		if (tmask & BTPL_MASK4)
+			tlist[tnum++] = &template_ipv4_mask;
+	} else if (tmask & BTPL_IP6) {
 		tlist[tnum++] = &template_ipv6;
+		if (tmask & BTPL_LABEL6)
+			tlist[tnum++] = &template_label6;
+		if (tmask & BTPL_OPTIONS6)
+			tlist[tnum++] = &template_options6;
+	} else if (tmask & BTPL_NAT4)
+		tlist[tnum++] = &template_nat4;
 	if (tmask & BTPL_PORTS)
 		tlist[tnum++] = &template_ports;
 	if (tmask & BTPL_BASE)
 		tlist[tnum++] = &template_base;
-	if (tmask & BTPL_LABEL6)
-		tlist[tnum++] = &template_label6;
-	if (tmask & BTPL_OPTIONS4)
-		tlist[tnum++] = &template_options4;
-	if (tmask & BTPL_OPTIONS6)
-		tlist[tnum++] = &template_options6;
 	if (tmask & BTPL_TCPOPTIONS)
 		tlist[tnum++] = &template_tcpoptions;
-	if (tmask & BTPL_MASK4)
-		tlist[tnum++] = &template_ipv4_mask;
 	if (tmask & BTPL_ICMP)
 		tlist[tnum++] = &template_icmp;
 	if (tmask & BTPL_IGMP)
 		tlist[tnum++] = &template_igmp;
 	if (tmask & BTPL_IPSEC)
 		tlist[tnum++] = &template_ipsec;
-	if (tmask & BTPL_NAT4)
-		tlist[tnum++] = &template_nat4;
-	if (tmask & BTPL_NAT6)
-		tlist[tnum++] = &template_nat6;
 	if (tmask & BTPL_MARK)
 		tlist[tnum++] = &template_mark;
 
@@ -1758,8 +1742,6 @@ static inline void add_ipv4_field(__u8 *ptr, int type, struct ipt_netflow *nf)
 #ifdef CONFIG_NF_NAT_NEEDED
 		case postNATSourceIPv4Address:	       *(__be32 *)ptr = nf->nat->post.s_addr; break;
 		case postNATDestinationIPv4Address:    *(__be32 *)ptr = nf->nat->post.d_addr; break;
-//		case postNATSourceIPv6Address:	        *(in6_t *)ptr = nf->nat->post.s_addr6; break;
-//		case postNATDestinationIPv6Address:     *(in6_t *)ptr = nf->nat->post.d_addr6; break;
 		case postNAPTSourceTransportPort:      *(__be16 *)ptr = nf->nat->post.s_port; break;
 		case postNAPTDestinationTransportPort: *(__be16 *)ptr = nf->nat->post.d_port; break;
 		case natEvent:				         *ptr = nf->nat->nat_event; break;
@@ -1836,7 +1818,7 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 #endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	if (nf->nat)
-		tpl_mask = likely(nf->tuple.l3proto == AF_INET)? BTPL_NAT4 : BTPL_NAT6;
+		tpl_mask = BTPL_NAT4;
 #endif
 
 	tpl = get_template(tpl_mask);
