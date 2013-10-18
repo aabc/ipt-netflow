@@ -241,7 +241,7 @@ static DEFINE_MUTEX(worker_lock);
 #define MIN_DELAY 1
 #define MAX_DELAY (HZ / 10)
 static int worker_delay = HZ / 10;
-static inline void _schedule_scan_worker(int status)
+static inline void _schedule_scan_worker(const int status)
 {
 	/* rudimentary congestion avoidance */
 	if (status > 0)
@@ -793,7 +793,7 @@ static void sk_error_report(struct sock *sk)
 	return;
 }
 
-static struct socket *_usock_alloc(__be32 ipaddr, unsigned short port)
+static struct socket *_usock_alloc(const __be32 ipaddr, const unsigned short port)
 {
 	struct sockaddr_in sin;
 	struct socket *sock;
@@ -825,7 +825,7 @@ static struct socket *_usock_alloc(__be32 ipaddr, unsigned short port)
 	return sock;
 }
 
-static void usock_connect(struct ipt_netflow_sock *usock, int sendmsg)
+static void usock_connect(struct ipt_netflow_sock *usock, const int sendmsg)
 {
 	usock->sock = _usock_alloc(usock->ipaddr, usock->port);
 	if (usock->sock) {
@@ -848,7 +848,7 @@ static void usock_connect(struct ipt_netflow_sock *usock, int sendmsg)
 
 // return numbers of sends succeded, 0 if none
 /* only called in scan worker path */
-static void netflow_sendmsg(void *buffer, int len)
+static void netflow_sendmsg(void *buffer, const int len)
 {
 	struct msghdr msg = { .msg_flags = MSG_DONTWAIT|MSG_NOSIGNAL };
 	struct kvec iov = { buffer, len };
@@ -1071,7 +1071,7 @@ static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple)
 }
 
 static struct ipt_netflow *
-ipt_netflow_find(const struct ipt_netflow_tuple *tuple, unsigned int hash)
+ipt_netflow_find(const struct ipt_netflow_tuple *tuple, const unsigned int hash)
 {
 	struct ipt_netflow *nf;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0)
@@ -1097,7 +1097,7 @@ ipt_netflow_find(const struct ipt_netflow_tuple *tuple, unsigned int hash)
 
 enum { LOCKALL, UNLOCKALL };
 /* Only used in set_hashsize() */
-static void htable_lock_bh(int op)
+static void htable_lock_bh(const int op)
 {
 	int i;
 
@@ -1113,7 +1113,7 @@ static void htable_lock_bh(int op)
 		local_bh_enable();
 }
 
-static struct hlist_head *alloc_hashtable(int size)
+static struct hlist_head *alloc_hashtable(const int size)
 {
 	struct hlist_head *hash;
 
@@ -1129,7 +1129,7 @@ static struct hlist_head *alloc_hashtable(int size)
 	return hash;
 }
 
-static int set_hashsize(int new_size)
+static int set_hashsize(const int new_size)
 {
 	struct hlist_head *new_hash, *old_hash;
 	struct ipt_netflow *nf;
@@ -1169,7 +1169,7 @@ static int set_hashsize(int new_size)
 }
 
 static struct ipt_netflow *
-ipt_netflow_alloc(struct ipt_netflow_tuple *tuple)
+ipt_netflow_alloc(const struct ipt_netflow_tuple *tuple)
 {
 	struct ipt_netflow *nf;
 	long count;
@@ -1201,8 +1201,8 @@ static void ipt_netflow_free(struct ipt_netflow *nf)
 }
 
 static struct ipt_netflow *
-init_netflow(struct ipt_netflow_tuple *tuple,
-	     struct sk_buff *skb, unsigned int hash)
+init_netflow(const struct ipt_netflow_tuple *tuple,
+	     const struct sk_buff *skb, const unsigned int hash)
 {
 	struct ipt_netflow *nf;
 
@@ -1364,12 +1364,12 @@ static void netflow_export_pdu_ipfix(void)
 	pdu_flowset = NULL;
 }
 
-static inline int pdu_have_space(size_t size)
+static inline int pdu_have_space(const size_t size)
 {
 	return ((pdu_data_used + size) <= pdu_high_wm);
 }
 
-static inline unsigned char *pdu_grab_space(size_t size)
+static inline unsigned char *pdu_grab_space(const size_t size)
 {
 	unsigned char *ptr = pdu_data_used;
 	pdu_data_used += size;
@@ -1377,7 +1377,7 @@ static inline unsigned char *pdu_grab_space(size_t size)
 }
 
 // allocate data space in pdu, or fail if pdu is reallocated.
-static inline unsigned char *pdu_alloc_fail(size_t size)
+static inline unsigned char *pdu_alloc_fail(const size_t size)
 {
 	if (!pdu_have_space(size)) {
 		netflow_export_pdu();
@@ -1387,7 +1387,7 @@ static inline unsigned char *pdu_alloc_fail(size_t size)
 }
 
 /* doesn't fail, but can provide empty pdu. */
-static unsigned char *pdu_alloc(size_t size)
+static unsigned char *pdu_alloc(const size_t size)
 {
 	return pdu_alloc_fail(size) ?: pdu_grab_space(size);
 }
@@ -1581,7 +1581,7 @@ static void free_templates(void)
 }
 
 /* create combined template from mask */
-static struct data_template *get_template(int tmask)
+static struct data_template *get_template(const int tmask)
 {
 	struct base_template *tlist[BTPL_MAX];
 	struct data_template *tpl;
@@ -1705,7 +1705,7 @@ static void pdu_add_template(struct data_template *tpl)
 
 /* encode one field */
 typedef struct in6_addr in6_t;
-static inline void add_ipv4_field(__u8 *ptr, int type, struct ipt_netflow *nf)
+static inline void add_ipv4_field(__u8 *ptr, const int type, const struct ipt_netflow *nf)
 {
 	switch (type) {
 		case IN_BYTES:	     *(__be32 *)ptr = htonl(nf->nr_bytes); break;
@@ -1878,7 +1878,7 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 	pdu_ts_mod = jiffies;
 }
 
-static void netflow_switch_version(int ver)
+static void netflow_switch_version(const int ver)
 {
 	protocol = ver;
 	if (protocol == 5) {
@@ -1953,7 +1953,7 @@ static void export_nat_event(struct nat_event *nel)
 }
 #endif /* CONFIG_NF_NAT_NEEDED */
 
-static inline int active_needs_export(struct ipt_netflow *nf, long a_timeout)
+static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout)
 {
 	/* active too long, finishing, or having too much bytes */
 	return ((jiffies - nf->ts_first) > a_timeout) ||
@@ -1966,7 +1966,7 @@ static inline int active_needs_export(struct ipt_netflow *nf, long a_timeout)
 /* could be called with zero to flush cache and pdu */
 /* this function is guaranteed to be called non-concurrently */
 /* return -1 is trylockfailed, 0 if nothin gexported, >=1 if exported something */
-static int netflow_scan_and_export(int flush)
+static int netflow_scan_and_export(const int flush)
 {
 	long i_timeout = inactive_timeout * HZ;
 	long a_timeout = active_timeout * HZ;
@@ -2106,7 +2106,7 @@ static void rate_timer_calc(unsigned long dummy)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
 struct nf_ct_event_notifier *saved_event_cb __read_mostly = NULL;
 #endif
-static int netflow_conntrack_event(unsigned int events, struct nf_ct_event *item)
+static int netflow_conntrack_event(const unsigned int events, struct nf_ct_event *item)
 {
 	struct nf_conn *ct = item->ct;
 	struct nat_event *nel;
@@ -2215,6 +2215,9 @@ netflow_target_check(const struct xt_tgchk_param *par)
 }
 
 #define SetXBit(x) (0x8000 >> (x)) /* Proper bit for htons later. */
+#ifndef IPPROTO_MH
+#define IPPROTO_MH	135
+#endif
 static inline __u16 observed_hdrs(const __u8 currenthdr)
 {
 	switch (currenthdr) {
@@ -2371,7 +2374,11 @@ static unsigned int netflow_target(
 	} _iph, *iph;
 	unsigned int hash;
 	spinlock_t *lock;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
+	const int family = target->family;
+#else
 	const int family = par->family;
+#endif
 	struct ipt_netflow_tuple tuple;
 	struct ipt_netflow *nf;
 	__u8 tcp_flags;

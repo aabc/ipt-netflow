@@ -156,6 +156,15 @@ struct ipfix_pdu {
  * not searchable and will be exported soon. */
 #define FLOW_FULL_WATERMARK 0xffefffff
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
+union nf_inet_addr {
+	__be32          ip;
+	__be32          ip6[4];
+	struct in_addr  in;
+	struct in6_addr in6;
+};
+#endif
+
 /* hashed data which identify unique flow */
 /* 16+16 + 2+2 + 2+1+1+1 = 41 */
 struct ipt_netflow_tuple {

@@ -39,13 +39,17 @@ Makefile: Makefile.in configure
 	./configure --make
 
 load: all
-	-insmod ipt_NETFLOW.ko active_timeout=5
+	-insmod ipt_NETFLOW.ko active_timeout=5 protocol=9
 	-iptables -I OUTPUT -j NETFLOW
 	-iptables -I INPUT -j NETFLOW
+	-ip6tables -I OUTPUT -j NETFLOW
+	-ip6tables -I INPUT -j NETFLOW
 
 unload:
 	-iptables -D OUTPUT -j NETFLOW
 	-iptables -D INPUT -j NETFLOW
+	-ip6tables -D OUTPUT -j NETFLOW
+	-ip6tables -D INPUT -j NETFLOW
 	-rmmod ipt_NETFLOW.ko
 
 reload: unload load
