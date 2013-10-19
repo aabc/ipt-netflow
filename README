@@ -128,6 +128,13 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
      # iptables -I INPUT -j NETFLOW
      # iptables -I OUTPUT -j NETFLOW
 
+   Note: It is preferable (because easier to understand) to _insert_
+   NETFLOW target at the top of the chain, otherwise not all traffic may
+   reach NETFLOW if your iptables configuration is complicated and some
+   other rule inadvertently consume the traffic (dropping or acepting before
+   NETFLOW is reached). It's always good is to test your configuration.
+   Use  iptables -L -nvx  to check pkts/bytes counters on the rules.
+
 5. If you want to account IPv6 traffic you should use protocol 9 or 10.
    Example of directing all IPv6 traffic into the module:
 
