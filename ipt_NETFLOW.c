@@ -1759,7 +1759,7 @@ static inline void add_ipv4_field(__u8 *ptr, const int type, const struct ipt_ne
 static inline unsigned long timeout_rate_j(void)
 {
 	static unsigned int t_rate = 0;
-	static unsigned long t_rate_j;
+	static unsigned long t_rate_j = 0;
 
 	if (unlikely(timeout_rate != t_rate)) {
 		struct timeval tv = { .tv_sec = timeout_rate * 60, .tv_usec = 0 };
