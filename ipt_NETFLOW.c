@@ -1095,22 +1095,23 @@ ipt_netflow_find(const struct ipt_netflow_tuple *tuple, const unsigned int hash)
 	return NULL;
 }
 
-enum { LOCKALL, UNLOCKALL };
 /* Only used in set_hashsize() */
-static void htable_lock_bh(const int op)
+static void htable_lock_bh(void)
 {
 	int i;
 
-	if (op == LOCKALL)
-		local_bh_disable();
-	for (i = 0; i < LOCK_COUNT; i++) {
-		if (op == LOCKALL)
-			spin_lock(&htable_locks[i]);
-		else
-			spin_unlock(&htable_locks[i]);
-	}
-	if (op == UNLOCKALL)
-		local_bh_enable();
+	local_bh_disable();
+	for (i = 0; i < LOCK_COUNT; i++)
+		spin_lock(&htable_locks[i]);
+}
+
+static void htable_unlock_bh(void)
+{
+	int i;
+
+	for (i = 0; i < LOCK_COUNT; i++)
+		spin_unlock(&htable_locks[i]);
+	local_bh_enable();
 }
 
 static struct hlist_head *alloc_hashtable(const int size)
@@ -1144,7 +1145,7 @@ static int set_hashsize(const int new_size)
 	get_random_bytes(&rnd, 4);
 
 	/* rehash */
-	htable_lock_bh(LOCKALL);
+	htable_lock_bh();
 	old_hash = ipt_netflow_hash;
 	ipt_netflow_hash = new_hash;
 	ipt_netflow_hash_size = new_size;
@@ -1161,7 +1162,7 @@ static int set_hashsize(const int new_size)
 		nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
 	}
 	spin_unlock_bh(&hlist_lock);
-	htable_lock_bh(UNLOCKALL);
+	htable_unlock_bh();
 
 	vfree(old_hash);
 
@@ -1854,7 +1855,7 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 		ptr = pdu_alloc(sizeof(struct flowset_data) + tpl->rec_size);
 		pdu_flowset = (struct flowset_data *)ptr;
 		pdu_flowset->flowset_id = tpl->template_id_n;
-		pdu_flowset->length	 = htons(sizeof(struct flowset_data));
+		pdu_flowset->length     = htons(sizeof(struct flowset_data));
 		ptr += sizeof(struct flowset_data);
 	}
 
@@ -1909,7 +1910,7 @@ static void netflow_switch_version(const int ver)
 #ifdef CONFIG_NF_NAT_NEEDED
 static void export_nat_event(struct nat_event *nel)
 {
-	static struct ipt_netflow nf = { { 0 } };
+	static struct ipt_netflow nf = { { NULL } };
 
 	nf.tuple.l3proto = AF_INET;
 	nf.tuple.protocol = nel->protocol;
@@ -2104,7 +2105,7 @@ static void rate_timer_calc(unsigned long dummy)
 
 #ifdef CONFIG_NF_NAT_NEEDED
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
-struct nf_ct_event_notifier *saved_event_cb __read_mostly = NULL;
+static struct nf_ct_event_notifier *saved_event_cb __read_mostly = NULL;
 #endif
 static int netflow_conntrack_event(const unsigned int events, struct nf_ct_event *item)
 {
