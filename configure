@@ -63,6 +63,9 @@ iptables_inc() {
   elif [ "$PKGVER" ]; then
     IPTINC="$PKGINC"
     echo "$IPTINC (pkg-config)"
+  elif [ "$NOIPTSRC" ]; then
+    IPTINC="-I/usr/include"
+    echo "$IPTINC (default)"
   else
     IPTINC="$IPTSRC/include"
     IPTINC="-I$IPTINC"
@@ -112,7 +115,9 @@ check_pkg_config() {
   if ! which pkg-config >/dev/null 2>&1; then
     echo "! You don't have pkg-config, it may be useful to install it."
     PKGWARN=1
+    return 1
   fi
+  return 0
 }
 iptables_find_version() {
   echo -n "Iptables binary version: "
@@ -143,7 +148,7 @@ iptables_try_pkgconfig() {
     PKGVER=`pkg-config --modversion xtables 2>/dev/null`
     TRYPKGVER=`pkg-config --modversion xtables 2>/dev/null`
     echo -n "pkg-config for version $IPTVER exists: "
-    pkg-config --exact-version=$IPTVER xtables
+    pkg-config --exact-version=$IPTVER xtables 2>/dev/null
     if [ $? = 0 ]; then
       echo "Yes"
       PKGVER=$TRYPKGVER
@@ -182,7 +187,9 @@ iptables_find_src() {
     try_dirg "../iptables" && return 0
     try_dirg "/usr/src/iptables" && return 0
     try_dir2 `locate $VER/extensions | head -1` && return 0
-    error "Can not find iptables source directory, try setting it with --ipt-src="
+    echo " Can not find iptables source directory, you may try setting it with --ipt-src="
+    echo " This is not fatal error, yet. Will be using /usr/include as default include dir."
+    NOIPTSRC=1
   fi
 }
 
