@@ -231,7 +231,7 @@ kernel_find_version() {
   KHOW=requested
   test "$KVERSION" && return 0
 
-  if grep -q Debian /proc/version; then
+  if grep -q '#.*Debian' /proc/version; then
     KHOW=proc
     KVERSION=`sed -n 's/.*#.*Debian \([0-9\.]\+\)-.*/\1/p' /proc/version`
     KLIBMOD=`uname -r`
@@ -272,7 +272,7 @@ kernel_check_consistency() {
     SRCVER=`cat $KDIR/include/config/kernel.release`
     test "$KVERSION" != "$SRCVER" && error "$KHOW kernel version ($KVERSION) and $KSHOW version of kernel source ($SRCVER) doesn't match!\n!" \
       "You may try to specify only kernel source tree with --kdir=$KDIR\n!" \
-      "and configure will pick up version propely."
+      "and configure will pick up version properly."
   else
     test -e "$KDIR/.config" || error ".config in kernel source not found, run  make menuconfig  in $KDIR"
     test -d "$KDIR/include/config" || error "kernel is not prepared, run  make prepare modules_prepare  in $KDIR"
