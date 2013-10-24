@@ -189,6 +189,19 @@ iptables_try_pkgconfig() {
   fi
   if compile_libitp_test xtables.h; then
     IPTCFLAGS="-DXTABLES $IPTCFLAGS"
+  elif ! compile_libitp_test iptables.h; then
+    echo "! Iptables headers not found. You may need to specify --ipt-inc=..."
+    if [ -s /etc/debian_version ]; then
+      echo "! "
+      echo "! Under Debian simply run this:"
+      echo "!   root# apt-get install iptables-dev pkg-config"
+    elif [ -s /etc/redhat-release ]; then
+      echo "! "
+      arch=.`uname -m`
+      echo "! Under Centos simply run this:"
+      echo "!   root# yum install iptables-devel$arch pkgconfig"
+    fi
+    exit 1
   fi
 
 }
@@ -286,8 +299,22 @@ kernel_find_source() {
   kernel_check_src /lib/modules/$KVERSION/build && return 0
   kernel_check_src /usr/src/kernels/$KVERSION && return 0
   kernel_check_src /usr/src/linux-$KVERSION && return 0
-  error "Linux source not found. Specify kernel source directory with --kdir=...\n!" \
-	"or try to install kernel-devel package or sources for linux-$KVERSION"
+  echo "! Linux source not found. Don't panic. You may specify kernel source"
+  echo "! directory with --kdir=..., or try to install kernel-devel package,"
+  echo "! or just raw sources for linux-$KVERSION from kernel.org."
+  if grep -q -i centos /proc/version 2>/dev/null; then
+    echo "! "
+    arch=.`uname -m`
+    echo "! Under Centos simply run this:"
+    echo "!   root# yum install kernel-devel iptables-devel$arch pkgconfig"
+  fi
+  if grep -q -i debian /proc/version 2>/dev/null; then
+    echo "! "
+    echo "! Under Debian simply run this:"
+    echo "!   root# apt-get install module-assistant iptables-dev pkg-config"
+    echo "!   root# m-a prepare"
+  fi
+  exit 1
 }
 
 kernel_check_consistency() {
