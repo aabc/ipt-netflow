@@ -2,6 +2,7 @@
 
 KVERSION = @KVERSION@
 KDIR = @KDIR@
+KINSTDIR = $(shell dirname @KDIR@)
 IPTABLES_CFLAGS = @IPTABLES_CFLAGS@
 IPTABLES_MODULES = @IPTABLES_MODULES@
 
@@ -34,6 +35,11 @@ linstall: | libipt_NETFLOW.so libip6t_NETFLOW.so
 	install -D libip6t_NETFLOW.so $(DESTDIR)$(IPTABLES_MODULES)/libip6t_NETFLOW.so
 
 install: minstall linstall
+
+uninstall:
+	-rm -f $(DESTDIR)$(IPTABLES_MODULES)/libipt_NETFLOW.so
+	-rm -f $(DESTDIR)$(IPTABLES_MODULES)/libip6t_NETFLOW.so
+	-rm -f $(KINSTDIR)/extra/ipt_NETFLOW.ko
 
 Makefile: Makefile.in configure
 	./configure --make
