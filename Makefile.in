@@ -40,7 +40,7 @@ install: minstall linstall
 uninstall:
 	-rm -f $(DESTDIR)$(IPTABLES_MODULES)/libipt_NETFLOW.so
 	-rm -f $(DESTDIR)$(IPTABLES_MODULES)/libip6t_NETFLOW.so
-	-rm -f $(KINSTDIR)/extra/ipt_NETFLOW.ko
+	-rm -f $(DESTDIR)$(KINSTDIR)/extra/ipt_NETFLOW.ko
 
 Makefile: Makefile.in configure
 	./configure --make
