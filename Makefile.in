@@ -17,6 +17,7 @@ ipt_NETFLOW.ko: ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	@touch $@
 minstall: | ipt_NETFLOW.ko
 	make -C $(KDIR) M=$(CURDIR) modules_install INSTALL_MOD_PATH=$(DESTDIR)
+	depmod -a
 mclean:
 	make -C $(KDIR) M=$(CURDIR) clean
 lclean:
