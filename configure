@@ -64,8 +64,8 @@ iptables_inc() {
     IPTINC="$PKGINC"
     echo "$IPTINC (pkg-config)"
   elif [ "$NOIPTSRC" ]; then
-    IPTINC="-I/usr/include"
-    echo "$IPTINC (default)"
+    IPTINC=
+    echo "none (default)"
   else
     IPTINC="$IPTSRC/include"
     IPTINC="-I$IPTINC"
@@ -142,6 +142,22 @@ iptables_find_version() {
   fi
 }
 
+compile_libitp_test() {
+  echo -n "Checking for presence of $@... "
+  echo "
+#define __EXPORTED_HEADERS__
+#include <$*>" > test.c
+  gcc -c test.c  >/dev/null 2>&1
+  RET=$?
+  if [ $RET = 0 ]; then
+    echo Yes;
+  else
+    echo No;
+  fi
+  rm -f test.c test.o
+  return $RET
+}
+
 iptables_try_pkgconfig() {
   if [ ! "$PKGVER" ]; then
     check_pkg_config
@@ -153,7 +169,11 @@ iptables_try_pkgconfig() {
       echo "Yes"
       PKGVER=$TRYPKGVER
     else
-      echo "No (reported: $TRYPKGVER)"
+      if [ "$TRYPKGVER" ]; then
+	echo "No (reported: $TRYPKGVER)"
+      else
+	echo "No"
+      fi
     fi
   fi
   if [ "$PKGVER" ]; then
@@ -161,13 +181,16 @@ iptables_try_pkgconfig() {
     PKGVER=`pkg-config --modversion xtables 2>/dev/null`
     PKGINC=`pkg-config --cflags xtables`
     PKGLIB=`pkg-config --variable=xtlibdir xtables`
-    IPTCFLAGS="-DXTABLES"
   else
     # Newer versions of iptables should not have -I/kernel/include!
     # So I assume that newer version will have correct pkg-config set up
     # and if not, then it's older who need it.
     IPTCFLAGS="-I$KDIR/include -DIPTABLES_VERSION=\\\\\"$IPTVER\\\\\""
   fi
+  if compile_libitp_test xtables.h; then
+    IPTCFLAGS="-DXTABLES $IPTCFLAGS"
+  fi
+
 }
 
 iptables_find_src() {
@@ -186,9 +209,9 @@ iptables_find_src() {
     try_dirg "iptables" && return 0
     try_dirg "../iptables" && return 0
     try_dirg "/usr/src/iptables" && return 0
-    try_dir2 `locate $VER/extensions | head -1` && return 0
-    echo " Can not find iptables source directory, you may try setting it with --ipt-src="
-    echo " This is not fatal error, yet. Will be using /usr/include as default include dir."
+    try_dir2 `locate $VER/extensions 2>/dev/null | head -1` && return 0
+    echo "! Can not find iptables source directory, you may try setting it with --ipt-src="
+    echo "! This is not fatal error, yet. Will be just using default include dir."
     NOIPTSRC=1
   fi
 }
