@@ -82,7 +82,13 @@
 #define ipt_target xt_target
 #endif
 
-#define IPT_NETFLOW_VERSION "1.8.2"
+#define IPT_NETFLOW_VERSION "1.8.2" /* Note that if you are using git, you
+				       will see version in other format. */
+#include "version.h"
+#ifdef GITVERSION
+#undef IPT_NETFLOW_VERSION
+#define IPT_NETFLOW_VERSION GITVERSION
+#endif
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("<abc@telekom.ru>");
@@ -304,6 +310,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	int snum = 0;
 	int peak = (jiffies - peakflows_at) / HZ;
 
+	seq_printf(seq, "ipt_NETFLOW version " IPT_NETFLOW_VERSION "\n");
 	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d.\n",
 		   nr_flows,
 		   peakflows,

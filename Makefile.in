@@ -11,7 +11,7 @@ IPTABLES_MODULES = @IPTABLES_MODULES@
 obj-m = ipt_NETFLOW.o
 
 all: ipt_NETFLOW.ko libipt_NETFLOW.so libip6t_NETFLOW.so
-ipt_NETFLOW.ko: ipt_NETFLOW.c ipt_NETFLOW.h Makefile
+ipt_NETFLOW.ko: version.h ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	@echo Compiling for kernel $(KVERSION)
 	make -C $(KDIR) M=$(CURDIR) modules
 	@touch $@
@@ -23,13 +23,18 @@ mclean:
 lclean:
 	-rm -f *.so *_sh.o
 clean: mclean lclean
-	-rm -f *.so *.o modules.order
+	-rm -f *.so *.o modules.order version.h
 
 %_sh.o: libipt_NETFLOW.c
 	gcc -O2 -Wall -Wunused $(IPTABLES_CFLAGS) -fPIC -o $@ -c libipt_NETFLOW.c
 
 %.so: %_sh.o
 	gcc -shared -o $@ $<
+
+version.h: ipt_NETFLOW.c ipt_NETFLOW.h Makefile
+	@if [ -d .git ] && type git >/dev/null 2>&1; then \
+		 echo "#define GITVERSION \"`git describe --dirty`\""; \
+	fi > version.h
 
 linstall: | libipt_NETFLOW.so libip6t_NETFLOW.so
 	install -D libipt_NETFLOW.so $(DESTDIR)$(IPTABLES_MODULES)/libipt_NETFLOW.so
