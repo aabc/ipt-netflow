@@ -263,7 +263,8 @@ static inline void _schedule_scan_worker(const int status)
 	schedule_delayed_work(&netflow_work, worker_delay);
 }
 
-static inline void start_scan_worker(void)
+/* This is only called soon after pause_scan_worker. */
+static inline void cont_scan_worker(void)
 {
 	_schedule_scan_worker(0);
 	mutex_unlock(&worker_lock);
@@ -280,7 +281,8 @@ static inline void _unschedule_scan_worker(void)
 #endif
 }
 
-static inline void stop_scan_worker(void)
+/* This is only used for quick pause (in procctl). */
+static inline void pause_scan_worker(void)
 {
 	mutex_lock(&worker_lock);
 	_unschedule_scan_worker();
@@ -525,14 +527,14 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 		return ret;
 	if (sndbuf < SOCK_MIN_SNDBUF)
 		sndbuf = SOCK_MIN_SNDBUF;
-	stop_scan_worker();
+	pause_scan_worker();
 	write_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
 		if (usock->sock)
 			usock->sock->sk->sk_sndbuf = sndbuf;
 	}
 	write_unlock(&sock_lock);
-	start_scan_worker();
+	cont_scan_worker();
 	return ret;
 }
 
@@ -543,10 +545,10 @@ static int destination_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 
 	ret = proc_dostring(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (ret >= 0 && write) {
-		stop_scan_worker();
+		pause_scan_worker();
 		destination_removeall();
 		add_destinations(destination_buf);
-		start_scan_worker();
+		cont_scan_worker();
 	}
 	return ret;
 }
@@ -579,9 +581,9 @@ static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 
 	if (val > 0) {
 		printk(KERN_INFO "ipt_NETFLOW: forced flush\n");
-		stop_scan_worker();
+		pause_scan_worker();
 		netflow_scan_and_export(AND_FLUSH);
-		start_scan_worker();
+		cont_scan_worker();
 	}
 
 	return ret;
@@ -604,10 +606,10 @@ static int protocol_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *f
 		case 9:
 		case 10:
 			printk(KERN_INFO "ipt_NETFLOW: forced flush (protocol version change)\n");
-			stop_scan_worker();
+			pause_scan_worker();
 			netflow_scan_and_export(AND_FLUSH);
 			netflow_switch_version(ver);
-			start_scan_worker();
+			cont_scan_worker();
 			break;
 		default:
 			return -EPERM;
