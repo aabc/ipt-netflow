@@ -1986,7 +1986,7 @@ static int netflow_scan_and_export(const int flush)
 
 		/* Last entry, which is usually oldest. */
 		nf = list_entry(ipt_netflow_list.prev, struct ipt_netflow, list);
-		if (!spin_trylock_bh(nf->lock)) {
+		if (!spin_trylock(nf->lock)) {
 			trylock_failed = 1;
 			break;
 		}
@@ -1995,7 +1995,7 @@ static int netflow_scan_and_export(const int flush)
 		if (((jiffies - nf->ts_last) >= i_timeout) ||
 		    active_needs_export(nf, a_timeout)) {
 			hlist_del(&nf->hlist);
-			spin_unlock_bh(nf->lock);
+			spin_unlock(nf->lock);
 
 			list_del(&nf->list);
 			spin_unlock_bh(&hlist_lock);
@@ -2005,7 +2005,7 @@ static int netflow_scan_and_export(const int flush)
 			netflow_export_flow(nf);
 			spin_lock_bh(&hlist_lock);
 		} else {
-			spin_unlock_bh(nf->lock);
+			spin_unlock(nf->lock);
 			/* all flows which need to be exported is always at the tail
 			 * so if no more exportable flows we can break */
 			break;
@@ -2209,7 +2209,7 @@ netflow_target_check(const struct xt_tgchk_param *par)
 		return CHECK_FAIL;
 	}
 	if (target->family == AF_INET6 && protocol == 5) {
-		printk(KERN_ERR "IPv6 target is meaningless for protocol=5, enable protocol 9 or 10.\n");
+		printk(KERN_ERR "ip6tables NETFLOW target is meaningful for protocol 9 or 10 only.\n");
 		return CHECK_FAIL;
 	}
 	return CHECK_OK;
@@ -2704,9 +2704,9 @@ do_protocols:
 	if (likely(active_needs_export(nf, active_timeout * HZ))) {
 		/* ok, if this active flow to be exported
 		 * bubble it to the tail */
-		spin_lock_bh(&hlist_lock);
+		spin_lock(&hlist_lock);
 		list_move_tail(&nf->list, &ipt_netflow_list);
-		spin_unlock_bh(&hlist_lock);
+		spin_unlock(&hlist_lock);
 
 		/* Blog: I thought about forcing timer to wake up sooner if we have
 		 * enough exportable flows, but in fact this doesn't have much sense,
