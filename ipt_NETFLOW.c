@@ -120,7 +120,7 @@ MODULE_PARM_DESC(sndbuf, "udp socket SNDBUF size");
 
 static int protocol = 5;
 module_param(protocol, int, 0444);
-MODULE_PARM_DESC(protocol, "netflow protocol version (5, 9)");
+MODULE_PARM_DESC(protocol, "netflow protocol version (5, 9, 10)");
 
 static unsigned int refresh_rate = 20;
 module_param(refresh_rate, uint, 0644);
@@ -154,7 +154,7 @@ MODULE_PARM_DESC(aggregation, "aggregation ruleset");
 
 static DEFINE_PER_CPU(struct ipt_netflow_stat, ipt_netflow_stat);
 static LIST_HEAD(usock_list);
-static DEFINE_RWLOCK(sock_lock);
+static DEFINE_MUTEX(sock_lock);
 
 static unsigned int ipt_netflow_hash_rnd;
 #define LOCK_COUNT (1<<9)
@@ -270,8 +270,6 @@ static inline void cont_scan_worker(void)
 	mutex_unlock(&worker_lock);
 }
 
-/* we always stop scanner before write_lock(&sock_lock)
- * to let it never hold that spin lock */
 static inline void _unschedule_scan_worker(void)
 {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,23)
@@ -415,7 +413,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	    nat_events_start, nat_events_stop);
 #endif
 
-	read_lock(&sock_lock);
+	mutex_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
 		seq_printf(seq, "sock%d: %u.%u.%u.%u:%u",
 		    snum,
@@ -437,7 +435,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 			    atomic_read(&usock->err_connect));
 		snum++;
 	}
-	read_unlock(&sock_lock);
+	mutex_unlock(&sock_lock);
 
 	read_lock_bh(&aggr_lock);
 	snum = 0;
@@ -511,15 +509,15 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 	int ret;
 	struct ipt_netflow_sock *usock;
 
-	read_lock(&sock_lock);
+	mutex_lock(&sock_lock);
 	if (list_empty(&usock_list)) {
-		read_unlock(&sock_lock);
+		mutex_unlock(&sock_lock);
 		return -ENOENT;
 	}
 	usock = list_first_entry(&usock_list, struct ipt_netflow_sock, list);
 	if (usock->sock)
 		sndbuf = usock->sock->sk->sk_sndbuf;
-	read_unlock(&sock_lock);
+	mutex_unlock(&sock_lock);
 
 	ctl->data = &sndbuf;
 	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
@@ -528,12 +526,12 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 	if (sndbuf < SOCK_MIN_SNDBUF)
 		sndbuf = SOCK_MIN_SNDBUF;
 	pause_scan_worker();
-	write_lock(&sock_lock);
+	mutex_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
 		if (usock->sock)
 			usock->sock->sk->sk_sndbuf = sndbuf;
 	}
-	write_unlock(&sock_lock);
+	mutex_unlock(&sock_lock);
 	cont_scan_worker();
 	return ret;
 }
@@ -793,12 +791,10 @@ static struct ctl_path netflow_sysctl_path[] = {
 static void sk_error_report(struct sock *sk)
 {
 	/* clear connection refused errors if any */
-	write_lock_bh(&sk->sk_callback_lock);
 	if (debug > 1)
 		printk(KERN_INFO "ipt_NETFLOW: socket error <%d>\n", sk->sk_err);
 	sk->sk_err = 0;
 	NETFLOW_STAT_INC(sock_errors);
-	write_unlock_bh(&sk->sk_callback_lock);
 	return;
 }
 
@@ -865,6 +861,7 @@ static void netflow_sendmsg(void *buffer, const int len)
 	int snum = 0;
 	struct ipt_netflow_sock *usock;
 
+	mutex_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
 		if (!usock->sock)
 			usock_connect(usock, 1);
@@ -900,6 +897,7 @@ static void netflow_sendmsg(void *buffer, const int len)
 		}
 		snum++;
 	}
+	mutex_unlock(&sock_lock);
 	if (retok == 0) {
 		/* not least one send succeded, account stat for dropped packets */
 		NETFLOW_STAT_ADD_ATOMIC(pkt_drop, pdu_packets);
@@ -920,29 +918,29 @@ static void usock_close_free(struct ipt_netflow_sock *usock)
 
 static void destination_removeall(void)
 {
-	write_lock(&sock_lock);
+	mutex_lock(&sock_lock);
 	while (!list_empty(&usock_list)) {
 		struct ipt_netflow_sock *usock;
 
 		usock = list_entry(usock_list.next, struct ipt_netflow_sock, list);
 		list_del(&usock->list);
-		write_unlock(&sock_lock);
+		mutex_unlock(&sock_lock);
 		usock_close_free(usock);
-		write_lock(&sock_lock);
+		mutex_lock(&sock_lock);
 	}
-	write_unlock(&sock_lock);
+	mutex_unlock(&sock_lock);
 }
 
 static void add_usock(struct ipt_netflow_sock *usock)
 {
 	struct ipt_netflow_sock *sk;
 
-	write_lock(&sock_lock);
+	mutex_lock(&sock_lock);
 	/* don't need duplicated sockets */
 	list_for_each_entry(sk, &usock_list, list) {
 		if (sk->ipaddr == usock->ipaddr &&
 		    sk->port == usock->port) {
-			write_unlock(&sock_lock);
+			mutex_unlock(&sock_lock);
 			usock_close_free(usock);
 			return;
 		}
@@ -952,7 +950,7 @@ static void add_usock(struct ipt_netflow_sock *usock)
 	       HIPQUAD(usock->ipaddr),
 	       usock->port,
 	       (!usock->sock)? " (unconnected)" : "");
-	write_unlock(&sock_lock);
+	mutex_unlock(&sock_lock);
 }
 
 #define SEPARATORS " ,;\t\n"
