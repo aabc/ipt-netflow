@@ -2855,14 +2855,16 @@ static void unregister_ct_events(void)
 static void xt_unregister_targets(struct xt_target *target, unsigned int n)
 {
 	unsigned int i;
-	for (i = 0; i < n; n++)
+
+	for (i = 0; i < n; i++)
 		xt_unregister_target(&target[i]);
 }
 static int xt_register_targets(struct xt_target *target, unsigned int n)
 {
 	unsigned int i;
+
 	int err = 0;
-	for (i = 0; i < n; n++)
+	for (i = 0; i < n; i++)
 		if ((err = xt_register_target(&target[i])))
 			goto err;
 	return err;
@@ -2870,7 +2872,6 @@ err:
 	if (i > 0)
 		xt_unregister_targets(target, i);
 	return err;
-
 }
 #endif
 
