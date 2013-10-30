@@ -50,7 +50,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
 
     After that you'll need to prepare kernel for modules build:
 
-      /usr/src/linux# make prepare modules-prepare
+      /usr/src/linux# make prepare modules_prepare
 
 2. (Iptables)
    Before this step it also would be useful to install pkg-config if don't

@@ -2113,10 +2113,16 @@ static void rate_timer_calc(unsigned long dummy)
 #ifdef CONFIG_NF_NAT_NEEDED
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
 static struct nf_ct_event_notifier *saved_event_cb __read_mostly = NULL;
-#endif
 static int netflow_conntrack_event(const unsigned int events, struct nf_ct_event *item)
+#else
+static int netflow_conntrack_event(struct notifier_block *this, unsigned long events, void *ptr)
+#endif
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
 	struct nf_conn *ct = item->ct;
+#else
+	struct nf_conn *ct = (struct nf_conn *)ptr;
+#endif
 	struct nat_event *nel;
 	const struct nf_conntrack_tuple *t;
 	int ret = NOTIFY_DONE;
@@ -2195,7 +2201,11 @@ static int
 #endif
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 netflow_target_check(const char *tablename, const void *entry, const struct xt_target *target,
-    void *targinfo, unsigned int targinfosize, unsigned int hook_mask)
+    void *targinfo,
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,18)
+    unsigned int targinfosize,
+#endif
+    unsigned int hook_mask)
 {
 #else
 netflow_target_check(const struct xt_tgchk_param *par)
@@ -2654,10 +2664,10 @@ do_protocols:
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)
 		rt = (struct rtable *)skb->dst;
-#else
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,21)
+#else /* since 2.6.26 */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,31)
 		rt = skb->rtable;
-#else
+#else /* since 2.6.31 */
 		rt = skb_rtable(skb);
 #endif
 #endif
@@ -2728,6 +2738,9 @@ do_protocols:
 }
 
 #ifdef CONFIG_NF_NAT_NEEDED
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
+	/* Below 2.6.31 we don't need to handle callback chain manually. */
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
 #define NET_STRUCT struct net *net
 #define NET_ARG net,
@@ -2776,6 +2789,8 @@ static struct pernet_operations natevents_net_ops = {
 	.exit = unset_notifier_cb
 };
 #endif
+#endif /* since 2.6.31 */
+
 static DEFINE_MUTEX(events_lock);
 /* Both functions may be called multiple times. */
 static void register_ct_events(void)
@@ -2809,12 +2824,13 @@ static void register_ct_events(void)
 		use_module(THIS_MODULE, netlink_m);
 	}
 
+	/* Register ct events callback. */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
 	register_pernet_subsys(&natevents_net_ops);
 #else
 	set_notifier_cb();
 #endif
-#else /* < v2.6.31 */
+#else /* below v2.6.31 */
 	if (!natevents && nf_conntrack_register_notifier(&ctnl_notifier) < 0)
 		printk(KERN_ERR "Can't register conntrack notifier, natevents disabled.\n");
 	else
