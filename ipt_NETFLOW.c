@@ -2301,13 +2301,13 @@ static const __u8 ip4_opt_table[] = {
 	[152]	= 31,	/* UMP */
 };
 /* Parse IPv4 Options array int ipv4Options IPFIX value. */
-static inline __u32 ip4_options(const unsigned char *p, const int optsize)
+static inline __u32 ip4_options(const u_int8_t *p, const unsigned int optsize)
 {
 	__u32 ret = 0;
-	int i;
+	unsigned int i;
 
 	for (i = 0; likely(i < optsize); ) {
-		__u8 op = p[i++];
+		u_int8_t op = p[i++];
 		if (likely(op < ARRAY_SIZE(ip4_opt_table))) {
 			/* Btw, IANA doc is messed up in a crazy way:
 			 *   http://www.ietf.org/mail-archive/web/ipfix/current/msg06008.html (2011)
@@ -2331,17 +2331,17 @@ static inline __u32 ip4_options(const unsigned char *p, const int optsize)
 static inline __u32 tcp_options(const struct sk_buff *skb, const unsigned int ptr, const struct tcphdr *th)
 {
 	const unsigned int optsize = th->doff * 4 - sizeof(struct tcphdr);
-	__u8 _opt[optsize];
-	const __u8 *p;
+	__u8 _opt[TCPHDR_MAXSIZE];
+	const u_int8_t *p;
 	__u32 ret;
-	int i;
+	unsigned int i;
 
 	p = skb_header_pointer(skb, ptr + sizeof(struct tcphdr), optsize, _opt);
 	if (unlikely(!p))
 		return 0;
 	ret = 0;
 	for (i = 0; likely(i < optsize); ) {
-		__u8 opt = p[i++];
+		u_int8_t opt = p[i++];
 		if (likely(opt < 32)) {
 			/* IANA doc is messed up, see above. */
 			ret |= 1 << (32 - opt);
@@ -2439,8 +2439,8 @@ static unsigned int netflow_target(
 
 #define IPHDR_MAXSIZE (4 * 15)
 		if (unlikely(iph->ip.ihl * 4 > sizeof(struct iphdr))) {
-			unsigned char _opt[IPHDR_MAXSIZE - sizeof(struct iphdr)];
-			const unsigned char *op;
+			u_int8_t _opt[IPHDR_MAXSIZE - sizeof(struct iphdr)];
+			const u_int8_t *op;
 			unsigned int optsize = iph->ip.ihl * 4 - sizeof(struct iphdr);
 
 			op = skb_header_pointer(skb, sizeof(struct iphdr), optsize, _opt);
@@ -2524,9 +2524,10 @@ do_protocols:
 				tuple.s_port = hp->source;
 				tuple.d_port = hp->dest;
 				tcp_flags = (u_int8_t)(ntohl(tcp_flag_word(hp)) >> 16);
+
+				if (unlikely(hp->doff * 4 > sizeof(struct tcphdr)))
+					tcpoptions = tcp_options(skb, ptr, hp);
 			}
-			if (unlikely(hp->doff * 4 > sizeof(struct tcphdr)))
-				tcpoptions = tcp_options(skb, ptr, hp);
 			break;
 		    }
 		    case IPPROTO_UDP:
