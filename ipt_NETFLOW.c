@@ -2443,7 +2443,7 @@ static unsigned int netflow_target(
 			const unsigned char *op;
 			unsigned int optsize = iph->ip.ihl * 4 - sizeof(struct iphdr);
 
-			op = skb_header_pointer(skb, sizeof(_iph), optsize, _opt);
+			op = skb_header_pointer(skb, sizeof(struct iphdr), optsize, _opt);
 			if (likely(op))
 				options = ip4_options(op, optsize);
 		}
