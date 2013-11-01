@@ -165,13 +165,13 @@ static spinlock_t htable_locks[LOCK_COUNT] = {
 static struct hlist_head *ipt_netflow_hash __read_mostly; /* hash table memory */
 static unsigned int ipt_netflow_hash_size __read_mostly = 0; /* buckets */
 static LIST_HEAD(ipt_netflow_list); /* all flows */
-static DEFINE_SPINLOCK(hlist_lock);
+static DEFINE_SPINLOCK(hlist_lock); /* should almost always be locked w/o _bh */
 static LIST_HEAD(aggr_n_list);
 static LIST_HEAD(aggr_p_list);
 static DEFINE_RWLOCK(aggr_lock);
 #ifdef CONFIG_NF_NAT_NEEDED
 static LIST_HEAD(nat_list); /* nat events */
-static DEFINE_RWLOCK(nat_lock);
+static DEFINE_SPINLOCK(nat_lock);
 static unsigned long nat_events_start = 0;
 static unsigned long nat_events_stop = 0;
 #endif
@@ -1104,6 +1104,7 @@ ipt_netflow_find(const struct ipt_netflow_tuple *tuple, const unsigned int hash)
 
 /* Only used in set_hashsize() */
 static void htable_lock_bh(void)
+	__acquires(htable_locks)
 {
 	int i;
 
@@ -1113,6 +1114,7 @@ static void htable_lock_bh(void)
 }
 
 static void htable_unlock_bh(void)
+	__releases(htable_locks)
 {
 	int i;
 
@@ -1158,7 +1160,7 @@ static int set_hashsize(const int new_size)
 	ipt_netflow_hash_size = new_size;
 	ipt_netflow_hash_rnd = rnd;
 	/* hash_netflow() is dependent on ipt_netflow_hash_* values */
-	spin_lock_bh(&hlist_lock);
+	spin_lock(&hlist_lock);
 	list_for_each_entry(nf, &ipt_netflow_list, list) {
 		unsigned int hash;
 
@@ -1168,7 +1170,7 @@ static int set_hashsize(const int new_size)
 		hlist_add_head(&nf->hlist, &new_hash[hash]);
 		nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
 	}
-	spin_unlock_bh(&hlist_lock);
+	spin_unlock(&hlist_lock);
 	htable_unlock_bh();
 
 	vfree(old_hash);
@@ -1220,9 +1222,9 @@ init_netflow(const struct ipt_netflow_tuple *tuple,
 
 	nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
 	hlist_add_head(&nf->hlist, &ipt_netflow_hash[hash]);
-	spin_lock_bh(&hlist_lock);
+	spin_lock(&hlist_lock);
 	list_add(&nf->list, &ipt_netflow_list);
-	spin_unlock_bh(&hlist_lock);
+	spin_unlock(&hlist_lock);
 
 	return nf;
 }
@@ -1984,7 +1986,8 @@ static int netflow_scan_and_export(const int flush)
 	if (flush)
 		i_timeout = 0;
 
-	spin_lock_bh(&hlist_lock);
+	local_bh_disable();
+	spin_lock(&hlist_lock);
 	/* This is different order of locking than elsewhere,
 	 * so we trylock&break to avoid deadlock. */
 
@@ -2005,12 +2008,15 @@ static int netflow_scan_and_export(const int flush)
 			spin_unlock(nf->lock);
 
 			list_del(&nf->list);
-			spin_unlock_bh(&hlist_lock);
+			spin_unlock(&hlist_lock);
+			local_bh_enable();
 
 			NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
 			NETFLOW_STAT_ADD(traf_out, nf->nr_bytes);
 			netflow_export_flow(nf);
-			spin_lock_bh(&hlist_lock);
+
+			local_bh_disable();
+			spin_lock(&hlist_lock);
 		} else {
 			spin_unlock(nf->lock);
 			/* all flows which need to be exported is always at the tail
@@ -2018,20 +2024,21 @@ static int netflow_scan_and_export(const int flush)
 			break;
 		}
 	}
-	spin_unlock_bh(&hlist_lock);
+	spin_unlock(&hlist_lock);
+	local_bh_enable();
 
 #ifdef CONFIG_NF_NAT_NEEDED
-	write_lock_bh(&nat_lock);
+	spin_lock_bh(&nat_lock);
 	while (!list_empty(&nat_list)) {
 		struct nat_event *nel;
 
 		nel = list_entry(nat_list.next, struct nat_event, list);
 		list_del(&nel->list);
-		write_unlock_bh(&nat_lock);
+		spin_unlock_bh(&nat_lock);
 		export_nat_event(nel);
-		write_lock_bh(&nat_lock);
+		spin_lock_bh(&nat_lock);
 	}
-	write_unlock_bh(&nat_lock);
+	spin_unlock_bh(&nat_lock);
 #endif
 	/* flush flows stored in pdu if there no new flows for too long */
 	/* Note: using >= to allow flow purge on zero timeout */
@@ -2175,9 +2182,9 @@ static int netflow_conntrack_event(struct notifier_block *this, unsigned long ev
 		nat_events_start++;
 	}
 
-	write_lock_bh(&nat_lock);
+	spin_lock_bh(&nat_lock);
 	list_add_tail(&nel->list, &nat_list);
-	write_unlock_bh(&nat_lock);
+	spin_unlock_bh(&nat_lock);
 
 	return ret;
 }
@@ -2640,8 +2647,7 @@ do_protocols:
 			NETFLOW_STAT_INC(maxflows_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, pkt_len);
-			spin_unlock_bh(lock);
-			return IPT_CONTINUE;
+			goto unlock_return;
 		}
 
 		nf = init_netflow(&tuple, skb, hash);
@@ -2649,8 +2655,7 @@ do_protocols:
 			NETFLOW_STAT_INC(alloc_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, pkt_len);
-			spin_unlock_bh(lock);
-			return IPT_CONTINUE;
+			goto unlock_return;
 		}
 
 		nf->ts_first = jiffies;
@@ -2693,9 +2698,9 @@ do_protocols:
 		/* ipt_netflow_list is sorted by access time:
 		 * most recently accessed flows are at head, old flows remain at tail
 		 * this function bubble up flow to the head */
-		spin_lock_bh(&hlist_lock);
+		spin_lock(&hlist_lock);
 		list_move(&nf->list, &ipt_netflow_list);
-		spin_unlock_bh(&hlist_lock);
+		spin_unlock(&hlist_lock);
 	}
 
 #ifdef CONFIG_NF_CONNTRACK_MARK
@@ -2733,6 +2738,7 @@ do_protocols:
 		 * limited size). But yes, this is disputable. */
 	}
 
+unlock_return:
 	spin_unlock_bh(lock);
 
 	return IPT_CONTINUE;
