@@ -15,6 +15,11 @@ ipt_NETFLOW.ko: version.h ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	@echo Compiling for kernel $(KVERSION)
 	make -C $(KDIR) M=$(CURDIR) modules
 	@touch $@
+sparse: | version.h ipt_NETFLOW.c ipt_NETFLOW.h Makefile
+	@rm -f ipt_NETFLOW.ko ipt_NETFLOW.o
+	@echo Compiling for kernel $(KVERSION)
+	make -C $(KDIR) M=$(CURDIR) modules C=1
+	@touch ipt_NETFLOW.ko
 minstall: | ipt_NETFLOW.ko
 	make -C $(KDIR) M=$(CURDIR) modules_install INSTALL_MOD_PATH=$(DESTDIR)
 	depmod -a
