@@ -2728,7 +2728,7 @@ do_protocols:
 		nf->tcpoptions |= tcpoptions;
 
 	NETFLOW_STAT_INC(pkt_total);
-	NETFLOW_STAT_ADD(traf_total, ntohs(pkt_len));
+	NETFLOW_STAT_ADD(traf_total, pkt_len);
 
 	if (likely(active_needs_export(nf, active_timeout * HZ))) {
 		/* ok, if this active flow to be exported
