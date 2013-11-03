@@ -2279,7 +2279,7 @@ static inline __u16 observed_hdrs(const __u8 currenthdr)
 
 /* http://www.iana.org/assignments/ip-parameters/ip-parameters.xhtml */
 static const __u8 ip4_opt_table[] = {
-	[7]	= 0,	/* RR */
+	[7]	= 0,	/* RR */ /* parsed manually becasue of 0 */
 	[134]	= 1,	/* CIPSO */
 	[133]	= 2,	/* E-SEC */
 	[68]	= 3,	/* TS */
@@ -2318,20 +2318,27 @@ static inline __u32 ip4_options(const u_int8_t *p, const unsigned int optsize)
 
 	for (i = 0; likely(i < optsize); ) {
 		u_int8_t op = p[i++];
-		if (likely(op < ARRAY_SIZE(ip4_opt_table))) {
+
+		if (op == 7) /* RR: bit 0 */
+			ret |= 1;
+		else if (likely(op < ARRAY_SIZE(ip4_opt_table))) {
 			/* Btw, IANA doc is messed up in a crazy way:
 			 *   http://www.ietf.org/mail-archive/web/ipfix/current/msg06008.html (2011)
 			 * I decided to follow IANA _text_ description from
 			 *   http://www.iana.org/assignments/ipfix/ipfix.xhtml (2013-09-18)
 			 *
 			 * Set proper bit for htonl later. */
-			ret |= 1 << (32 - ip4_opt_table[op]);
+			if (ip4_opt_table[op])
+				ret |= 1 << (32 - ip4_opt_table[op]);
 		}
 		if (likely(i >= optsize || op == 0))
-			return ret;
+			break;
 		else if (unlikely(op == 1))
 			continue;
-		i += p[i] - 1;
+		else if (unlikely(p[i] < 2))
+			break;
+		else
+			i += p[i] - 1;
 	}
 	return ret;
 }
@@ -2345,7 +2352,6 @@ static inline __u32 tcp_options(const struct sk_buff *skb, const unsigned int pt
 	const u_int8_t *p;
 	__u32 ret;
 	unsigned int i;
-	unsigned int count = 0; /* debug */
 
 	p = skb_header_pointer(skb, ptr + sizeof(struct tcphdr), optsize, _opt);
 	if (unlikely(!p))
@@ -2353,7 +2359,7 @@ static inline __u32 tcp_options(const struct sk_buff *skb, const unsigned int pt
 	ret = 0;
 	for (i = 0; likely(i < optsize); ) {
 		u_int8_t opt = p[i++];
-		count++;
+
 		if (likely(opt < 32)) {
 			/* IANA doc is messed up, see above. */
 			ret |= 1 << (32 - opt);
@@ -2362,10 +2368,11 @@ static inline __u32 tcp_options(const struct sk_buff *skb, const unsigned int pt
 			break;
 		else if (unlikely(opt == 1))
 			continue;
-		i += p[i] - 1;
+		else if (unlikely(p[i] < 2)) /* "silly options" */
+			break;
+		else
+			i += p[i] - 1;
 	}
-	if (count > optsize || count > 40)
-		printk("tcp_options loop longer than 40 (%u)\n", count);
 	return ret;
 }
 /* packet receiver */
