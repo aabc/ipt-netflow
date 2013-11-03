@@ -156,12 +156,13 @@ static DEFINE_PER_CPU(struct ipt_netflow_stat, ipt_netflow_stat);
 static LIST_HEAD(usock_list);
 static DEFINE_MUTEX(sock_lock);
 
-static unsigned int ipt_netflow_hash_rnd;
-#define LOCK_COUNT (1<<9)
+#define LOCK_COUNT (1<<8)
 #define LOCK_COUNT_MASK (LOCK_COUNT-1)
 static spinlock_t htable_locks[LOCK_COUNT] = {
 	[0 ... LOCK_COUNT - 1] = __SPIN_LOCK_UNLOCKED(htable_locks)
 };
+static DEFINE_RWLOCK(htable_rwlock); /* global lock to protect htable_locks change */
+static unsigned int ipt_netflow_hash_rnd;
 static struct hlist_head *ipt_netflow_hash __read_mostly; /* hash table memory */
 static unsigned int ipt_netflow_hash_size __read_mostly = 0; /* buckets */
 static LIST_HEAD(ipt_netflow_list); /* all flows */
@@ -310,7 +311,8 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	int snum = 0;
 	int peak = (jiffies - peakflows_at) / HZ;
 
-	seq_printf(seq, "ipt_NETFLOW version " IPT_NETFLOW_VERSION "\n");
+	seq_printf(seq, "ipt_NETFLOW version " IPT_NETFLOW_VERSION ", srcversion %s\n",
+	    THIS_MODULE->srcversion);
 	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d.\n",
 		   nr_flows,
 		   peakflows,
@@ -342,7 +344,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 
 #define FFLOAT(x, prec) (int)(x) / prec, (int)(x) % prec
 	seq_printf(seq, "Hash: size %u (mem %uK), metric %d.%02d [%d.%02d, %d.%02d, %d.%02d]."
-	    " MemTraf: %llu pkt, %llu K (pdu %llu, %llu).\n",
+	    " MemTraf: %llu pkt, %llu K (pdu %llu, %llu), Out %llu pkt, %llu K.\n",
 	    ipt_netflow_hash_size,
 	    (unsigned int)((ipt_netflow_hash_size * sizeof(struct hlist_head)) >> 10),
 	    FFLOAT(metric, 100),
@@ -352,21 +354,9 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	    pkt_total - pkt_out + pdu_packets,
 	    (traf_total - traf_out + pdu_traf) >> 10,
 	    pdu_packets,
-	    pdu_traf);
-
-	seq_printf(seq, "Protocol version %d", protocol);
-	if (protocol == 10)
-		seq_printf(seq, " (ipfix)");
-	else
-		seq_printf(seq, " (netflow)");
-	if (protocol >= 9)
-		seq_printf(seq, ", refresh-rate %u, timeout-rate %u, (templates %d, active %d)",
-		    refresh_rate, timeout_rate, template_ids - FLOWSET_DATA_FIRST, tpl_count);
-
-	seq_printf(seq, ". Timeouts: active %d, inactive %d. Maxflows %u\n",
-	    active_timeout,
-	    inactive_timeout,
-	    maxflows);
+	    pdu_traf,
+	    pkt_out,
+	    traf_out >> 10);
 
 	seq_printf(seq, "Rate: %llu bits/sec, %llu packets/sec;"
 	    " Avg 1 min: %llu bps, %llu pps; 5 min: %llu bps, %llu pps\n",
@@ -407,6 +397,20 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 			    (unsigned long long)st->pkt_drop, (unsigned long long)st->traf_drop >> 10);
 		}
 	}
+
+	seq_printf(seq, "Protocol version %d", protocol);
+	if (protocol == 10)
+		seq_printf(seq, " (ipfix)");
+	else
+		seq_printf(seq, " (netflow)");
+	if (protocol >= 9)
+		seq_printf(seq, ", refresh-rate %u, timeout-rate %u, (templates %d, active %d)",
+		    refresh_rate, timeout_rate, template_ids - FLOWSET_DATA_FIRST, tpl_count);
+
+	seq_printf(seq, ". Timeouts: active %d, inactive %d. Maxflows %u\n",
+	    active_timeout,
+	    inactive_timeout,
+	    maxflows);
 
 #ifdef CONFIG_NF_NAT_NEEDED
 	seq_printf(seq, "Natevents %s, count start %lu, stop %lu.\n", natevents? "enabled" : "disabled",
@@ -1104,23 +1108,22 @@ ipt_netflow_find(const struct ipt_netflow_tuple *tuple, const unsigned int hash)
 
 /* Only used in set_hashsize() */
 static void htable_lock_bh(void)
-	__acquires(htable_locks)
+	__acquires(htable_rwlock)
 {
 	int i;
 
-	local_bh_disable();
-	for (i = 0; i < LOCK_COUNT; i++)
+	write_lock_bh(&htable_rwlock);
+	/* barrier */
+	for (i = 0; i < LOCK_COUNT; i++) {
 		spin_lock(&htable_locks[i]);
+		spin_unlock(&htable_locks[i]);
+	}
 }
 
 static void htable_unlock_bh(void)
-	__releases(htable_locks)
+	__releases(htable_rwlock)
 {
-	int i;
-
-	for (i = 0; i < LOCK_COUNT; i++)
-		spin_unlock(&htable_locks[i]);
-	local_bh_enable();
+	write_unlock_bh(&htable_rwlock);
 }
 
 static struct hlist_head *alloc_hashtable(const int size)
@@ -2342,6 +2345,7 @@ static inline __u32 tcp_options(const struct sk_buff *skb, const unsigned int pt
 	const u_int8_t *p;
 	__u32 ret;
 	unsigned int i;
+	unsigned int count = 0; /* debug */
 
 	p = skb_header_pointer(skb, ptr + sizeof(struct tcphdr), optsize, _opt);
 	if (unlikely(!p))
@@ -2349,16 +2353,19 @@ static inline __u32 tcp_options(const struct sk_buff *skb, const unsigned int pt
 	ret = 0;
 	for (i = 0; likely(i < optsize); ) {
 		u_int8_t opt = p[i++];
+		count++;
 		if (likely(opt < 32)) {
 			/* IANA doc is messed up, see above. */
 			ret |= 1 << (32 - opt);
 		}
 		if (likely(i >= optsize || opt == 0))
-			return ret;
+			break;
 		else if (unlikely(opt == 1))
 			continue;
 		i += p[i] - 1;
 	}
+	if (count > optsize || count > 40)
+		printk("tcp_options loop longer than 40 (%u)\n", count);
 	return ret;
 }
 /* packet receiver */
@@ -2398,7 +2405,6 @@ static unsigned int netflow_target(
 		struct ipv6hdr ip6;
 	} _iph, *iph;
 	unsigned int hash;
-	spinlock_t *lock;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 	const int family = target->family;
 #else
@@ -2635,8 +2641,8 @@ do_protocols:
 	read_unlock_bh(&aggr_lock);
 
 	hash = hash_netflow(&tuple);
-	lock = &htable_locks[hash & LOCK_COUNT_MASK];
-	spin_lock_bh(lock);
+	read_lock_bh(&htable_rwlock);
+	spin_lock(&htable_locks[hash & LOCK_COUNT_MASK]);
 	/* record */
 	nf = ipt_netflow_find(&tuple, hash);
 	if (unlikely(!nf)) {
@@ -2739,7 +2745,8 @@ do_protocols:
 	}
 
 unlock_return:
-	spin_unlock_bh(lock);
+	spin_unlock(&htable_locks[hash & LOCK_COUNT_MASK]);
+	read_unlock_bh(&htable_rwlock);
 
 	return IPT_CONTINUE;
 }
@@ -2932,6 +2939,8 @@ static int __init ipt_netflow_init(void)
 #ifdef CONFIG_PROC_FS
 	struct proc_dir_entry *proc_stat;
 #endif
+	printk(KERN_INFO "ipt_NETFLOW version %s, srcversion %s\n",
+		IPT_NETFLOW_VERSION, THIS_MODULE->srcversion);
 
 	get_random_bytes(&ipt_netflow_hash_rnd, 4);
 
@@ -2947,8 +2956,7 @@ static int __init ipt_netflow_init(void)
 	}
 	if (hashsize < 16)
 		hashsize = 16;
-	printk(KERN_INFO "ipt_NETFLOW version %s (%u buckets)\n",
-		IPT_NETFLOW_VERSION, hashsize);
+	printk(KERN_INFO "ipt_NETFLOW: hashsize %u\n", hashsize);
 
 	ipt_netflow_hash_size = hashsize;
 	ipt_netflow_hash = alloc_hashtable(ipt_netflow_hash_size);
