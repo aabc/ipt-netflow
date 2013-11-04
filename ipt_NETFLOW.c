@@ -1106,26 +1106,6 @@ ipt_netflow_find(const struct ipt_netflow_tuple *tuple, const unsigned int hash)
 	return NULL;
 }
 
-/* Only used in set_hashsize() */
-static void htable_lock_bh(void)
-	__acquires(htable_rwlock)
-{
-	int i;
-
-	write_lock_bh(&htable_rwlock);
-	/* barrier */
-	for (i = 0; i < LOCK_COUNT; i++) {
-		spin_lock(&htable_locks[i]);
-		spin_unlock(&htable_locks[i]);
-	}
-}
-
-static void htable_unlock_bh(void)
-	__releases(htable_rwlock)
-{
-	write_unlock_bh(&htable_rwlock);
-}
-
 static struct hlist_head *alloc_hashtable(const int size)
 {
 	struct hlist_head *hash;
@@ -1157,7 +1137,7 @@ static int set_hashsize(const int new_size)
 	get_random_bytes(&rnd, 4);
 
 	/* rehash */
-	htable_lock_bh();
+	write_lock_bh(&htable_rwlock);
 	old_hash = ipt_netflow_hash;
 	ipt_netflow_hash = new_hash;
 	ipt_netflow_hash_size = new_size;
@@ -1174,7 +1154,7 @@ static int set_hashsize(const int new_size)
 		nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
 	}
 	spin_unlock(&hlist_lock);
-	htable_unlock_bh();
+	write_unlock_bh(&htable_rwlock);
 
 	vfree(old_hash);
 
