@@ -329,12 +329,37 @@ kernel_check_consistency() {
   fi
 }
 
+kconfig() {
+  KCONFIG=$KDIR/.config
+  if ! grep -q "^$1=" $KCONFIG 2>/dev/null; then
+    if [ "$KCONFIGREPORTED" != true ]; then
+      KCONFIGREPORTED=true
+      echo Kernel config file checked: $KCONFIG
+      echo
+    fi
+    echo "! Attention: $1 is undefined in your kernel configuration"
+    echo "!   Without this option enabled $2 will not work."
+    echo
+  fi
+}
+
+kernel_check_config() {
+  kconfig CONFIG_SYSCTL			"sysctl interface"
+  kconfig CONFIG_PROC_FS		"proc interface"
+  kconfig CONFIG_NF_NAT_NEEDED		"natevents"
+  kconfig CONFIG_NF_CONNTRACK_EVENTS	"natevents"
+  kconfig CONFIG_NF_CONNTRACK_MARK	"connmark tracking"
+  kconfig CONFIG_IPV6			"IPv6"
+  kconfig CONFIG_IP6_NF_IPTABLES	"ip6tables target"
+}
+
 kernel_find_version	#KVERSION
 test "$KLIBMOD" || KLIBMOD=$KVERSION
 echo "Kernel version: $KVERSION ($KHOW)"
 kernel_find_source	#KDIR
 echo "Kernel sources: $KDIR ($KSHOW)"
 kernel_check_consistency
+kernel_check_config
 
 test "$IPTBIN" || IPTBIN=`which iptables`
 
