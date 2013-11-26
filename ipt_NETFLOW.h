@@ -170,9 +170,9 @@ union nf_inet_addr {
 struct ipt_netflow_tuple {
 	union nf_inet_addr src;
 	union nf_inet_addr dst;
-	__be16		s_port; // -"-
+	__be16		s_port; // Network byte order
 	__be16		d_port; // -"-
-	__be16		i_ifc;	// Local byte order
+	__u16		i_ifc;	// Host byte order
 	__u8		protocol;
 	__u8		tos;
 	__u8		l3proto;
@@ -187,7 +187,7 @@ struct ipt_netflow {
 
 	/* volatile data */
 	union nf_inet_addr nh;
-	__be16		o_ifc;
+	__u16		o_ifc;
 	__u8		s_mask;
 	__u8		d_mask;
 	__u8		tcp_flags; /* `OR' of all tcp flags */
