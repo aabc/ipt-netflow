@@ -35,8 +35,8 @@ struct netflow5_record {
 	__be16		o_ifc;
 	__be32		nr_packets;
 	__be32		nr_octets;
-	__be32		ts_first;
-	__be32		ts_last;
+	__be32		first_ms;
+	__be32		last_ms;
 	__be16		s_port;
 	__be16		d_port;
 	__u8		reserved;
@@ -109,6 +109,9 @@ enum {
 	postNATSourceIPv6Address = 281,
 	postNATDestinationIPv6Address = 282,
 	IPSecSPI = 295,
+	observationTimeMilliseconds = 323,
+	observationTimeMicroseconds = 324,
+	observationTimeNanoseconds = 325,
 };
 
 enum {
@@ -195,8 +198,16 @@ struct ipt_netflow {
 	/* flow statistics */
 	u_int32_t	nr_packets;
 	u_int32_t	nr_bytes;
-	unsigned long	ts_first;
-	unsigned long	ts_last;
+	union {
+		struct {
+			unsigned long first;
+			unsigned long last;
+		} ts;
+		ktime_t	ts_obs;
+	} _ts_un;
+#define ts_first _ts_un.ts.first
+#define ts_last  _ts_un.ts.last
+#define ts_obs   _ts_un.ts_obs
 	u_int32_t	flow_label; /* IPv6 */
 	u_int32_t	options; /* IPv4(16) & IPv6(32) Options */
 	u_int32_t	tcpoptions;
@@ -224,7 +235,7 @@ struct nat_event {
 		__be16	s_port;
 		__be16	d_port;
 	} pre, post;
-	unsigned long	ts;
+	ktime_t	ts;
 	__u8	protocol;
 	__u8	nat_event;
 };

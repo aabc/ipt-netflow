@@ -1269,8 +1269,8 @@ static void netflow_export_flow_v5(struct ipt_netflow *nf)
 	rec->o_ifc	= htons(nf->o_ifc);
 	rec->nr_packets = htonl(nf->nr_packets);
 	rec->nr_octets	= htonl(nf->nr_bytes);
-	rec->ts_first	= htonl(jiffies_to_msecs(nf->ts_first));
-	rec->ts_last	= htonl(jiffies_to_msecs(nf->ts_last));
+	rec->first_ms	= htonl(jiffies_to_msecs(nf->ts_first));
+	rec->last_ms	= htonl(jiffies_to_msecs(nf->ts_last));
 	rec->s_port	= nf->tuple.s_port;
 	rec->d_port	= nf->tuple.d_port;
 	//rec->reserved	= 0; /* pdu is always zeroized for v5 in netflow_switch_version */
@@ -1429,6 +1429,9 @@ static u_int8_t tpl_element_sizes[] = {
 	[postNATSourceIPv6Address]	   = 16,
 	[postNATDestinationIPv6Address]	   = 16,
 	[IPSecSPI]			   = 4,
+	[observationTimeMilliseconds]	   = 8,
+	[observationTimeMicroseconds]	   = 8,
+	[observationTimeNanoseconds]	   = 8,
 };
 
 #define TEMPLATES_HASH_BSIZE	8
@@ -1524,7 +1527,7 @@ static struct base_template template_ipsec = {
 };
 static struct base_template template_nat4 = {
 	.types = {
-		FIRST_SWITCHED,
+		observationTimeMilliseconds,
 		IPV4_SRC_ADDR,
 		IPV4_DST_ADDR,
 		postNATSourceIPv4Address,
@@ -1743,6 +1746,12 @@ static inline void add_ipv4_field(__u8 *ptr, const int type, const struct ipt_ne
 		case natEvent:				         *ptr = nf->nat->nat_event; break;
 #endif
 		case IPSecSPI:        *(__u32 *)ptr = (nf->tuple.s_port << 16) | nf->tuple.d_port; break;
+		case observationTimeMilliseconds:
+				      *(__be64 *)ptr = cpu_to_be64(ktime_to_ms(nf->ts_obs)); break;
+		case observationTimeMicroseconds:
+				      *(__be64 *)ptr = cpu_to_be64(ktime_to_us(nf->ts_obs)); break;
+		case observationTimeNanoseconds:
+				      *(__be64 *)ptr = cpu_to_be64(ktime_to_ns(nf->ts_obs)); break;
 		default:
 					memset(ptr, 0, tpl_element_sizes[type]);
 	}
@@ -1909,8 +1918,7 @@ static void export_nat_event(struct nat_event *nel)
 
 	nf.tuple.l3proto = AF_INET;
 	nf.tuple.protocol = nel->protocol;
-	nf.ts_first = nel->ts;
-	nf.ts_last = nel->ts;
+	nf.ts_obs = nel->ts;
 	nf.nat = nel; /* this is also flag of dummy flow */
 	nf.tcp_flags = (nel->nat_event == NAT_DESTROY)? TCP_FIN_RST : TCP_SYN_ACK;
 	if (protocol >= 9) {
@@ -2147,7 +2155,7 @@ static int netflow_conntrack_event(struct notifier_block *this, unsigned long ev
 		return ret;
 	}
 	memset(nel, 0, sizeof(struct nat_event));
-	nel->ts = jiffies;
+	nel->ts = ktime_get_real();
 	t = &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple;
 	nel->protocol = t->dst.protonum;
 	nel->pre.s_addr = t->src.u3.ip;
