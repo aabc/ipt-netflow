@@ -1524,10 +1524,13 @@ static struct base_template template_ipsec = {
 };
 static struct base_template template_nat4 = {
 	.types = {
+		FIRST_SWITCHED,
 		IPV4_SRC_ADDR,
 		IPV4_DST_ADDR,
 		postNATSourceIPv4Address,
 		postNATDestinationIPv4Address,
+		L4_SRC_PORT,
+		L4_DST_PORT,
 		postNAPTSourceTransportPort,
 		postNAPTDestinationTransportPort,
 		PROTOCOL,
