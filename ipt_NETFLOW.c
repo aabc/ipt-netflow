@@ -1702,6 +1702,14 @@ static void pdu_add_template(struct data_template *tpl)
 	pdu_tpl_records++;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
+static inline s64 ktime_to_ms(const ktime_t kt)
+{
+	struct timeval tv = ktime_to_timeval(kt);
+	return (s64) tv.tv_sec * MSEC_PER_SEC + tv.tv_usec / USEC_PER_MSEC;
+}
+#endif
+
 /* encode one field */
 typedef struct in6_addr in6_t;
 static inline void add_ipv4_field(__u8 *ptr, const int type, const struct ipt_netflow *nf)
