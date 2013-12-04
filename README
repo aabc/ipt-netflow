@@ -132,7 +132,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
    NETFLOW target at the top of the chain, otherwise not all traffic may
    reach NETFLOW if your iptables configuration is complicated and some
    other rule inadvertently consume the traffic (dropping or acepting before
-   NETFLOW is reached). It's always good is to test your configuration.
+   NETFLOW is reached). It's always good to test your configuration.
    Use  iptables -L -nvx  to check pkts/bytes counters on the rules.
 
 5. If you want to account IPv6 traffic you should use protocol 9 or 10.
@@ -170,12 +170,12 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
        for NetFlow v9/IPFIX, or as dummy flows compatible with NetFlow v5.
        Default is 0 (don't send).
 
-       For NetFlow v5 protocol meaning of fields in dummy flows is such:
-         Src IP, Src Port is Pre-nat source address.
-         Dst IP, Dst Port is Post-nat destination address.
+       For NetFlow v5 protocol meaning of fields in dummy flows are such:
+         Src IP, Src Port  is Pre-nat source address.
+         Dst IP, Dst Port  is Post-nat destination address.
            - These two fields made equal to data flows catched in FORWARD chain.
-	 Nexthop, Src AS is Post-nat source address for SNAT. Or,
-	 Nexthop, Dst AS is Pre-nat destination address for DNAT.
+	 Nexthop, Src AS  is Post-nat source address for SNAT. Or,
+	 Nexthop, Dst AS  is Pre-nat destination address for DNAT.
 	 TCP Flags is SYN+SCK for start event, RST+FIN for stop event.
 	 Pkt/Traffic size is 0 (zero), so it won't interfere with accounting.
 
@@ -305,7 +305,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
   stat: <search found new, trunc frag alloc maxflows>: internal stat for:
   search found new: hash table searched, found, and not found counters.
   [metric]: average hash metric since module load.
-  trunc: how much truncated packets is ignored
+  trunc: how much truncated packets are ignored
     - these are that possible don't have valid IP header.
     - accounted in drop packets counter but not in drop bytes.
   frag: how much fragmented packets have seen.
@@ -313,7 +313,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
     - these packets are not ignored but not reassembled either, so:
     - if there is no enough data in fragment (ex. tcp ports) it is considered
       zero.
-  alloc: how much cache memory allocations is failed.
+  alloc: how much cache memory allocations are failed.
     - packets ignored and accounted in drop stat.
     - probably increase system memory if this ever happen.
   maxflows: how much packets ignored on maxflows (maximum active flows reached).
