@@ -21,38 +21,44 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
 
    Four easy steps.
 
-1. (Kernel)
+** 1. Prepare Kernel source
+
    If you have package system install kernel-devel package, otherwise install
-   kernel source from http://kernel.org matching _exactly_ version of your
+   raw kernel source from http://kernel.org matching _exactly_ version of your
    installed kernel.
 
-   a) Example for Centos:
+   a) What to do for Centos:
 
       ~# yum install kernel-devel
 
-   b) For Debian:
+   b) What to do for Debian:
 
       ~# apt-get install module-assistant
       ~# m-a prepare
 
-   c) For raw kernel sources don't forget to create .config by copying it from
-    your distribution's kernel. Its copy could reside in /boot or in /proc,
-    examples:
+   c) Otherwise, if you downloaded raw kernel sources don't forget to create
+    .config by copying it from your distribution's kernel. Its copy could reside
+    in /boot or sometimes in /proc, examples:
 
-      ~# zcat /proc/config.gz > /usr/src/linux/.config
+      kernel-src-dir/# cp /boot/config-`uname -r` .config
     or
-      ~# cp /boot/config-`uname -r` /usr/src/linux/
+      kernel-src-dir/# zcat /proc/config.gz > .config
 
-    Assuming you unpacked kernel source into /usr/src/linux/ directory.
+    Assuming you unpacked kernel source into `kernel-src-dir/' directory.
     Then run:
 
-      /usr/src/linux# make oldconfig
+      kernel-src-dir/# make oldconfig
 
     After that you'll need to prepare kernel for modules build:
 
-      /usr/src/linux# make prepare modules_prepare
+      kernel-src-dir/# make prepare modules_prepare
 
-2. (Iptables)
+   Note: Don't try to `make prepare' in Centos kernel-devel package directory
+     (which is usually something like /usr/src/kernels/2.6.32-431.el6.x86_64)
+     as this is wrong and meaningless.
+
+** 2. Prepare Iptables
+
    Before this step it also would be useful to install pkg-config if don't
    already have.
 
@@ -60,20 +66,21 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
    package, otherwise install iptables source matching version of your
    installation from ftp://ftp.netfilter.org/pub/iptables/
 
-   a) Example for Centos:
+   a) What to do for Centos:
 
       # yum install iptables-devel
 
-   b) Debian:
+   b) What to do for Debian:
 
       # apt-get install iptables-dev pkg-config
 
-   c) For raw iptables source build it and make install
+   c) Otherwise, for raw iptables source build it and make install.
 
-3. Now to build module run
+** 3. Now, to actually build the module run:
 
       ~/ipt-netflow# ./configure
-      ~/ipt-netflow# make all install; depmod
+      ~/ipt-netflow# make all install
+      ~/ipt-netflow# depmod
 
    This will install kernel module and iptables specific library.
 
@@ -87,8 +94,11 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
      If you are using kernel-devel package check that its version matches
      your kernel package.
 
-4. After this point you should be able to load module
-     and use -j NETFLOW target in your iptables. See next section.
+     c) If you have sources in non-standard places or configure isn't able to
+     find something run ./configure --help to see how to specify paths manually.
+
+** 4. After this point you should be able to load module and
+     use -j NETFLOW target in your iptables. See next section.
 
 
 ===========
