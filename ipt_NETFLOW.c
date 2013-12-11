@@ -1703,11 +1703,12 @@ static void pdu_add_template(struct data_template *tpl)
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
-static inline s64 ktime_to_ms(const ktime_t kt)
+static inline s64 portable_ktime_to_ms(const ktime_t kt)
 {
 	struct timeval tv = ktime_to_timeval(kt);
 	return (s64) tv.tv_sec * MSEC_PER_SEC + tv.tv_usec / USEC_PER_MSEC;
 }
+#define ktime_to_ms portable_ktime_to_ms
 #endif
 
 /* encode one field */
