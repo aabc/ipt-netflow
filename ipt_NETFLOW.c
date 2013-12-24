@@ -1927,10 +1927,10 @@ static void export_nat_event(struct nat_event *nel)
 
 	nf.tuple.l3proto = AF_INET;
 	nf.tuple.protocol = nel->protocol;
-	nf.ts_obs = nel->ts;
 	nf.nat = nel; /* this is also flag of dummy flow */
 	nf.tcp_flags = (nel->nat_event == NAT_DESTROY)? TCP_FIN_RST : TCP_SYN_ACK;
 	if (protocol >= 9) {
+		nf.ts_obs = nel->ts_ktime;
 		nf.tuple.src.ip = nel->pre.s_addr;
 		nf.tuple.dst.ip = nel->pre.d_addr;
 		nf.tuple.s_port = nel->pre.s_port;
@@ -1949,6 +1949,8 @@ static void export_nat_event(struct nat_event *nel)
 		nf.tuple.dst.ip = nel->post.d_addr;
 		nf.tuple.d_port = nel->post.d_port;
 
+		nf.ts_first = nel->ts_jiffies;
+		nf.ts_last = nel->ts_jiffies;
 		if (nel->pre.s_addr != nel->post.s_addr ||
 		    nel->pre.s_port != nel->post.s_port) {
 			nf.nh.ip = nel->post.s_addr;
@@ -2164,7 +2166,8 @@ static int netflow_conntrack_event(struct notifier_block *this, unsigned long ev
 		return ret;
 	}
 	memset(nel, 0, sizeof(struct nat_event));
-	nel->ts = ktime_get_real();
+	nel->ts_ktime = ktime_get_real();
+	nel->ts_jiffies = jiffies;
 	t = &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple;
 	nel->protocol = t->dst.protonum;
 	nel->pre.s_addr = t->src.u3.ip;

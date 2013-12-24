@@ -235,7 +235,8 @@ struct nat_event {
 		__be16	s_port;
 		__be16	d_port;
 	} pre, post;
-	ktime_t	ts;
+	ktime_t		ts_ktime;
+	unsigned long	ts_jiffies;
 	__u8	protocol;
 	__u8	nat_event;
 };
