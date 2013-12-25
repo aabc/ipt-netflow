@@ -1955,11 +1955,13 @@ static void export_nat_event(struct nat_event *nel)
 		    nel->pre.s_port != nel->post.s_port) {
 			nf.nh.ip = nel->post.s_addr;
 			nf.s_as  = nel->post.s_port;
+			nf.d_as  = 0;
 			netflow_export_flow(&nf);
 		}
 		if (nel->pre.d_addr != nel->post.d_addr ||
 		    nel->pre.d_port != nel->post.d_port) {
 			nf.nh.ip = nel->pre.d_addr;
+			nf.s_as  = 0;
 			nf.d_as  = nel->pre.d_port;
 			netflow_export_flow(&nf);
 		}
