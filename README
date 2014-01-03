@@ -156,6 +156,17 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
    Note: First enable right version of protocol and after that add ip6tables
      rules, otherwise you will get errors in dmesg.
 
+6. If you want to account NAT events (NEL):
+
+     # sysctl net.netflow.natevents=1
+
+   Note that natevents feature is completely independent from traffic accounting
+   (it's using so called conntrack events), thus you don't need to set or change
+   any iptables rules to use that. You may need to enable kernel config option
+   CONFIG_NF_CONNTRACK_EVENTS though (if it isn't already enabled).
+   For details on how they are exported for different protocol versions see
+   below.
+
 ===========
 = OPTIONS =
 ===========
