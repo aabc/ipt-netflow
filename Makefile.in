@@ -31,10 +31,10 @@ clean: mclean lclean
 	-rm -f *.so *.o modules.order version.h
 
 %_sh.o: libipt_NETFLOW.c
-	gcc -O2 -Wall -Wunused $(IPTABLES_CFLAGS) -fPIC -o $@ -c libipt_NETFLOW.c
+	$(CC) -O2 -Wall -Wunused $(IPTABLES_CFLAGS) -fPIC -o $@ -c libipt_NETFLOW.c
 
 %.so: %_sh.o
-	gcc -shared -o $@ $<
+	$(CC) -shared -o $@ $<
 
 version.h: ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	@if [ -d .git ] && type git >/dev/null 2>&1; then \
