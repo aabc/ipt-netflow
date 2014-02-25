@@ -5,6 +5,7 @@ KDIR = @KDIR@
 KINSTDIR = $(shell dirname @KDIR@)
 IPTABLES_CFLAGS = @IPTABLES_CFLAGS@
 IPTABLES_MODULES = @IPTABLES_MODULES@
+DEPMOD = depmod -a
 
 # https://www.kernel.org/doc/Documentation/kbuild/modules.txt
 # https://www.kernel.org/doc/Documentation/kbuild/makefiles.txt
@@ -22,7 +23,7 @@ sparse: | version.h ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	@touch ipt_NETFLOW.ko
 minstall: | ipt_NETFLOW.ko
 	make -C $(KDIR) M=$(CURDIR) modules_install INSTALL_MOD_PATH=$(DESTDIR)
-	depmod -a
+	$(DEPMOD)
 mclean:
 	make -C $(KDIR) M=$(CURDIR) clean
 lclean:
