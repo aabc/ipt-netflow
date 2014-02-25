@@ -488,8 +488,13 @@ static struct file_operations nf_seq_fops = {
 #define BEFORE2632(x,y)
 #endif
 
+/* PAX need to know that we are allowed to write */
+#ifndef CONSTIFY_PLUGIN
+#define ctl_table_no_const ctl_table
+#endif
+
 /* sysctl /proc/sys/net/netflow */
-static int hsize_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int hsize_procctl(ctl_table_no_const *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	void *orig = ctl->data;
@@ -507,7 +512,7 @@ static int hsize_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 		return ret;
 }
 
-static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int sndbuf_procctl(ctl_table_no_const *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
@@ -569,7 +574,7 @@ static int aggregation_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 	return ret;
 }
 
-static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int flush_procctl(ctl_table_no_const *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
