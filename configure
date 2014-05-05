@@ -49,7 +49,7 @@ get_lib_from_lib() {
   LIB=`strings $XLIB | grep ^/.*lib.*tables`
   if [ "$LIB" ]; then
     IPTLIB=$LIB
-    echo "$IPTLIB (from library)"
+    echo "$IPTLIB (from iptables binary)"
     return 0
   fi
   return 1
@@ -58,7 +58,6 @@ get_lib_from_lib() {
 iptables_inc() {
   echo -n "Iptables include flags: "
   if [ "$IPTINC" ]; then
-    IPTINC="-I$IPTINC"
     echo "$IPTINC (user specified)"
   elif [ "$PKGVER" ]; then
     IPTINC="$PKGINC"
@@ -143,14 +142,25 @@ iptables_find_version() {
 }
 
 compile_libitp_test() {
+  local FLAGS MSG
   echo -n "Checking for presence of $@... "
+  if [ "$IPTINC" ]; then
+    FLAGS=$IPTINC
+    MSG="(using ipt-inc)"
+  elif [ "$PKGINC" ]; then
+    FLAGS=$PKGINC
+    MSG="(using pkg-config)"
+  else
+    FLAGS=
+    MSG=
+  fi
   echo "
 #define __EXPORTED_HEADERS__
 #include <$*>" > test.c
-  gcc -c test.c  >/dev/null 2>&1
+  gcc -c test.c $FLAGS >/dev/null 2>&1
   RET=$?
   if [ $RET = 0 ]; then
-    echo Yes;
+    echo Yes $MSG;
   else
     echo No;
   fi
@@ -174,6 +184,7 @@ iptables_try_pkgconfig() {
       else
 	echo "No"
       fi
+      PKGVER=
     fi
   fi
   if [ "$PKGVER" ]; then
@@ -253,7 +264,7 @@ do
     --ipt-lib=*) IPTLIB="$ac_optarg" ;;
     --ipt-src=*) IPTSRC="$ac_optarg" ;;
     --ipt-ver=*) IPTVER="$ac_optarg" ;;
-    --ipt-inc=*) IPTINC="$ac_optarg" ;;
+    --ipt-inc=*) IPTINC="-I$ac_optarg" ;;
     --kver=*)  KVERSION="$ac_optarg" ;;
     --kdir=*)      KDIR="$ac_optarg" ;;
     --make) echo called from make ;;
