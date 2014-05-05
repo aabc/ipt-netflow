@@ -192,7 +192,8 @@ iptables_try_pkgconfig() {
     PKGVER=`pkg-config --modversion xtables 2>/dev/null`
     PKGINC=`pkg-config --cflags xtables`
     PKGLIB=`pkg-config --variable=xtlibdir xtables`
-  else
+  elif [[ "$IPTVER" =~ ^1\.3 ]]; then
+    echo "! This version of iptables ($IPTVER) will be treated as old version."
     # Newer versions of iptables should not have -I/kernel/include!
     # So I assume that newer version will have correct pkg-config set up
     # and if not, then it's older who need it.
