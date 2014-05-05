@@ -6,6 +6,7 @@ KINSTDIR = $(shell dirname @KDIR@)
 IPTABLES_CFLAGS = @IPTABLES_CFLAGS@
 IPTABLES_MODULES = @IPTABLES_MODULES@
 DEPMOD = depmod -a
+CARGS = @CARGS@
 
 # https://www.kernel.org/doc/Documentation/kbuild/modules.txt
 # https://www.kernel.org/doc/Documentation/kbuild/makefiles.txt
@@ -54,7 +55,7 @@ uninstall:
 	-rm -f $(DESTDIR)$(KINSTDIR)/extra/ipt_NETFLOW.ko
 
 Makefile: Makefile.in configure
-	./configure --make
+	./configure --make ${CARGS}
 
 load: all
 	-insmod ipt_NETFLOW.ko active_timeout=5 protocol=9

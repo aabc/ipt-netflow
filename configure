@@ -253,6 +253,7 @@ show_help() {
   exit 0
 }
 
+CARGS="$@"
 for ac_option
 do
   case "$ac_option" in
@@ -383,6 +384,7 @@ iptables_inc		#IPTINC
 iptables_modules	#IPTLIB
 
 REPLACE="\
+s!@CARGS@!$CARGS!;\
 s!@KVERSION@!$KVERSION!;\
 s!@KDIR@!$KDIR!;\
 s!@IPTABLES_VERSION@!$IPTVER!;\
