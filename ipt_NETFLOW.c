@@ -144,7 +144,7 @@ static int maxflows = 2000000;
 module_param(maxflows, int, 0644);
 MODULE_PARM_DESC(maxflows, "maximum number of flows");
 static int peakflows = 0;
-static unsigned long peakflows_at;
+static unsigned long peakflows_at; /* jfffies */
 
 #define AGGR_SIZE 1024
 static char aggregation_buf[AGGR_SIZE] = "";
@@ -184,7 +184,7 @@ static unsigned int pdu_count = 0;
 static unsigned int pdu_seq = 0;
 static unsigned int pdu_data_records = 0;
 static unsigned int pdu_tpl_records = 0;
-static unsigned long pdu_ts_mod; /* ts of last flow */
+static unsigned long pdu_ts_mod; /* ts(jiffies) of last flow */
 static union {
 	struct netflow5_pdu v5;
 	struct netflow9_pdu v9;
@@ -196,6 +196,9 @@ static __u8 *pdu_high_wm; /* high watermark */
 static unsigned int pdu_max_size; /* sizeof pdu */
 static struct flowset_data *pdu_flowset = NULL; /* current data flowset */
 
+static unsigned long wk_start; /* last start of worker (jiffies) */
+static unsigned long wk_busy;  /* last work busy time (jiffies) */
+static unsigned int wk_count; /* how much of ipt_netflow_list is scanned */
 static void (*netflow_export_flow)(struct ipt_netflow *nf);
 static void (*netflow_export_pdu)(void); /* called on timeout */
 static void netflow_switch_version(int ver);
@@ -313,12 +316,16 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 
 	seq_printf(seq, "ipt_NETFLOW version " IPT_NETFLOW_VERSION ", srcversion %s\n",
 	    THIS_MODULE->srcversion);
-	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d.\n",
+	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d"
+	    " (%u ms, %u us, %u).\n",
 		   nr_flows,
 		   peakflows,
 		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
 		   (unsigned int)((nr_flows * sizeof(struct ipt_netflow)) >> 10),
-		   worker_delay, HZ);
+		   worker_delay, HZ,
+		   jiffies_to_msecs(jiffies - wk_start),
+		   jiffies_to_usecs(wk_busy),
+		   wk_count);
 
 	for_each_present_cpu(cpu) {
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
@@ -2001,6 +2008,7 @@ static int netflow_scan_and_export(const int flush)
 	while (likely(!list_empty(&ipt_netflow_list))) {
 		struct ipt_netflow *nf;
 
+		++wk_count;
 		/* Last entry, which is usually oldest. */
 		nf = list_entry(ipt_netflow_list.prev, struct ipt_netflow, list);
 		if (!spin_trylock(nf->lock)) {
@@ -2063,8 +2071,11 @@ static void netflow_work_fn(struct work_struct *dummy)
 {
 	int status;
 
+	wk_count = 0;
+	wk_start = jiffies;
 	status = netflow_scan_and_export(DONT_FLUSH);
 	_schedule_scan_worker(status);
+	wk_busy = jiffies - wk_start;
 }
 
 #define RATESHIFT 2
