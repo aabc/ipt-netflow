@@ -198,7 +198,8 @@ static struct flowset_data *pdu_flowset = NULL; /* current data flowset */
 
 static unsigned long wk_start; /* last start of worker (jiffies) */
 static unsigned long wk_busy;  /* last work busy time (jiffies) */
-static unsigned int wk_count; /* how much of ipt_netflow_list is scanned */
+static unsigned int wk_count;  /* how much of ipt_netflow_list is scanned */
+static char wk_abort[16];  /* reason why last export scan is aborted */
 static void (*netflow_export_flow)(struct ipt_netflow *nf);
 static void (*netflow_export_pdu)(void); /* called on timeout */
 static void netflow_switch_version(int ver);
@@ -317,7 +318,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "ipt_NETFLOW version " IPT_NETFLOW_VERSION ", srcversion %s\n",
 	    THIS_MODULE->srcversion);
 	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d"
-	    " (%u ms, %u us, %u).\n",
+	    " (%u ms, %u us, %u: %.*s).\n",
 		   nr_flows,
 		   peakflows,
 		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
@@ -325,7 +326,8 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		   worker_delay, HZ,
 		   jiffies_to_msecs(jiffies - wk_start),
 		   jiffies_to_usecs(wk_busy),
-		   wk_count);
+		   wk_count,
+		   (int)sizeof(wk_abort), wk_abort);
 
 	for_each_present_cpu(cpu) {
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
@@ -2013,6 +2015,7 @@ static int netflow_scan_and_export(const int flush)
 		nf = list_entry(ipt_netflow_list.prev, struct ipt_netflow, list);
 		if (!spin_trylock(nf->lock)) {
 			trylock_failed = 1;
+			*wk_abort = 'T';
 			break;
 		}
 		/* Note: i_timeout checked with >= to allow specifying zero timeout
@@ -2029,6 +2032,7 @@ static int netflow_scan_and_export(const int flush)
 			NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
 			NETFLOW_STAT_ADD(traf_out, nf->nr_bytes);
 			netflow_export_flow(nf);
+			*wk_abort = 'E';
 
 			local_bh_disable();
 			spin_lock(&hlist_lock);
@@ -2036,6 +2040,7 @@ static int netflow_scan_and_export(const int flush)
 			spin_unlock(nf->lock);
 			/* all flows which need to be exported is always at the tail
 			 * so if no more exportable flows we can break */
+			*wk_abort = 'A';
 			break;
 		}
 	}
@@ -2072,6 +2077,8 @@ static void netflow_work_fn(struct work_struct *dummy)
 	int status;
 
 	wk_count = 0;
+	memmove(wk_abort + 1, wk_abort, sizeof(wk_abort) - 1);
+	*wk_abort = 's';
 	wk_start = jiffies;
 	status = netflow_scan_and_export(DONT_FLUSH);
 	_schedule_scan_worker(status);
