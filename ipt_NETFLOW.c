@@ -82,7 +82,7 @@
 #define ipt_target xt_target
 #endif
 
-#define IPT_NETFLOW_VERSION "1.8.2" /* Note that if you are using git, you
+#define IPT_NETFLOW_VERSION "1.8.3" /* Note that if you are using git, you
 				       will see version in other format. */
 #include "version.h"
 #ifdef GITVERSION
@@ -162,11 +162,11 @@ static spinlock_t htable_locks[LOCK_COUNT] = {
 	[0 ... LOCK_COUNT - 1] = __SPIN_LOCK_UNLOCKED(htable_locks)
 };
 static DEFINE_RWLOCK(htable_rwlock); /* global lock to protect htable_locks change */
-static unsigned int ipt_netflow_hash_rnd;
-static struct hlist_head *ipt_netflow_hash __read_mostly; /* hash table memory */
-static unsigned int ipt_netflow_hash_size __read_mostly = 0; /* buckets */
+static unsigned int htable_rnd;
+static struct hlist_head *htable __read_mostly; /* hash table memory */
+static unsigned int htable_size __read_mostly = 0; /* buckets */
 static LIST_HEAD(ipt_netflow_list); /* all flows */
-static DEFINE_SPINLOCK(hlist_lock); /* should almost always be locked w/o _bh */
+static DEFINE_SPINLOCK(ipt_netflow_list_lock); /* should almost always be locked w/o _bh */
 static LIST_HEAD(aggr_n_list);
 static LIST_HEAD(aggr_p_list);
 static DEFINE_RWLOCK(aggr_lock);
@@ -354,8 +354,8 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 #define FFLOAT(x, prec) (int)(x) / prec, (int)(x) % prec
 	seq_printf(seq, "Hash: size %u (mem %uK), metric %d.%02d [%d.%02d, %d.%02d, %d.%02d]."
 	    " MemTraf: %llu pkt, %llu K (pdu %llu, %llu), Out %llu pkt, %llu K.\n",
-	    ipt_netflow_hash_size,
-	    (unsigned int)((ipt_netflow_hash_size * sizeof(struct hlist_head)) >> 10),
+	    htable_size,
+	    (unsigned int)((htable_size * sizeof(struct hlist_head)) >> 10),
 	    FFLOAT(metric, 100),
 	    FFLOAT(min_metric, 100),
 	    FFLOAT(min5_metric, 100),
@@ -689,7 +689,7 @@ static struct ctl_table netflow_sysctl_table[] = {
 		_CTL_NAME(4)
 		.procname	= "hashsize",
 		.mode		= 0644,
-		.data		= &ipt_netflow_hash_size,
+		.data		= &htable_size,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &hsize_procctl,
 	},
@@ -1087,7 +1087,7 @@ static int add_aggregation(char *ptr)
 
 static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple)
 {
-	return murmur3(tuple, sizeof(struct ipt_netflow_tuple), ipt_netflow_hash_rnd) % ipt_netflow_hash_size;
+	return murmur3(tuple, sizeof(struct ipt_netflow_tuple), htable_rnd) % htable_size;
 }
 
 static struct ipt_netflow *
@@ -1103,7 +1103,7 @@ ipt_netflow_find(const struct ipt_netflow_tuple *tuple, const unsigned int hash)
 #define compat_hlist_for_each_entry_safe(a,pos,c,d,e) hlist_for_each_entry_safe(a,c,d,e)
 #endif
 
-	compat_hlist_for_each_entry(nf, pos, &ipt_netflow_hash[hash], hlist) {
+	compat_hlist_for_each_entry(nf, pos, &htable[hash], hlist) {
 		if (ipt_netflow_tuple_equal(tuple, &nf->tuple) &&
 		    nf->nr_bytes < FLOW_FULL_WATERMARK) {
 			NETFLOW_STAT_INC(found);
@@ -1138,7 +1138,7 @@ static int set_hashsize(const int new_size)
 	int rnd;
 
 	printk(KERN_INFO "ipt_NETFLOW: allocating new hash table %u -> %u buckets\n",
-	       ipt_netflow_hash_size, new_size);
+	       htable_size, new_size);
 	new_hash = alloc_hashtable(new_size);
 	if (!new_hash)
 		return -ENOMEM;
@@ -1147,12 +1147,12 @@ static int set_hashsize(const int new_size)
 
 	/* rehash */
 	write_lock_bh(&htable_rwlock);
-	old_hash = ipt_netflow_hash;
-	ipt_netflow_hash = new_hash;
-	ipt_netflow_hash_size = new_size;
-	ipt_netflow_hash_rnd = rnd;
-	/* hash_netflow() is dependent on ipt_netflow_hash_* values */
-	spin_lock(&hlist_lock);
+	old_hash = htable;
+	htable = new_hash;
+	htable_size = new_size;
+	htable_rnd = rnd;
+	/* hash_netflow() is dependent on htable_* values */
+	spin_lock(&ipt_netflow_list_lock);
 	list_for_each_entry(nf, &ipt_netflow_list, list) {
 		unsigned int hash;
 
@@ -1162,7 +1162,7 @@ static int set_hashsize(const int new_size)
 		hlist_add_head(&nf->hlist, &new_hash[hash]);
 		nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
 	}
-	spin_unlock(&hlist_lock);
+	spin_unlock(&ipt_netflow_list_lock);
 	write_unlock_bh(&htable_rwlock);
 
 	vfree(old_hash);
@@ -1213,10 +1213,10 @@ init_netflow(const struct ipt_netflow_tuple *tuple,
 		return NULL;
 
 	nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
-	hlist_add_head(&nf->hlist, &ipt_netflow_hash[hash]);
-	spin_lock(&hlist_lock);
+	hlist_add_head(&nf->hlist, &htable[hash]);
+	spin_lock(&ipt_netflow_list_lock);
 	list_add(&nf->list, &ipt_netflow_list);
-	spin_unlock(&hlist_lock);
+	spin_unlock(&ipt_netflow_list_lock);
 
 	return nf;
 }
@@ -2003,7 +2003,7 @@ static int netflow_scan_and_export(const int flush)
 		i_timeout = 0;
 
 	local_bh_disable();
-	spin_lock(&hlist_lock);
+	spin_lock(&ipt_netflow_list_lock);
 	/* This is different order of locking than elsewhere,
 	 * so we trylock&break to avoid deadlock. */
 
@@ -2026,7 +2026,7 @@ static int netflow_scan_and_export(const int flush)
 			spin_unlock(nf->lock);
 
 			list_del(&nf->list);
-			spin_unlock(&hlist_lock);
+			spin_unlock(&ipt_netflow_list_lock);
 			local_bh_enable();
 
 			NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
@@ -2035,7 +2035,7 @@ static int netflow_scan_and_export(const int flush)
 			*wk_abort = 'E';
 
 			local_bh_disable();
-			spin_lock(&hlist_lock);
+			spin_lock(&ipt_netflow_list_lock);
 		} else {
 			spin_unlock(nf->lock);
 			/* all flows which need to be exported is always at the tail
@@ -2044,7 +2044,7 @@ static int netflow_scan_and_export(const int flush)
 			break;
 		}
 	}
-	spin_unlock(&hlist_lock);
+	spin_unlock(&ipt_netflow_list_lock);
 	local_bh_enable();
 
 #ifdef CONFIG_NF_NAT_NEEDED
@@ -2734,9 +2734,9 @@ do_protocols:
 		/* ipt_netflow_list is sorted by access time:
 		 * most recently accessed flows are at head, old flows remain at tail
 		 * this function bubble up flow to the head */
-		spin_lock(&hlist_lock);
+		spin_lock(&ipt_netflow_list_lock);
 		list_move(&nf->list, &ipt_netflow_list);
-		spin_unlock(&hlist_lock);
+		spin_unlock(&ipt_netflow_list_lock);
 	}
 
 #ifdef CONFIG_NF_CONNTRACK_MARK
@@ -2763,9 +2763,9 @@ do_protocols:
 	if (likely(active_needs_export(nf, active_timeout * HZ))) {
 		/* ok, if this active flow to be exported
 		 * bubble it to the tail */
-		spin_lock(&hlist_lock);
+		spin_lock(&ipt_netflow_list_lock);
 		list_move_tail(&nf->list, &ipt_netflow_list);
-		spin_unlock(&hlist_lock);
+		spin_unlock(&ipt_netflow_list_lock);
 
 		/* Blog: I thought about forcing timer to wake up sooner if we have
 		 * enough exportable flows, but in fact this doesn't have much sense,
@@ -2972,7 +2972,7 @@ static int __init ipt_netflow_init(void)
 	printk(KERN_INFO "ipt_NETFLOW version %s, srcversion %s\n",
 		IPT_NETFLOW_VERSION, THIS_MODULE->srcversion);
 
-	get_random_bytes(&ipt_netflow_hash_rnd, 4);
+	get_random_bytes(&htable_rnd, 4);
 
 	/* determine hash size (idea from nf_conntrack_core.c) */
 	if (!hashsize) {
@@ -2988,9 +2988,9 @@ static int __init ipt_netflow_init(void)
 		hashsize = 16;
 	printk(KERN_INFO "ipt_NETFLOW: hashsize %u\n", hashsize);
 
-	ipt_netflow_hash_size = hashsize;
-	ipt_netflow_hash = alloc_hashtable(ipt_netflow_hash_size);
-	if (!ipt_netflow_hash) {
+	htable_size = hashsize;
+	htable = alloc_hashtable(htable_size);
+	if (!htable) {
 		printk(KERN_ERR "Unable to create ipt_neflow_hash\n");
 		goto err;
 	}
@@ -3096,7 +3096,7 @@ err_free_netflow_slab:
 #endif
 	kmem_cache_destroy(ipt_netflow_cachep);
 err_free_hash:
-	vfree(ipt_netflow_hash);
+	vfree(htable);
 err:
 	printk(KERN_INFO "ipt_NETFLOW is not loaded.\n");
 	return -ENOMEM;
@@ -3129,7 +3129,7 @@ static void __exit ipt_netflow_fini(void)
 	aggregation_remove(&aggr_p_list);
 
 	kmem_cache_destroy(ipt_netflow_cachep);
-	vfree(ipt_netflow_hash);
+	vfree(htable);
 
 	printk(KERN_INFO "ipt_NETFLOW unloaded.\n");
 }
