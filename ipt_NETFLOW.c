@@ -199,7 +199,7 @@ static struct flowset_data *pdu_flowset = NULL; /* current data flowset */
 static unsigned long wk_start; /* last start of worker (jiffies) */
 static unsigned long wk_busy;  /* last work busy time (jiffies) */
 static unsigned int wk_count;  /* how much of ipt_netflow_list is scanned */
-static char wk_abort[16];  /* reason why last export scan is aborted */
+static unsigned int wk_trylock;
 static void (*netflow_export_flow)(struct ipt_netflow *nf);
 static void (*netflow_export_pdu)(void); /* called on timeout */
 static void netflow_switch_version(int ver);
@@ -318,7 +318,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "ipt_NETFLOW version " IPT_NETFLOW_VERSION ", srcversion %s\n",
 	    THIS_MODULE->srcversion);
 	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d"
-	    " (%u ms, %u us, %u: %.*s).\n",
+	    " (%u ms, %u us, %u/%u).\n",
 		   nr_flows,
 		   peakflows,
 		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
@@ -327,7 +327,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		   jiffies_to_msecs(jiffies - wk_start),
 		   jiffies_to_usecs(wk_busy),
 		   wk_count,
-		   (int)sizeof(wk_abort), wk_abort);
+		   wk_trylock);
 
 	for_each_present_cpu(cpu) {
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
@@ -1998,6 +1998,8 @@ static int netflow_scan_and_export(const int flush)
 	long a_timeout = active_timeout * HZ;
 	int trylock_failed = 0;
 	int pdu_c = pdu_count;
+	LIST_HEAD(export_list);
+	struct ipt_netflow *nf, *tmp;
 
 	if (flush)
 		i_timeout = 0;
@@ -2005,47 +2007,38 @@ static int netflow_scan_and_export(const int flush)
 	local_bh_disable();
 	spin_lock(&ipt_netflow_list_lock);
 	/* This is different order of locking than elsewhere,
-	 * so we trylock&break to avoid deadlock. */
+	 * so we trylock&skip to avoid deadlock. */
 
-	while (likely(!list_empty(&ipt_netflow_list))) {
-		struct ipt_netflow *nf;
-
-		++wk_count;
-		/* Last entry, which is usually oldest. */
-		nf = list_entry(ipt_netflow_list.prev, struct ipt_netflow, list);
+	list_for_each_entry_safe_reverse(nf, tmp, &ipt_netflow_list, list) {
 		if (!spin_trylock(nf->lock)) {
-			trylock_failed = 1;
-			*wk_abort = 'T';
-			break;
+			/* just skip busy flows */
+			++wk_trylock;
+			continue;
 		}
-		/* Note: i_timeout checked with >= to allow specifying zero timeout
-		 * to purge all flows on module unload */
+		++wk_count;
 		if (((jiffies - nf->ts_last) >= i_timeout) ||
 		    active_needs_export(nf, a_timeout)) {
 			hlist_del(&nf->hlist);
 			spin_unlock(nf->lock);
-
 			list_del(&nf->list);
-			spin_unlock(&ipt_netflow_list_lock);
-			local_bh_enable();
-
-			NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
-			NETFLOW_STAT_ADD(traf_out, nf->nr_bytes);
-			netflow_export_flow(nf);
-			*wk_abort = 'E';
-
-			local_bh_disable();
-			spin_lock(&ipt_netflow_list_lock);
+			list_add(&nf->list, &export_list);
 		} else {
 			spin_unlock(nf->lock);
 			/* all flows which need to be exported is always at the tail
 			 * so if no more exportable flows we can break */
-			*wk_abort = 'A';
 			break;
 		}
+
 	}
 	spin_unlock(&ipt_netflow_list_lock);
 	local_bh_enable();
+
+	list_for_each_entry_safe(nf, tmp, &export_list, list) {
+		NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
+		NETFLOW_STAT_ADD(traf_out, nf->nr_bytes);
+		list_del(&nf->list);
+		netflow_export_flow(nf);
+	}
 
 #ifdef CONFIG_NF_NAT_NEEDED
 	spin_lock_bh(&nat_lock);
@@ -2077,8 +2070,7 @@ static void netflow_work_fn(struct work_struct *dummy)
 	int status;
 
 	wk_count = 0;
-	memmove(wk_abort + 1, wk_abort, sizeof(wk_abort) - 1);
-	*wk_abort = 's';
+	wk_trylock = 0;
 	wk_start = jiffies;
 	status = netflow_scan_and_export(DONT_FLUSH);
 	_schedule_scan_worker(status);
@@ -2302,7 +2294,7 @@ static inline __u16 observed_hdrs(const __u8 currenthdr)
 
 /* http://www.iana.org/assignments/ip-parameters/ip-parameters.xhtml */
 static const __u8 ip4_opt_table[] = {
-	[7]	= 0,	/* RR */ /* parsed manually becasue of 0 */
+	[7]	= 0,	/* RR */ /* parsed manually because of 0 */
 	[134]	= 1,	/* CIPSO */
 	[133]	= 2,	/* E-SEC */
 	[68]	= 3,	/* TS */
@@ -2769,7 +2761,7 @@ do_protocols:
 
 		/* Blog: I thought about forcing timer to wake up sooner if we have
 		 * enough exportable flows, but in fact this doesn't have much sense,
-		 * becasue this would only move flow data from one memory to another
+		 * because this would only move flow data from one memory to another
 		 * (from our buffers to socket buffers, and socket buffers even have
 		 * limited size). But yes, this is disputable. */
 	}
