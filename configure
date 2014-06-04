@@ -304,14 +304,21 @@ kernel_check_src() {
   return 1
 }
 
+kernel_check_src2() {
+  if kernel_check_src $1/source; then
+    KSRC=$KDIR
+  fi
+  kernel_check_src $1/build
+}
+
 kernel_find_source() {
   KSHOW=requested
   test "$KDIR" && return 0
   KSHOW=found
-  kernel_check_src /lib/modules/$KLIBMOD/build && return 0
-  kernel_check_src /lib/modules/$KVERSION/build && return 0
-  kernel_check_src /usr/src/kernels/$KVERSION && return 0
-  kernel_check_src /usr/src/linux-$KVERSION && return 0
+  kernel_check_src2 /lib/modules/$KLIBMOD  && return 0
+  kernel_check_src2 /lib/modules/$KVERSION && return 0
+  kernel_check_src  /usr/src/kernels/$KVERSION && return 0
+  kernel_check_src  /usr/src/linux-$KVERSION && return 0
   echo "! Linux source not found. Don't panic. You may specify kernel source"
   echo "! directory with --kdir=..., or try to install kernel-devel package,"
   echo "! or just raw sources for linux-$KVERSION from kernel.org."
@@ -368,7 +375,10 @@ kernel_check_config() {
 
 kernel_check_include() {
   echo -n "Checking for presence of $1... "
-  if [ -e $KDIR/$1 ]; then
+  if [ "$KSRC" -a -e $KSRC/$1 ]; then
+    echo Yes
+    KOPTS="$KOPTS $2"
+  elif [ -e $KDIR/$1 ]; then
     echo Yes
     KOPTS="$KOPTS $2"
   else
