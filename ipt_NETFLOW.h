@@ -219,8 +219,15 @@ struct ipt_netflow {
 	__be32		d_as;
 	struct nat_event *nat;
 #endif
-	struct list_head list; // all flows chain
-	spinlock_t	*lock;
+	union {
+		struct list_head list; /* all flows in ipt_netflow_list */
+#ifdef HAVE_LLIST
+		struct llist_node llnode; /* purged flows */
+#endif
+	} _flow_list;
+#define flows_list  _flow_list.list
+#define flows_llnode _flow_list.llnode
+	spinlock_t	*lock; /* &htable_locks[hash & LOCK_COUNT_MASK]; */
 };
 
 #ifdef CONFIG_NF_NAT_NEEDED

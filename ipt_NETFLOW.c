@@ -47,6 +47,12 @@
 #endif
 #include <linux/version.h>
 #include <asm/unaligned.h>
+
+#ifdef HAVE_LLIST
+	/* llist.h is officially defined since linux 3.1,
+	 * but centos6 have it backported on its 2.6.32.el6 */
+#include <linux/llist.h>
+#endif
 #include "ipt_NETFLOW.h"
 #include "murmur3.h"
 #ifdef CONFIG_BRIDGE_NETFILTER
@@ -167,6 +173,9 @@ static struct hlist_head *htable __read_mostly; /* hash table memory */
 static unsigned int htable_size __read_mostly = 0; /* buckets */
 static LIST_HEAD(ipt_netflow_list); /* all flows */
 static DEFINE_SPINLOCK(ipt_netflow_list_lock); /* should almost always be locked w/o _bh */
+#ifdef HAVE_LLIST
+static LLIST_HEAD(export_llist); /* flows to purge */
+#endif
 static LIST_HEAD(aggr_n_list);
 static LIST_HEAD(aggr_p_list);
 static DEFINE_RWLOCK(aggr_lock);
@@ -200,6 +209,7 @@ static unsigned long wk_start; /* last start of worker (jiffies) */
 static unsigned long wk_busy;  /* last work busy time (jiffies) */
 static unsigned int wk_count;  /* how much of ipt_netflow_list is scanned */
 static unsigned int wk_trylock;
+static unsigned int wk_llist;
 static void (*netflow_export_flow)(struct ipt_netflow *nf);
 static void (*netflow_export_pdu)(void); /* called on timeout */
 static void netflow_switch_version(int ver);
@@ -318,7 +328,11 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "ipt_NETFLOW version " IPT_NETFLOW_VERSION ", srcversion %s\n",
 	    THIS_MODULE->srcversion);
 	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d"
-	    " (%u ms, %u us, %u/%u).\n",
+	    " (%u ms, %u us, %u/%u"
+#ifdef HAVE_LLIST
+	    "/%u"
+#endif
+	    ").\n",
 		   nr_flows,
 		   peakflows,
 		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
@@ -327,7 +341,11 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		   jiffies_to_msecs(jiffies - wk_start),
 		   jiffies_to_usecs(wk_busy),
 		   wk_count,
-		   wk_trylock);
+		   wk_trylock
+#ifdef HAVE_LLIST
+		   , wk_llist
+#endif
+		   );
 
 	for_each_present_cpu(cpu) {
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
@@ -1153,7 +1171,7 @@ static int set_hashsize(const int new_size)
 	htable_rnd = rnd;
 	/* hash_netflow() is dependent on htable_* values */
 	spin_lock(&ipt_netflow_list_lock);
-	list_for_each_entry(nf, &ipt_netflow_list, list) {
+	list_for_each_entry(nf, &ipt_netflow_list, flows_list) {
 		unsigned int hash;
 
 		hash = hash_netflow(&nf->tuple);
@@ -1215,7 +1233,7 @@ init_netflow(const struct ipt_netflow_tuple *tuple,
 	nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
 	hlist_add_head(&nf->hlist, &htable[hash]);
 	spin_lock(&ipt_netflow_list_lock);
-	list_add(&nf->list, &ipt_netflow_list);
+	list_add(&nf->flows_list, &ipt_netflow_list);
 	spin_unlock(&ipt_netflow_list_lock);
 
 	return nf;
@@ -1995,8 +2013,11 @@ static inline int active_needs_export(const struct ipt_netflow *nf, const long a
 static int netflow_scan_and_export(const int flush)
 {
 	long i_timeout = inactive_timeout * HZ;
+#ifdef HAVE_LLIST
+	struct llist_node *node;
+#else
 	long a_timeout = active_timeout * HZ;
-	int trylock_failed = 0;
+#endif
 	int pdu_c = pdu_count;
 	LIST_HEAD(export_list);
 	struct ipt_netflow *nf, *tmp;
@@ -2009,19 +2030,25 @@ static int netflow_scan_and_export(const int flush)
 	/* This is different order of locking than elsewhere,
 	 * so we trylock&skip to avoid deadlock. */
 
-	list_for_each_entry_safe_reverse(nf, tmp, &ipt_netflow_list, list) {
+	list_for_each_entry_safe_reverse(nf, tmp, &ipt_netflow_list, flows_list) {
 		if (!spin_trylock(nf->lock)) {
 			/* just skip busy flows */
 			++wk_trylock;
 			continue;
 		}
 		++wk_count;
-		if (((jiffies - nf->ts_last) >= i_timeout) ||
-		    active_needs_export(nf, a_timeout)) {
+		if (((jiffies - nf->ts_last) >= i_timeout)
+#ifdef HAVE_LLIST
+		    /* exportable actives already go into export_llist,
+		     * thus this check is redundant. */
+#else
+		    || active_needs_export(nf, a_timeout)
+#endif
+		    ) {
 			hlist_del(&nf->hlist);
 			spin_unlock(nf->lock);
-			list_del(&nf->list);
-			list_add(&nf->list, &export_list);
+			list_del(&nf->flows_list);
+			list_add(&nf->flows_list, &export_list);
 		} else {
 			spin_unlock(nf->lock);
 			/* all flows which need to be exported is always at the tail
@@ -2033,10 +2060,21 @@ static int netflow_scan_and_export(const int flush)
 	spin_unlock(&ipt_netflow_list_lock);
 	local_bh_enable();
 
-	list_for_each_entry_safe(nf, tmp, &export_list, list) {
+#ifdef HAVE_LLIST
+	node = llist_del_all(&export_llist);
+	while (node) {
+		struct llist_node *next = node->next;
+		nf = llist_entry(node, struct ipt_netflow, flows_llnode);
+		++wk_llist;
+		list_add(&nf->flows_list, &export_list);
+		node = next;
+	}
+#endif
+
+	list_for_each_entry_safe(nf, tmp, &export_list, flows_list) {
 		NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
 		NETFLOW_STAT_ADD(traf_out, nf->nr_bytes);
-		list_del(&nf->list);
+		list_del(&nf->flows_list);
 		netflow_export_flow(nf);
 	}
 
@@ -2058,7 +2096,7 @@ static int netflow_scan_and_export(const int flush)
 	if ((jiffies - pdu_ts_mod) >= i_timeout)
 		netflow_export_pdu();
 
-	return trylock_failed? -1 : pdu_count - pdu_c;
+	return pdu_count - pdu_c;
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
@@ -2071,6 +2109,7 @@ static void netflow_work_fn(struct work_struct *dummy)
 
 	wk_count = 0;
 	wk_trylock = 0;
+	wk_llist = 0;
 	wk_start = jiffies;
 	status = netflow_scan_and_export(DONT_FLUSH);
 	_schedule_scan_worker(status);
@@ -2727,7 +2766,7 @@ do_protocols:
 		 * most recently accessed flows are at head, old flows remain at tail
 		 * this function bubble up flow to the head */
 		spin_lock(&ipt_netflow_list_lock);
-		list_move(&nf->list, &ipt_netflow_list);
+		list_move(&nf->flows_list, &ipt_netflow_list);
 		spin_unlock(&ipt_netflow_list_lock);
 	}
 
@@ -2753,12 +2792,18 @@ do_protocols:
 	NETFLOW_STAT_ADD(traf_total, pkt_len);
 
 	if (likely(active_needs_export(nf, active_timeout * HZ))) {
-		/* ok, if this active flow to be exported
-		 * bubble it to the tail */
+		/* ok, if this is active flow to be exported */
+#ifdef HAVE_LLIST
+		/* delete from hash and add to the export llist */
+		hlist_del(&nf->hlist);
+		list_del(&nf->flows_list);
+		llist_add(&nf->flows_llnode, &export_llist);
+#else
+		/* bubble it to the tail */
 		spin_lock(&ipt_netflow_list_lock);
-		list_move_tail(&nf->list, &ipt_netflow_list);
+		list_move_tail(&nf->flows_list, &ipt_netflow_list);
 		spin_unlock(&ipt_netflow_list_lock);
-
+#endif
 		/* Blog: I thought about forcing timer to wake up sooner if we have
 		 * enough exportable flows, but in fact this doesn't have much sense,
 		 * because this would only move flow data from one memory to another

@@ -366,6 +366,20 @@ kernel_check_config() {
   kconfig CONFIG_IP6_NF_IPTABLES	"ip6tables target"
 }
 
+kernel_check_include() {
+  echo -n "Checking for presence of $1... "
+  if [ -e $KDIR/$1 ]; then
+    echo Yes
+    KOPTS="$KOPTS $2"
+  else
+    echo No
+  fi
+}
+
+kernel_check_features() {
+  kernel_check_include include/linux/llist.h -DHAVE_LLIST
+}
+
 kernel_find_version	#KVERSION
 test "$KLIBMOD" || KLIBMOD=$KVERSION
 echo "Kernel version: $KVERSION ($KHOW)"
@@ -373,6 +387,7 @@ kernel_find_source	#KDIR
 echo "Kernel sources: $KDIR ($KSHOW)"
 kernel_check_consistency
 kernel_check_config
+kernel_check_features
 
 test "$IPTBIN" || IPTBIN=`which iptables`
 
@@ -387,6 +402,7 @@ REPLACE="\
 s!@CARGS@!$CARGS!;\
 s!@KVERSION@!$KVERSION!;\
 s!@KDIR@!$KDIR!;\
+s!@KOPTS@!$KOPTS!;\
 s!@IPTABLES_VERSION@!$IPTVER!;\
 s!@IPTABLES_CFLAGS@!$IPTCFLAGS $IPTINC!;\
 s!@IPTABLES_MODULES@!$IPTLIB!"
