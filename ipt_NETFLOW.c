@@ -67,6 +67,13 @@
 #ifdef CONFIG_SYSCTL
 #include <linux/sysctl.h>
 #endif
+#ifdef ENABLE_DEBUGFS
+# ifdef CONFIG_DEBUG_FS
+# include <linux/debugfs.h>
+# else
+# undef ENABLE_DEBUGFS
+# endif
+#endif
 
 #ifndef NIPQUAD
 #define NIPQUAD(addr) \
@@ -248,7 +255,10 @@ enum {
 };
 static int template_ids = FLOWSET_DATA_FIRST;
 static int tpl_count = 0; /* how much active templates */
-
+#ifdef ENABLE_DEBUGFS
+static atomic_t freeze = ATOMIC_INIT(0);
+static struct dentry *flows_dump_d;
+#endif
 
 static inline __be32 bits2mask(int bits) {
 	return (bits? 0xffffffff << (32 - bits) : 0);
@@ -512,6 +522,159 @@ static struct file_operations nf_seq_fops = {
 	.release = single_release,
 };
 #endif /* CONFIG_PROC_FS */
+
+#ifdef ENABLE_DEBUGFS
+static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout, const unsigned long jiff);
+static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple);
+
+static int seq_pcache;
+static void *seq_vcache;
+static void *flows_dump_seq_start(struct seq_file *seq, loff_t *pos)
+{
+	int ppos = *pos;
+	struct list_head *lh = &ipt_netflow_list;
+
+	if (!ppos) {
+		seq_pcache = 0;
+		seq_vcache = lh;
+		return lh;
+	}
+	if (ppos >= seq_pcache) {
+		ppos -= seq_pcache;
+		lh = seq_vcache;
+	}
+	while (ppos--)
+		lh = lh->next;
+
+	seq_pcache = *pos;
+	seq_vcache = lh;
+	return seq_vcache == &ipt_netflow_list ? NULL : seq_vcache;
+}
+
+static void *flows_dump_seq_next(struct seq_file *seq, void *v, loff_t *pos)
+{
+	seq_pcache = ++*pos;
+	seq_vcache = ((struct list_head *)v)->next;
+	return seq_vcache == &ipt_netflow_list ? NULL : seq_vcache;
+}
+
+static void flows_dump_seq_stop(struct seq_file *seq, void *v)
+{
+}
+
+static unsigned long dump_start; /* jiffies */
+static unsigned int dump_err;
+static int flows_dump_seq_show(struct seq_file *seq, void *v)
+{
+	struct ipt_netflow *nf = list_entry(v, struct ipt_netflow, flows_list);
+	long i_timeout = inactive_timeout * HZ;
+	long a_timeout = active_timeout * HZ;
+	int inactive = (jiffies - nf->ts_last) >= i_timeout;
+	int active = active_needs_export(nf, a_timeout, dump_start);
+	unsigned int hash = hash_netflow(&nf->tuple);
+
+	if (v == &ipt_netflow_list) {
+		seq_puts(seq, "# Attention: netflow processing is disabled while dumping.\n");
+		return 0;
+	}
+
+	seq_printf(seq, "%04x,%02x %02d",
+	    hash,
+	    hash & LOCK_COUNT_MASK,
+	    inactive * 10 + active);
+	seq_printf(seq, " %hd,%hd %u,%u,%u ",
+	    nf->tuple.i_ifc,
+	    nf->o_ifc,
+	    nf->tuple.l3proto,
+	    nf->tuple.protocol,
+	    nf->tuple.tos);
+	if (nf->tuple.l3proto == AF_INET) {
+		seq_printf(seq, "%pI4n:%u,%pI4n:%u",
+		    &nf->tuple.src,
+		    ntohs(nf->tuple.s_port),
+		    &nf->tuple.dst,
+		    ntohs(nf->tuple.d_port));
+	} else {
+		seq_printf(seq, "%pI6c#%u,%pI6c#%u",
+		    &nf->tuple.src,
+		    ntohs(nf->tuple.s_port),
+		    &nf->tuple.dst,
+		    ntohs(nf->tuple.d_port));
+	}
+	seq_printf(seq, " %x,%x,%x",
+	    nf->tcp_flags,
+	    nf->options,
+	    nf->tcpoptions);
+	seq_printf(seq, " %d,%d %lu,%lu\n",
+	    nf->nr_packets,
+	    nf->nr_bytes,
+	    jiffies - nf->ts_first,
+	    jiffies - nf->ts_last
+	    );
+
+	if (list_is_last(&nf->flows_list, &ipt_netflow_list)) {
+		seq_printf(seq, "# dumped in %lu jiffies, %u packets lost.\n",
+		    jiffies - dump_start,
+		    NETFLOW_STAT_READ(freeze_err) - dump_err);
+	}
+
+	return 0;
+}
+
+static struct seq_operations flows_dump_seq_ops = {
+	.start	= flows_dump_seq_start,
+	.show	= flows_dump_seq_show,
+	.next	= flows_dump_seq_next,
+	.stop	= flows_dump_seq_stop,
+};
+
+static int flows_dump_open(struct inode *inode, struct file *file)
+{
+	int ret;
+	char *buf = kmalloc(KMALLOC_MAX_SIZE, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	atomic_inc(&freeze);
+	pause_scan_worker();
+	spin_lock(&ipt_netflow_list_lock);
+
+	dump_start = jiffies;
+	dump_err = NETFLOW_STAT_READ(freeze_err);
+
+	ret = seq_open(file, &flows_dump_seq_ops);
+	if (ret) {
+		spin_unlock(&ipt_netflow_list_lock);
+		cont_scan_worker();
+		atomic_dec(&freeze);
+		kfree(buf);
+		return ret;
+	}
+	((struct seq_file *)file->private_data)->buf = buf;
+	((struct seq_file *)file->private_data)->size = KMALLOC_MAX_SIZE;
+	return 0;
+
+}
+static int flows_dump_release(struct inode *inode, struct file *file)
+{
+	spin_unlock(&ipt_netflow_list_lock);
+	cont_scan_worker();
+	atomic_dec(&freeze);
+
+	printk(KERN_INFO "ipt_NETFLOW: dump finished in %lu jiffies, dropped %u packets.\n", 
+	    jiffies - dump_start,
+	    NETFLOW_STAT_READ(freeze_err) - dump_err);
+	return seq_release(inode, file);
+}
+
+static const struct file_operations flows_dump_fops = {
+	.owner	 = THIS_MODULE,
+	.open	 = flows_dump_open,
+	.read	 = seq_read,
+	.llseek	 = seq_lseek,
+	.release = flows_dump_release,
+};
+#endif /* ENABLE_DEBUGFS */
 
 #ifdef CONFIG_SYSCTL
 
@@ -2001,13 +2164,13 @@ static void export_nat_event(struct nat_event *nel)
 }
 #endif /* CONFIG_NF_NAT_NEEDED */
 
-static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout)
+static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout, const unsigned long jiff)
 {
 	/* active too long, finishing, or having too much bytes */
-	return ((jiffies - nf->ts_first) > a_timeout) ||
+	return ((jiff - nf->ts_first) > a_timeout) ||
 		(nf->tuple.protocol == IPPROTO_TCP &&
 		 (nf->tcp_flags & TCP_FIN_RST) &&
-		 (jiffies - nf->ts_last) > (1 * HZ)) ||
+		 (jiff - nf->ts_last) > (1 * HZ)) ||
 		nf->nr_bytes >= FLOW_FULL_WATERMARK;
 }
 
@@ -2046,7 +2209,7 @@ static int netflow_scan_and_export(const int flush)
 		    /* exportable actives already go into export_llist,
 		     * thus this check is redundant. */
 #else
-		    || active_needs_export(nf, a_timeout)
+		    || active_needs_export(nf, a_timeout, jiffies)
 #endif
 		    ) {
 			hlist_del(&nf->hlist);
@@ -2590,6 +2753,15 @@ static unsigned int netflow_target(
 		options |= observed_hdrs(currenthdr);
 	}
 
+#ifdef ENABLE_DEBUGFS
+	if (atomic_read(&freeze)) {
+		NETFLOW_STAT_INC(freeze_err);
+		NETFLOW_STAT_INC(pkt_drop);
+		NETFLOW_STAT_ADD(traf_drop, pkt_len);
+		return IPT_CONTINUE;
+	}
+#endif
+
 do_protocols:
 	if (fragment) {
 		/* if conntrack is enabled it should defrag on pre-routing and local-out */
@@ -2795,7 +2967,7 @@ do_protocols:
 	NETFLOW_STAT_INC(pkt_total);
 	NETFLOW_STAT_ADD(traf_total, pkt_len);
 
-	if (likely(active_needs_export(nf, active_timeout * HZ))) {
+	if (likely(active_needs_export(nf, active_timeout * HZ, jiffies))) {
 		/* ok, if this is active flow to be exported */
 #ifdef HAVE_LLIST
 		/* delete from hash and add to the export llist */
@@ -3081,6 +3253,10 @@ static int __init ipt_netflow_init(void)
 	printk(KERN_INFO "netflow: registered: /proc/net/stat/ipt_netflow\n");
 #endif
 
+#ifdef ENABLE_DEBUGFS
+	flows_dump_d = debugfs_create_file("netflow_dump", S_IRUGO, NULL, NULL, &flows_dump_fops);
+#endif
+
 #ifdef CONFIG_SYSCTL
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
 	netflow_sysctl_header = register_sysctl_table(netflow_net_table
@@ -3145,6 +3321,9 @@ err_free_sysctl:
 	unregister_sysctl_table(netflow_sysctl_header);
 err_free_proc_stat:
 #endif
+#ifdef ENABLE_DEBUGFS
+	debugfs_remove(flows_dump_d);
+#endif
 #ifdef CONFIG_PROC_FS
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
 err_free_netflow_slab:
@@ -3163,6 +3342,9 @@ static void __exit ipt_netflow_fini(void)
 
 #ifdef CONFIG_SYSCTL
 	unregister_sysctl_table(netflow_sysctl_header);
+#endif
+#ifdef ENABLE_DEBUGFS
+	debugfs_remove(flows_dump_d);
 #endif
 #ifdef CONFIG_PROC_FS
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));

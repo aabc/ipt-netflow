@@ -302,7 +302,12 @@ struct netflow_aggr_p {
 		(__get_cpu_var(ipt_netflow_stat).count += (unsigned long long)val); \
 		preempt_enable();				\
 	} while(0);
-
+#define NETFLOW_STAT_READ(count) ({					\
+		unsigned int _tmp = 0, _cpu;				\
+		for_each_present_cpu(_cpu)				\
+   			 _tmp += per_cpu(ipt_netflow_stat, _cpu).count;	\
+		_tmp;							\
+	})
 
 /* statistics */
 struct ipt_netflow_stat {
@@ -313,6 +318,7 @@ struct ipt_netflow_stat {
 	unsigned int frags;		// packets stat
 	unsigned int alloc_err;		// failed to allocate flow mem
 	unsigned int maxflows_err;	// maxflows reached
+	unsigned int freeze_err;	// freeze errors
 	unsigned int send_success;	// sendmsg() ok
 	unsigned int send_failed;	// sendmsg() failed
 	unsigned int sock_errors;	// socket error callback called (got icmp refused)

@@ -252,6 +252,7 @@ show_help() {
   echo "  --kdir=..     directory for kernel source (ex.: /usr/src/kernel)"
   echo "  --disable-natevents  disables natevents support"
   echo "  --disable-conntrack  disables conntrack & natevents altogether"
+  echo "  --enable-debugfs     enables debugfs support for flow lists"
   exit 0
 }
 
@@ -273,6 +274,7 @@ do
     --kdir=*)      KDIR="$ac_optarg" ;;
     --disable-nat*) KOPTS="$KOPTS -DDISABLE_NAT" ;;
     --disable-con*) KOPTS="$KOPTS -DDISABLE_CT" ;;
+    --enable-debug*) KOPTS="$KOPTS -DENABLE_DEBUGFS" ;;
     --make) echo called from make ;;
     --help) show_help ;;
     -*) echo Invalid option: $ac_option; exit 1 ;;
