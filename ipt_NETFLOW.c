@@ -434,7 +434,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		seq_printf(seq, ", refresh-rate %u, timeout-rate %u, (templates %d, active %d)",
 		    refresh_rate, timeout_rate, template_ids - FLOWSET_DATA_FIRST, tpl_count);
 
-	seq_printf(seq, ". Timeouts: active %d, inactive %d. Maxflows %u\n",
+	seq_printf(seq, ". Timeouts: active %ds, inactive %ds. Maxflows %u\n",
 	    active_timeout,
 	    inactive_timeout,
 	    maxflows);
@@ -1232,9 +1232,7 @@ init_netflow(const struct ipt_netflow_tuple *tuple,
 
 	nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
 	hlist_add_head(&nf->hlist, &htable[hash]);
-	spin_lock(&ipt_netflow_list_lock);
-	list_add(&nf->flows_list, &ipt_netflow_list);
-	spin_unlock(&ipt_netflow_list_lock);
+	/* Don't add to ipt_netflow_list here. */
 
 	return nf;
 }
@@ -2482,6 +2480,7 @@ static unsigned int netflow_target(
 	size_t pkt_len;
 	int options = 0;
 	int tcpoptions = 0;
+	enum {FL_NEW, FL_OLD} flowlist_do;
 
 	iph = skb_header_pointer(skb, 0, (likely(family == AF_INET))? sizeof(_iph.ip) : sizeof(_iph.ip6), &iph);
 	if (unlikely(iph == NULL)) {
@@ -2724,6 +2723,7 @@ do_protocols:
 			NETFLOW_STAT_ADD(traf_drop, pkt_len);
 			goto unlock_return;
 		}
+		flowlist_do = FL_NEW;
 
 		nf->ts_first = jiffies;
 		nf->tcp_flags = tcp_flags;
@@ -2765,9 +2765,7 @@ do_protocols:
 		/* ipt_netflow_list is sorted by access time:
 		 * most recently accessed flows are at head, old flows remain at tail
 		 * this function bubble up flow to the head */
-		spin_lock(&ipt_netflow_list_lock);
-		list_move(&nf->flows_list, &ipt_netflow_list);
-		spin_unlock(&ipt_netflow_list_lock);
+		flowlist_do = FL_OLD;
 	}
 
 #ifdef CONFIG_NF_CONNTRACK_MARK
@@ -2796,12 +2794,19 @@ do_protocols:
 #ifdef HAVE_LLIST
 		/* delete from hash and add to the export llist */
 		hlist_del(&nf->hlist);
-		list_del(&nf->flows_list);
+		if (flowlist_do != FL_NEW) {
+			spin_lock(&ipt_netflow_list_lock);
+			list_del(&nf->flows_list);
+			spin_unlock(&ipt_netflow_list_lock);
+		}
 		llist_add(&nf->flows_llnode, &export_llist);
 #else
 		/* bubble it to the tail */
 		spin_lock(&ipt_netflow_list_lock);
-		list_move_tail(&nf->flows_list, &ipt_netflow_list);
+		if (flowlist_do == FL_NEW)
+			list_add_tail(&nf->flows_list, &ipt_netflow_list);
+		else
+			list_move_tail(&nf->flows_list, &ipt_netflow_list);
 		spin_unlock(&ipt_netflow_list_lock);
 #endif
 		/* Blog: I thought about forcing timer to wake up sooner if we have
@@ -2809,6 +2814,13 @@ do_protocols:
 		 * because this would only move flow data from one memory to another
 		 * (from our buffers to socket buffers, and socket buffers even have
 		 * limited size). But yes, this is disputable. */
+	} else {
+		spin_lock(&ipt_netflow_list_lock);
+		if (flowlist_do == FL_NEW)
+			list_add(&nf->flows_list, &ipt_netflow_list);
+		else
+			list_move(&nf->flows_list, &ipt_netflow_list);
+		spin_unlock(&ipt_netflow_list_lock);
 	}
 
 unlock_return:
