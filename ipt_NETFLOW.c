@@ -40,6 +40,13 @@
 #include <net/ip6_fib.h>
 #include <net/dst.h>
 #include <linux/netfilter_ipv4/ip_tables.h>
+#ifdef DISABLE_NAT
+# undef CONFIG_NF_NAT_NEEDED
+#endif
+#ifdef DISABLE_CT
+# undef CONFIG_NF_CONNTRACK_MARK
+# undef CONFIG_NF_NAT_NEEDED
+#endif
 #if defined(CONFIG_NF_NAT_NEEDED) || defined(CONFIG_NF_CONNTRACK_MARK)
 #include <linux/notifier.h>
 #include <net/netfilter/nf_conntrack.h>
@@ -47,7 +54,6 @@
 #endif
 #include <linux/version.h>
 #include <asm/unaligned.h>
-
 #ifdef HAVE_LLIST
 	/* llist.h is officially defined since linux 3.1,
 	 * but centos6 have it backported on its 2.6.32.el6 */

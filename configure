@@ -250,6 +250,8 @@ show_help() {
   echo "  --ipt-inc=..  directory for iptable headers (ex.: /usr/include)"
   echo "  --kver=..     kernel version (ex.: 2.6.30-std-def-alt15)"
   echo "  --kdir=..     directory for kernel source (ex.: /usr/src/kernel)"
+  echo "  --disable-natevents  disables natevents support"
+  echo "  --disable-conntrack  disables conntrack & natevents altogether"
   exit 0
 }
 
@@ -269,6 +271,8 @@ do
     --ipt-inc=*) IPTINC="-I$ac_optarg" ;;
     --kver=*)  KVERSION="$ac_optarg" ;;
     --kdir=*)      KDIR="$ac_optarg" ;;
+    --disable-nat*) KOPTS="$KOPTS -DDISABLE_NAT" ;;
+    --disable-con*) KOPTS="$KOPTS -DDISABLE_CT" ;;
     --make) echo called from make ;;
     --help) show_help ;;
     -*) echo Invalid option: $ac_option; exit 1 ;;
