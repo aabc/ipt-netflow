@@ -185,7 +185,7 @@ static unsigned int htable_rnd;
 static struct hlist_head *htable __read_mostly; /* hash table memory */
 static unsigned int htable_size __read_mostly = 0; /* buckets */
 static LIST_HEAD(ipt_netflow_list); /* all flows */
-static DEFINE_SPINLOCK(ipt_netflow_list_lock); /* should almost always be locked w/o _bh */
+static DEFINE_SPINLOCK(ipt_netflow_list_lock); /* used in softirq */
 #ifdef HAVE_LLIST
 static LLIST_HEAD(export_llist); /* flows to purge */
 #endif
@@ -589,17 +589,30 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 	    nf->tuple.protocol,
 	    nf->tuple.tos);
 	if (nf->tuple.l3proto == AF_INET) {
-		seq_printf(seq, "%pI4n:%u,%pI4n:%u",
+		seq_printf(seq, "%pI4n:%u,%pI4n:%u %pI4n",
 		    &nf->tuple.src,
 		    ntohs(nf->tuple.s_port),
 		    &nf->tuple.dst,
-		    ntohs(nf->tuple.d_port));
+		    ntohs(nf->tuple.d_port),
+		    &nf->nh);
+		/* sanity check */
+		if (nf->tuple.src.ip6[1] ||
+		    nf->tuple.src.ip6[2] ||
+		    nf->tuple.src.ip6[3])
+			seq_puts(seq, "error:src:garbage");
+		if (nf->tuple.dst.ip6[1] ||
+		    nf->tuple.dst.ip6[2] ||
+		    nf->tuple.dst.ip6[3])
+			seq_puts(seq, "error:dst:garbage");
+	} else if (nf->tuple.l3proto == AF_INET6) {
+		seq_printf(seq, "%pI6c#%u,%pI6c#%u %pI6c",
+		    &nf->tuple.src,
+		    ntohs(nf->tuple.s_port),
+		    &nf->tuple.dst,
+		    ntohs(nf->tuple.d_port),
+		    &nf->nh);
 	} else {
-		seq_printf(seq, "%pI6c#%u,%pI6c#%u",
-		    &nf->tuple.src,
-		    ntohs(nf->tuple.s_port),
-		    &nf->tuple.dst,
-		    ntohs(nf->tuple.d_port));
+		seq_puts(seq, "error:l3proto:unknown");
 	}
 	seq_printf(seq, " %x,%x,%x",
 	    nf->tcp_flags,
@@ -613,8 +626,9 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 	    );
 
 	if (list_is_last(&nf->flows_list, &ipt_netflow_list)) {
-		seq_printf(seq, "# dumped in %lu jiffies, %u packets lost.\n",
+		seq_printf(seq, "# dumped in %lu jiffies (1 sec == %lu jiffies), %u pkts lost while dumping.\n",
 		    jiffies - dump_start,
+		    msecs_to_jiffies(1000),
 		    NETFLOW_STAT_READ(freeze_err) - dump_err);
 	}
 
@@ -637,6 +651,7 @@ static int flows_dump_open(struct inode *inode, struct file *file)
 
 	atomic_inc(&freeze);
 	pause_scan_worker();
+	synchronize_sched();
 	spin_lock(&ipt_netflow_list_lock);
 
 	dump_start = jiffies;
