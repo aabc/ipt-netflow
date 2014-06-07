@@ -177,15 +177,23 @@ static DEFINE_MUTEX(sock_lock);
 
 #define LOCK_COUNT (1<<8)
 #define LOCK_COUNT_MASK (LOCK_COUNT-1)
-static spinlock_t htable_locks[LOCK_COUNT] = {
-	[0 ... LOCK_COUNT - 1] = __SPIN_LOCK_UNLOCKED(htable_locks)
+struct stripe_entry {
+	struct list_head list; /* struct ipt_netflow, list for export */
+	spinlock_t lock; /* this locks both: hash table stripe & list above */
 };
-static DEFINE_RWLOCK(htable_rwlock); /* global lock to protect htable_locks change */
-static unsigned int htable_rnd;
+static struct stripe_entry htable_stripes[LOCK_COUNT];
+static DEFINE_RWLOCK(htable_rwlock); /* global rwlock to protect htable[] resize */
 static struct hlist_head *htable __read_mostly; /* hash table memory */
 static unsigned int htable_size __read_mostly = 0; /* buckets */
-static LIST_HEAD(ipt_netflow_list); /* all flows */
-static DEFINE_SPINLOCK(ipt_netflow_list_lock); /* used in softirq */
+/* How it's organized:
+ *  htable_rwlock locks access to htable[hash], where
+ *  htable[htable_size] is big/resizable hash table, which is striped into
+ *  htable_stripes[LOCK_COUNT] smaller/static hash table, which contains
+ *  .list - list of flows ordered by exportability (usually it's access time)
+ *  .lock - lock to both: that .list and to htable[hash], where
+ *  hash to the htable[] is hash_netflow(&tuple) % htable_size
+ *  hash to the htable_stripes[] is hash_netflow(&tuple) & LOCK_COUNT_MASK
+ */
 #ifdef HAVE_LLIST
 static LLIST_HEAD(export_llist); /* flows to purge */
 #endif
@@ -220,8 +228,7 @@ static struct flowset_data *pdu_flowset = NULL; /* current data flowset */
 
 static unsigned long wk_start; /* last start of worker (jiffies) */
 static unsigned long wk_busy;  /* last work busy time (jiffies) */
-static unsigned int wk_count;  /* how much of ipt_netflow_list is scanned */
-static unsigned int wk_trylock;
+static unsigned int wk_count;  /* how much is scanned */
 static unsigned int wk_llist;
 static void (*netflow_export_flow)(struct ipt_netflow *nf);
 static void (*netflow_export_pdu)(void); /* called on timeout */
@@ -344,7 +351,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "ipt_NETFLOW version " IPT_NETFLOW_VERSION ", srcversion %s\n",
 	    THIS_MODULE->srcversion);
 	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d"
-	    " (%u ms, %u us, %u/%u"
+	    " (%u ms, %u us, %u"
 #ifdef HAVE_LLIST
 	    "/%u"
 #endif
@@ -356,8 +363,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		   worker_delay, HZ,
 		   jiffies_to_msecs(jiffies - wk_start),
 		   jiffies_to_usecs(wk_busy),
-		   wk_count,
-		   wk_trylock
+		   wk_count
 #ifdef HAVE_LLIST
 		   , wk_llist
 #endif
@@ -527,35 +533,66 @@ static struct file_operations nf_seq_fops = {
 static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout, const unsigned long jiff);
 static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple);
 
+static int seq_stripe = -1;
+
+/* get first & next ipt_netflow list entry and lock it */
+static struct list_head *nf_get_first(int nstripe)
+{
+	/* no locking here since it's under global rwlock */
+	for (; nstripe < LOCK_COUNT; nstripe++) {
+		struct stripe_entry *stripe = &htable_stripes[nstripe];
+
+		if (!list_empty(&stripe->list)) {
+			seq_stripe = nstripe;
+			return stripe->list.next;
+		}
+	}
+	seq_stripe = -1;
+	return NULL;
+}
+
+static struct list_head *nf_get_next(struct list_head *head)
+{
+	struct stripe_entry *stripe;
+
+	if (seq_stripe < 0)
+		return NULL;
+	stripe = &htable_stripes[seq_stripe];
+	head = head->next;
+	if (head != &stripe->list)
+		return head;
+	return nf_get_first(seq_stripe + 1);
+}
+
 static int seq_pcache;
 static void *seq_vcache;
 static void *flows_dump_seq_start(struct seq_file *seq, loff_t *pos)
 {
 	int ppos = *pos;
-	struct list_head *lh = &ipt_netflow_list;
+	struct list_head *lh;
 
 	if (!ppos) {
 		seq_pcache = 0;
-		seq_vcache = lh;
-		return lh;
+		seq_vcache = nf_get_first(0);
+		return seq_vcache;
 	}
 	if (ppos >= seq_pcache) {
 		ppos -= seq_pcache;
 		lh = seq_vcache;
-	}
+	} else
+		lh = nf_get_first(0);
 	while (ppos--)
-		lh = lh->next;
-
+		lh = nf_get_next(lh);
 	seq_pcache = *pos;
 	seq_vcache = lh;
-	return seq_vcache == &ipt_netflow_list ? NULL : seq_vcache;
+	return seq_vcache;
 }
 
 static void *flows_dump_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 {
 	seq_pcache = ++*pos;
-	seq_vcache = ((struct list_head *)v)->next;
-	return seq_vcache == &ipt_netflow_list ? NULL : seq_vcache;
+	seq_vcache = nf_get_next((struct list_head *)v);
+	return seq_vcache;
 }
 
 static void flows_dump_seq_stop(struct seq_file *seq, void *v)
@@ -571,23 +608,25 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 	long a_timeout = active_timeout * HZ;
 	int inactive = (jiffies - nf->ts_last) >= i_timeout;
 	int active = active_needs_export(nf, a_timeout, dump_start);
-	unsigned int hash = hash_netflow(&nf->tuple);
+	u_int32_t hash = hash_netflow(&nf->tuple);
 
-	if (v == &ipt_netflow_list) {
-		seq_puts(seq, "# Attention: netflow processing is disabled while dumping.\n");
+	if (seq_pcache == 0) {
+		unsigned int nr_flows = atomic_read(&ipt_netflow_count);
+
+		seq_printf(seq, "# Attention: netflow processing is disabled while dumping. (~%u flows)\n", nr_flows);
 		return 0;
 	}
 
-	seq_printf(seq, "%04x,%02x %02d",
-	    hash,
-	    hash & LOCK_COUNT_MASK,
+	seq_printf(seq, "%d %02x,%04x %02d",
+	    seq_pcache,
+	    seq_stripe,
+	    hash % htable_size,
 	    inactive * 10 + active);
-	seq_printf(seq, " %hd,%hd %u,%u,%u ",
+	seq_printf(seq, " %hd,%hd %u,%u ",
 	    nf->tuple.i_ifc,
 	    nf->o_ifc,
 	    nf->tuple.l3proto,
-	    nf->tuple.protocol,
-	    nf->tuple.tos);
+	    nf->tuple.protocol);
 	if (nf->tuple.l3proto == AF_INET) {
 		seq_printf(seq, "%pI4n:%u,%pI4n:%u %pI4n",
 		    &nf->tuple.src,
@@ -614,7 +653,8 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 	} else {
 		seq_puts(seq, "error:l3proto:unknown");
 	}
-	seq_printf(seq, " %x,%x,%x",
+	seq_printf(seq, " %x,%x,%x,%x",
+	    nf->tuple.tos,
 	    nf->tcp_flags,
 	    nf->options,
 	    nf->tcpoptions);
@@ -624,13 +664,6 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 	    jiffies - nf->ts_first,
 	    jiffies - nf->ts_last
 	    );
-
-	if (list_is_last(&nf->flows_list, &ipt_netflow_list)) {
-		seq_printf(seq, "# dumped in %lu jiffies (1 sec == %lu jiffies), %u pkts lost while dumping.\n",
-		    jiffies - dump_start,
-		    msecs_to_jiffies(1000),
-		    NETFLOW_STAT_READ(freeze_err) - dump_err);
-	}
 
 	return 0;
 }
@@ -645,24 +678,32 @@ static struct seq_operations flows_dump_seq_ops = {
 static int flows_dump_open(struct inode *inode, struct file *file)
 {
 	int ret;
-	char *buf = kmalloc(KMALLOC_MAX_SIZE, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
+	char *buf;
 
-	atomic_inc(&freeze);
+	if (atomic_inc_return(&freeze) > 1) {
+		/* do not let concurrent dumps. */
+		atomic_dec(&freeze);
+		return -EAGAIN;
+	}
+	buf = kmalloc(KMALLOC_MAX_SIZE, GFP_KERNEL);
+	if (!buf) {
+		atomic_dec(&freeze);
+		return -ENOMEM;
+	}
 	pause_scan_worker();
 	synchronize_sched();
-	spin_lock(&ipt_netflow_list_lock);
+	/* write_lock to be sure that softirq is finished */
+	write_lock(&htable_rwlock);
 
 	dump_start = jiffies;
 	dump_err = NETFLOW_STAT_READ(freeze_err);
 
 	ret = seq_open(file, &flows_dump_seq_ops);
 	if (ret) {
-		spin_unlock(&ipt_netflow_list_lock);
+		write_unlock(&htable_rwlock);
 		cont_scan_worker();
-		atomic_dec(&freeze);
 		kfree(buf);
+		atomic_dec(&freeze);
 		return ret;
 	}
 	((struct seq_file *)file->private_data)->buf = buf;
@@ -672,12 +713,14 @@ static int flows_dump_open(struct inode *inode, struct file *file)
 }
 static int flows_dump_release(struct inode *inode, struct file *file)
 {
-	spin_unlock(&ipt_netflow_list_lock);
+	seq_stripe = -1;
+	write_unlock(&htable_rwlock);
 	cont_scan_worker();
 	atomic_dec(&freeze);
 
-	printk(KERN_INFO "ipt_NETFLOW: dump finished in %lu jiffies, dropped %u packets.\n", 
+	printk(KERN_INFO "ipt_NETFLOW: dump finished in %lu/%lu sec, dropped %u packets.\n", 
 	    jiffies - dump_start,
+	    msecs_to_jiffies(1000),
 	    NETFLOW_STAT_READ(freeze_err) - dump_err);
 	return seq_release(inode, file);
 }
@@ -711,7 +754,7 @@ static int hsize_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (write) {
 		ctl->data = orig;
-		if (hsize < 1)
+		if (hsize < LOCK_COUNT)
 			return -EPERM;
 		return set_hashsize(hsize)?:ret;
 	} else
@@ -1289,7 +1332,8 @@ static int add_aggregation(char *ptr)
 
 static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple)
 {
-	return murmur3(tuple, sizeof(struct ipt_netflow_tuple), htable_rnd) % htable_size;
+#define HASH_SEED 0
+	return murmur3(tuple, sizeof(struct ipt_netflow_tuple), HASH_SEED);
 }
 
 static struct ipt_netflow *
@@ -1333,38 +1377,37 @@ static struct hlist_head *alloc_hashtable(const int size)
 	return hash;
 }
 
-static int set_hashsize(const int new_size)
+static int set_hashsize(int new_size)
 {
 	struct hlist_head *new_hash, *old_hash;
 	struct ipt_netflow *nf;
-	int rnd;
+	int i;
 
+	if (new_size < LOCK_COUNT)
+		new_size = LOCK_COUNT;
 	printk(KERN_INFO "ipt_NETFLOW: allocating new hash table %u -> %u buckets\n",
 	       htable_size, new_size);
 	new_hash = alloc_hashtable(new_size);
 	if (!new_hash)
 		return -ENOMEM;
 
-	get_random_bytes(&rnd, 4);
-
 	/* rehash */
 	write_lock_bh(&htable_rwlock);
 	old_hash = htable;
 	htable = new_hash;
 	htable_size = new_size;
-	htable_rnd = rnd;
-	/* hash_netflow() is dependent on htable_* values */
-	spin_lock(&ipt_netflow_list_lock);
-	list_for_each_entry(nf, &ipt_netflow_list, flows_list) {
-		unsigned int hash;
+	for (i = 0; i < LOCK_COUNT; i++) {
+		struct stripe_entry *stripe = &htable_stripes[i];
 
-		hash = hash_netflow(&nf->tuple);
-		/* hlist_add_head overwrites hlist pointers for this node
-		 * so it's good */
-		hlist_add_head(&nf->hlist, &new_hash[hash]);
-		nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
+		spin_lock(&stripe->lock);
+		list_for_each_entry(nf, &stripe->list, flows_list) {
+			unsigned int hash;
+
+			hash = hash_netflow(&nf->tuple) % htable_size;
+			hlist_add_head(&nf->hlist, &htable[hash]);
+		}
+		spin_unlock(&stripe->lock);
 	}
-	spin_unlock(&ipt_netflow_list_lock);
 	write_unlock_bh(&htable_rwlock);
 
 	vfree(old_hash);
@@ -1402,23 +1445,6 @@ static void ipt_netflow_free(struct ipt_netflow *nf)
 		return;
 	atomic_dec(&ipt_netflow_count);
 	kmem_cache_free(ipt_netflow_cachep, nf);
-}
-
-static struct ipt_netflow *
-init_netflow(const struct ipt_netflow_tuple *tuple,
-	     const struct sk_buff *skb, const unsigned int hash)
-{
-	struct ipt_netflow *nf;
-
-	nf = ipt_netflow_alloc(tuple);
-	if (!nf)
-		return NULL;
-
-	nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
-	hlist_add_head(&nf->hlist, &htable[hash]);
-	/* Don't add to ipt_netflow_list here. */
-
-	return nf;
 }
 
 /* cook pdu, send, and clean */
@@ -2203,44 +2229,38 @@ static int netflow_scan_and_export(const int flush)
 	int pdu_c = pdu_count;
 	LIST_HEAD(export_list);
 	struct ipt_netflow *nf, *tmp;
+	int i;
 
 	if (flush)
 		i_timeout = 0;
 
-	local_bh_disable();
-	spin_lock(&ipt_netflow_list_lock);
-	/* This is different order of locking than elsewhere,
-	 * so we trylock&skip to avoid deadlock. */
+	read_lock_bh(&htable_rwlock);
+	for (i = 0; i < LOCK_COUNT; i++) {
+		struct stripe_entry *stripe = &htable_stripes[i];
 
-	list_for_each_entry_safe_reverse(nf, tmp, &ipt_netflow_list, flows_list) {
-		if (!spin_trylock(nf->lock)) {
-			/* just skip busy flows */
-			++wk_trylock;
-			continue;
-		}
-		++wk_count;
-		if (((jiffies - nf->ts_last) >= i_timeout)
+		spin_lock(&stripe->lock);
+		list_for_each_entry_safe_reverse(nf, tmp, &stripe->list, flows_list) {
+			++wk_count;
+			if (((jiffies - nf->ts_last) >= i_timeout)
 #ifdef HAVE_LLIST
-		    /* exportable actives already go into export_llist,
-		     * thus this check is redundant. */
+			    /* exportable actives already go into export_llist,
+			     * thus this check is redundant. */
 #else
-		    || active_needs_export(nf, a_timeout, jiffies)
+			    || active_needs_export(nf, a_timeout, jiffies)
 #endif
-		    ) {
-			hlist_del(&nf->hlist);
-			spin_unlock(nf->lock);
-			list_del(&nf->flows_list);
-			list_add(&nf->flows_list, &export_list);
-		} else {
-			spin_unlock(nf->lock);
-			/* all flows which need to be exported is always at the tail
-			 * so if no more exportable flows we can break */
-			break;
+			   ) {
+				hlist_del(&nf->hlist);
+				list_del(&nf->flows_list);
+				list_add(&nf->flows_list, &export_list);
+			} else {
+				/* all flows which need to be exported is always at the tail
+				 * so if no more exportable flows we can break */
+				break;
+			}
 		}
-
+		spin_unlock(&stripe->lock);
 	}
-	spin_unlock(&ipt_netflow_list_lock);
-	local_bh_enable();
+	read_unlock_bh(&htable_rwlock);
 
 #ifdef HAVE_LLIST
 	node = llist_del_all(&export_llist);
@@ -2290,7 +2310,6 @@ static void netflow_work_fn(struct work_struct *dummy)
 	int status;
 
 	wk_count = 0;
-	wk_trylock = 0;
 	wk_llist = 0;
 	wk_start = jiffies;
 	status = netflow_scan_and_export(DONT_FLUSH);
@@ -2647,7 +2666,7 @@ static unsigned int netflow_target(
 		struct iphdr ip;
 		struct ipv6hdr ip6;
 	} _iph, *iph;
-	unsigned int hash;
+	u_int32_t hash;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 	const int family = target->family;
 #else
@@ -2664,7 +2683,7 @@ static unsigned int netflow_target(
 	size_t pkt_len;
 	int options = 0;
 	int tcpoptions = 0;
-	enum {FL_NEW, FL_OLD} flowlist_do;
+	struct stripe_entry *stripe;
 
 	iph = skb_header_pointer(skb, 0, (likely(family == AF_INET))? sizeof(_iph.ip) : sizeof(_iph.ip6), &iph);
 	if (unlikely(iph == NULL)) {
@@ -2852,7 +2871,7 @@ do_protocols:
 	} /* not fragmented */
 
 	/* aggregate networks */
-	read_lock_bh(&aggr_lock);
+	read_lock(&aggr_lock);
 	if (family == AF_INET) {
 		list_for_each_entry(aggr_n, &aggr_n_list, list)
 			if (unlikely((ntohl(tuple.src.ip) & aggr_n->mask) == aggr_n->addr)) {
@@ -2891,11 +2910,13 @@ do_protocols:
 				break;
 			}
 	}
-	read_unlock_bh(&aggr_lock);
+	read_unlock(&aggr_lock);
 
 	hash = hash_netflow(&tuple);
-	read_lock_bh(&htable_rwlock);
-	spin_lock(&htable_locks[hash & LOCK_COUNT_MASK]);
+	read_lock(&htable_rwlock);
+	stripe = &htable_stripes[hash & LOCK_COUNT_MASK];
+	hash %= htable_size;
+	spin_lock(&stripe->lock);
 	/* record */
 	nf = ipt_netflow_find(&tuple, hash);
 	if (unlikely(!nf)) {
@@ -2909,14 +2930,14 @@ do_protocols:
 			goto unlock_return;
 		}
 
-		nf = init_netflow(&tuple, skb, hash);
+		nf = ipt_netflow_alloc(&tuple);
 		if (unlikely(!nf || IS_ERR(nf))) {
 			NETFLOW_STAT_INC(alloc_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, pkt_len);
 			goto unlock_return;
 		}
-		flowlist_do = FL_NEW;
+		hlist_add_head(&nf->hlist, &htable[hash]);
 
 		nf->ts_first = jiffies;
 		nf->tcp_flags = tcp_flags;
@@ -2954,11 +2975,6 @@ do_protocols:
 			       NIPQUAD(tuple.s_addr), ntohs(tuple.s_port),
 			       NIPQUAD(tuple.d_addr), ntohs(tuple.d_port));
 #endif
-	} else {
-		/* ipt_netflow_list is sorted by access time:
-		 * most recently accessed flows are at head, old flows remain at tail
-		 * this function bubble up flow to the head */
-		flowlist_do = FL_OLD;
 	}
 
 #ifdef CONFIG_NF_CONNTRACK_MARK
@@ -2982,25 +2998,22 @@ do_protocols:
 	NETFLOW_STAT_INC(pkt_total);
 	NETFLOW_STAT_ADD(traf_total, pkt_len);
 
+#define LIST_IS_NULL(name) (!(name)->next)
+
 	if (likely(active_needs_export(nf, active_timeout * HZ, jiffies))) {
 		/* ok, if this is active flow to be exported */
 #ifdef HAVE_LLIST
 		/* delete from hash and add to the export llist */
 		hlist_del(&nf->hlist);
-		if (flowlist_do != FL_NEW) {
-			spin_lock(&ipt_netflow_list_lock);
+		if (!LIST_IS_NULL(&nf->flows_list))
 			list_del(&nf->flows_list);
-			spin_unlock(&ipt_netflow_list_lock);
-		}
 		llist_add(&nf->flows_llnode, &export_llist);
 #else
 		/* bubble it to the tail */
-		spin_lock(&ipt_netflow_list_lock);
-		if (flowlist_do == FL_NEW)
-			list_add_tail(&nf->flows_list, &ipt_netflow_list);
+		if (LIST_IS_NULL(&nf->flows_list))
+			list_add_tail(&nf->flows_list, &stripe->list);
 		else
-			list_move_tail(&nf->flows_list, &ipt_netflow_list);
-		spin_unlock(&ipt_netflow_list_lock);
+			list_move_tail(&nf->flows_list, &stripe->list);
 #endif
 		/* Blog: I thought about forcing timer to wake up sooner if we have
 		 * enough exportable flows, but in fact this doesn't have much sense,
@@ -3008,17 +3021,16 @@ do_protocols:
 		 * (from our buffers to socket buffers, and socket buffers even have
 		 * limited size). But yes, this is disputable. */
 	} else {
-		spin_lock(&ipt_netflow_list_lock);
-		if (flowlist_do == FL_NEW)
-			list_add(&nf->flows_list, &ipt_netflow_list);
+		/* most recently accessed flows go to the head, old flows remain at the tail */
+		if (LIST_IS_NULL(&nf->flows_list))
+			list_add(&nf->flows_list, &stripe->list);
 		else
-			list_move(&nf->flows_list, &ipt_netflow_list);
-		spin_unlock(&ipt_netflow_list_lock);
+			list_move(&nf->flows_list, &stripe->list);
 	}
 
 unlock_return:
-	spin_unlock(&htable_locks[hash & LOCK_COUNT_MASK]);
-	read_unlock_bh(&htable_rwlock);
+	spin_unlock(&stripe->lock);
+	read_unlock(&htable_rwlock);
 
 	return IPT_CONTINUE;
 }
@@ -3208,13 +3220,12 @@ static struct ipt_target ipt_netflow_reg[] __read_mostly = {
 
 static int __init ipt_netflow_init(void)
 {
+	int i;
 #ifdef CONFIG_PROC_FS
 	struct proc_dir_entry *proc_stat;
 #endif
 	printk(KERN_INFO "ipt_NETFLOW version %s, srcversion %s\n",
 		IPT_NETFLOW_VERSION, THIS_MODULE->srcversion);
-
-	get_random_bytes(&htable_rnd, 4);
 
 	/* determine hash size (idea from nf_conntrack_core.c) */
 	if (!hashsize) {
@@ -3226,8 +3237,8 @@ static int __init ipt_netflow_init(void)
 		if (num_physpages > (1024 * 1024 * 1024 / PAGE_SIZE))
 			hashsize = 8192;
 	}
-	if (hashsize < 16)
-		hashsize = 16;
+	if (hashsize < LOCK_COUNT)
+		hashsize = LOCK_COUNT;
 	printk(KERN_INFO "ipt_NETFLOW: hashsize %u\n", hashsize);
 
 	htable_size = hashsize;
@@ -3235,6 +3246,11 @@ static int __init ipt_netflow_init(void)
 	if (!htable) {
 		printk(KERN_ERR "Unable to create ipt_neflow_hash\n");
 		goto err;
+	}
+
+	for (i = 0; i < LOCK_COUNT; i++) {
+		spin_lock_init(&htable_stripes[i].lock);
+		INIT_LIST_HEAD(&htable_stripes[i].list);
 	}
 
 	ipt_netflow_cachep = kmem_cache_create("ipt_netflow",

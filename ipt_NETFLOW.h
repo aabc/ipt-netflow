@@ -227,7 +227,6 @@ struct ipt_netflow {
 	} _flow_list;
 #define flows_list  _flow_list.list
 #define flows_llnode _flow_list.llnode
-	spinlock_t	*lock; /* &htable_locks[hash & LOCK_COUNT_MASK]; */
 };
 
 #ifdef CONFIG_NF_NAT_NEEDED
