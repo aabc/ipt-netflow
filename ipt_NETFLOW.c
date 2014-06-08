@@ -149,6 +149,15 @@ static unsigned int timeout_rate = 30;
 module_param(timeout_rate, uint, 0644);
 MODULE_PARM_DESC(timeout_rate, "NetFlow v9/IPFIX timeout rate (minutes)");
 
+#ifdef SNMP_RULES
+static char snmp_rules_buf[DST_SIZE] = "";
+static char *snmp_rules = snmp_rules_buf;
+module_param(snmp_rules, charp, 0444);
+MODULE_PARM_DESC(snmp_rules, "SNMP-index conversion rules");
+static unsigned char *snmp_ruleset;
+static DEFINE_SPINLOCK(snmp_lock);
+#endif
+
 #ifdef CONFIG_NF_NAT_NEEDED
 static int natevents = 0;
 module_param(natevents, int, 0444);
@@ -512,6 +521,25 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		snum++;
 	}
 	read_unlock_bh(&aggr_lock);
+#ifdef SNMP_RULES
+	{
+		const unsigned char *rules;
+
+		snum = 0;
+		rcu_read_lock();
+		rules = rcu_dereference(snmp_ruleset);
+		if (rules)
+		while (*rules) {
+			const unsigned int len = *rules++;
+
+			seq_printf(seq, "SNMP-rule#%d: prefix '%.*s' map to %d\n",
+				snum, len, rules, (rules[len] << 8) + rules[len + 1]);
+			rules += len + 2;
+			++snum;
+		}
+		rcu_read_unlock();
+	}
+#endif
 	return 0;
 }
 
@@ -622,9 +650,18 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 	    seq_stripe,
 	    hash % htable_size,
 	    inactive * 10 + active);
-	seq_printf(seq, " %hd,%hd %u,%u ",
+#ifdef SNMP_RULES
+	seq_printf(seq, " %hd,%hd(%hd,%hd)",
+	    nf->i_ifcr,
+	    nf->o_ifcr,
 	    nf->tuple.i_ifc,
-	    nf->o_ifc,
+	    nf->o_ifc);
+#else
+	seq_printf(seq, " %hd,%hd",
+	    nf->tuple.i_ifc,
+	    nf->o_ifc);
+#endif
+	seq_printf(seq, " %u,%u ",
 	    nf->tuple.l3proto,
 	    nf->tuple.protocol);
 	if (nf->tuple.l3proto == AF_INET) {
@@ -817,11 +854,26 @@ static int aggregation_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 	if (debug > 1)
 		printk(KERN_INFO "aggregation_procctl (%d) %u %llu\n", write, (unsigned int)(*lenp), *fpos);
 	ret = proc_dostring(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
-	if (ret >= 0 && write) {
+	if (ret >= 0 && write)
 		add_aggregation(aggregation_buf);
-	}
 	return ret;
 }
+
+#ifdef SNMP_RULES
+static int add_snmp_rules(char *ptr);
+static int snmp_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+			 void __user *buffer, size_t *lenp, loff_t *fpos)
+{
+       int ret;
+
+       if (debug > 1)
+	       printk(KERN_INFO "snmp_procctl (%d) %u %llu\n", write, (unsigned int)(*lenp), *fpos);
+       ret = proc_dostring(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+       if (ret >= 0 && write)
+               return add_snmp_rules(snmp_rules_buf);
+       return ret;
+}
+#endif
 
 static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
@@ -999,9 +1051,19 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.maxlen		= sizeof(int),
 		.proc_handler	= &proc_dointvec,
 	},
-#ifdef CONFIG_NF_NAT_NEEDED
+#ifdef SNMP_RULES
 	{
 		_CTL_NAME(13)
+		.procname	= "snmp-rules",
+		.mode		= 0644,
+		.data		= &snmp_rules_buf,
+		.maxlen		= sizeof(snmp_rules_buf),
+		.proc_handler	= &snmp_procctl,
+	},
+#endif
+#ifdef CONFIG_NF_NAT_NEEDED
+	{
+		_CTL_NAME(14)
 		.procname	= "natevents",
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
@@ -1210,6 +1272,112 @@ static void add_usock(struct ipt_netflow_sock *usock)
 	       (!usock->sock)? " (unconnected)" : "");
 	mutex_unlock(&sock_lock);
 }
+
+#ifdef SNMP_RULES
+/* source string: eth:100,ppp:200,vlan:300 */
+/* reformat to: length[1], prefix[len], offset[2], ..., null[1]. */
+static int parse_snmp_rules(char *ptr, unsigned char *dst)
+{
+	int osize = 0;
+
+	while (*ptr) {
+		char *prefix = ptr;
+		unsigned int number;
+		int len, lsize;
+		char *p;
+
+		p = strchr(ptr, ':');
+		if (!p)
+			return -EINVAL;
+		len = p - ptr;
+		if (len == 0)
+			return -EINVAL;
+		ptr += len;
+		if (sscanf(ptr, ":%d%n", &number, &lsize) < 1)
+			return -EINVAL;
+		ptr += lsize;
+		if (*ptr) /* any separator will work */
+			ptr++;
+		osize += 1 + len + 2;
+		if (dst) {
+			*dst++ = len;
+			memcpy(dst, prefix, len);
+			dst += len;
+			*dst++ = (number >> 8) & 0xff;
+			*dst++ = number & 0xff;
+		}
+	}
+	osize += 1;
+	if (dst)
+		*dst = '\0';
+	return osize;
+}
+
+static int add_snmp_rules(char *ptr)
+{
+	int osize = parse_snmp_rules(ptr, NULL);
+	char *dst;
+	char *old;
+
+	if (osize <= 0) {
+		printk(KERN_ERR "ipt_NETFLOW: add_snmp_rules parse error.\n");
+		strcpy(snmp_rules_buf, "parse error");
+		return -EINVAL;
+	}
+	dst = kmalloc(osize, GFP_KERNEL);
+	if (!dst) {
+		strcpy(snmp_rules_buf, "no memory");
+		printk(KERN_ERR "ipt_NETFLOW: add_snmp_rules no memory.\n");
+		return -ENOMEM;
+	}
+	parse_snmp_rules(ptr, dst);
+	spin_lock(&snmp_lock);
+	old = snmp_ruleset;
+	rcu_assign_pointer(snmp_ruleset, dst);
+	spin_unlock(&snmp_lock);
+	synchronize_rcu();
+	if (old)
+		kfree(old);
+	return 0;
+}
+
+static inline int isdigit(int ch)
+{
+	return (ch >= '0') && (ch <= '9');
+}
+
+static inline int simple_atoi(const char *p)
+{
+	int i;
+
+	for (i = 0; isdigit(*p); p++)
+		i = i * 10 + *p - '0';
+	return i;
+}
+
+static inline int resolve_snmp(const struct net_device *ifc)
+{
+	const unsigned char *rules;
+
+	if (!ifc)
+		return -1;
+	rules = rcu_dereference(snmp_ruleset);
+	if (!rules)
+		return ifc->ifindex;
+	while (*rules) {
+		const unsigned int len = *rules++;
+		const char *ifname = ifc->name;
+
+		if (!strncmp(ifname, rules, len)) {
+			rules += len;
+			return (rules[0] << 8) + rules[1] +
+				simple_atoi(ifname + len);
+		}
+		rules += len + 2;
+	}
+	return ifc->ifindex;
+}
+#endif /* SNMP_RULES */
 
 #define SEPARATORS " ,;\t\n"
 static int add_destinations(char *ptr)
@@ -1500,8 +1668,13 @@ static void netflow_export_flow_v5(struct ipt_netflow *nf)
 	rec->s_addr	= nf->tuple.src.ip;
 	rec->d_addr	= nf->tuple.dst.ip;
 	rec->nexthop	= nf->nh.ip;
+#ifdef SNMP_RULES
+	rec->i_ifc	= htons(nf->i_ifcr);
+	rec->o_ifc	= htons(nf->o_ifcr);
+#else
 	rec->i_ifc	= htons(nf->tuple.i_ifc);
 	rec->o_ifc	= htons(nf->o_ifc);
+#endif
 	rec->nr_packets = htonl(nf->nr_packets);
 	rec->nr_octets	= htonl(nf->nr_bytes);
 	rec->first_ms	= htonl(jiffies_to_msecs(nf->ts_first));
@@ -1960,8 +2133,13 @@ static inline void add_ipv4_field(__u8 *ptr, const int type, const struct ipt_ne
 		case IPV4_NEXT_HOP:  *(__be32 *)ptr = nf->nh.ip; break;
 		case L4_SRC_PORT:    *(__be16 *)ptr = nf->tuple.s_port; break;
 		case L4_DST_PORT:    *(__be16 *)ptr = nf->tuple.d_port; break;
+#ifdef SNMP_RULES
+		case INPUT_SNMP:     *(__be16 *)ptr = htons(nf->i_ifcr); break;
+		case OUTPUT_SNMP:    *(__be16 *)ptr = htons(nf->o_ifcr); break;
+#else
 		case INPUT_SNMP:     *(__be16 *)ptr = htons(nf->tuple.i_ifc); break;
 		case OUTPUT_SNMP:    *(__be16 *)ptr = htons(nf->o_ifc); break;
+#endif
 		case PROTOCOL:	               *ptr = nf->tuple.protocol; break;
 		case TCP_FLAGS:	               *ptr = nf->tcp_flags; break;
 		case TOS:	               *ptr = nf->tuple.tos; break;
@@ -2641,21 +2819,21 @@ static unsigned int netflow_target(
 			   const struct net_device *if_in,
 			   const struct net_device *if_out,
 			   unsigned int hooknum,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,17)
+# if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,17)
 			   const struct xt_target *target,
-#endif
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
+# endif
+# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
 			   const void *targinfo,
 			   void *userinfo
-#else
+# else
 			   const void *targinfo
-#endif
+# endif
 #else /* since 2.6.28 */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
+# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
 			   const struct xt_target_param *par
-#else
+# else
 			   const struct xt_action_param *par
-#endif
+# endif
 #endif
 		)
 {
@@ -2723,7 +2901,7 @@ static unsigned int netflow_target(
 			if (likely(op))
 				options = ip4_options(op, optsize);
 		}
-	} else {
+	} else { /* AF_INET6 */
 		__u8 currenthdr;
 
 		tuple.src.in6	= iph->ip6.saddr;
@@ -2945,6 +3123,17 @@ do_protocols:
 		nf->o_ifc = if_out? if_out->ifindex : -1;
 #else
 		nf->o_ifc = par->out? par->out->ifindex : -1;
+#endif
+#ifdef SNMP_RULES
+		rcu_read_lock();
+# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
+		nf->o_ifcr = resolve_snmp(if_out);
+		nf->i_ifcr = resolve_snmp(if_in);
+# else
+		nf->o_ifcr = resolve_snmp(par->out);
+		nf->i_ifcr = resolve_snmp(par->in);
+# endif
+		rcu_read_unlock();
 #endif
 		nf->s_mask = s_mask;
 		nf->d_mask = d_mask;
@@ -3322,6 +3511,14 @@ static int __init ipt_netflow_init(void)
 	}
 	add_aggregation(aggregation);
 
+	if (!snmp_rules)
+		snmp_rules = snmp_rules_buf;
+	if (snmp_rules != snmp_rules_buf) {
+		strlcpy(snmp_rules_buf, snmp_rules, sizeof(snmp_rules_buf));
+		snmp_rules = snmp_rules_buf;
+	}
+	add_snmp_rules(snmp_rules);
+
 	netflow_switch_version(protocol);
 	_schedule_scan_worker(0);
 	setup_timer(&rate_timer, rate_timer_calc, 0);
@@ -3395,6 +3592,9 @@ static void __exit ipt_netflow_fini(void)
 	destination_removeall();
 	aggregation_remove(&aggr_n_list);
 	aggregation_remove(&aggr_p_list);
+#ifdef SNMP_RULES
+	kfree(snmp_ruleset);
+#endif
 
 	kmem_cache_destroy(ipt_netflow_cachep);
 	vfree(htable);

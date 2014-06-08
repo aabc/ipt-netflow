@@ -191,6 +191,10 @@ struct ipt_netflow {
 	/* volatile data */
 	union nf_inet_addr nh;
 	__u16		o_ifc;
+#ifdef SNMP_RULES
+	__u16		i_ifcr;
+	__u16		o_ifcr;
+#endif
 	__u8		s_mask;
 	__u8		d_mask;
 	__u8		tcp_flags; /* `OR' of all tcp flags */
