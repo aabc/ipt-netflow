@@ -238,6 +238,7 @@ static struct flowset_data *pdu_flowset = NULL; /* current data flowset */
 static unsigned long wk_start; /* last start of worker (jiffies) */
 static unsigned long wk_busy;  /* last work busy time (jiffies) */
 static unsigned int wk_count;  /* how much is scanned */
+static unsigned int wk_cpu;
 static unsigned int wk_trylock;
 static unsigned int wk_llist;
 static void (*netflow_export_flow)(struct ipt_netflow *nf);
@@ -365,7 +366,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 #ifdef HAVE_LLIST
 	    " %u"
 #endif
-	    ").\n",
+	    " [%u]).\n",
 		   nr_flows,
 		   peakflows,
 		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
@@ -374,11 +375,11 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		   jiffies_to_msecs(jiffies - wk_start),
 		   jiffies_to_usecs(wk_busy),
 		   wk_count,
-		   wk_trylock
+		   wk_trylock,
 #ifdef HAVE_LLIST
-		   , wk_llist
+		   wk_llist,
 #endif
-		   );
+		   wk_cpu);
 
 	for_each_present_cpu(cpu) {
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
@@ -2495,6 +2496,7 @@ static void netflow_work_fn(struct work_struct *dummy)
 	wk_count = 0;
 	wk_trylock = 0;
 	wk_llist = 0;
+	wk_cpu = get_cpu();
 	wk_start = jiffies;
 	status = netflow_scan_and_export(DONT_FLUSH);
 	_schedule_scan_worker(status);
