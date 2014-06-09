@@ -238,6 +238,7 @@ static struct flowset_data *pdu_flowset = NULL; /* current data flowset */
 static unsigned long wk_start; /* last start of worker (jiffies) */
 static unsigned long wk_busy;  /* last work busy time (jiffies) */
 static unsigned int wk_count;  /* how much is scanned */
+static unsigned int wk_trylock;
 static unsigned int wk_llist;
 static void (*netflow_export_flow)(struct ipt_netflow *nf);
 static void (*netflow_export_pdu)(void); /* called on timeout */
@@ -360,9 +361,9 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "ipt_NETFLOW version " IPT_NETFLOW_VERSION ", srcversion %s\n",
 	    THIS_MODULE->srcversion);
 	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d"
-	    " (%u ms, %u us, %u"
+	    " (%u ms, %u us, %u:%u"
 #ifdef HAVE_LLIST
-	    "/%u"
+	    " %u"
 #endif
 	    ").\n",
 		   nr_flows,
@@ -372,7 +373,8 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		   worker_delay, HZ,
 		   jiffies_to_msecs(jiffies - wk_start),
 		   jiffies_to_usecs(wk_busy),
-		   wk_count
+		   wk_count,
+		   wk_trylock
 #ifdef HAVE_LLIST
 		   , wk_llist
 #endif
@@ -2416,7 +2418,10 @@ static int netflow_scan_and_export(const int flush)
 	for (i = 0; i < LOCK_COUNT; i++) {
 		struct stripe_entry *stripe = &htable_stripes[i];
 
-		spin_lock(&stripe->lock);
+		if (!spin_trylock(&stripe->lock)) {
+			++wk_trylock;
+			continue;
+		}
 		list_for_each_entry_safe_reverse(nf, tmp, &stripe->list, flows_list) {
 			++wk_count;
 			if (((jiffies - nf->ts_last) >= i_timeout)
@@ -2488,6 +2493,7 @@ static void netflow_work_fn(struct work_struct *dummy)
 	int status;
 
 	wk_count = 0;
+	wk_trylock = 0;
 	wk_llist = 0;
 	wk_start = jiffies;
 	status = netflow_scan_and_export(DONT_FLUSH);
@@ -3511,6 +3517,7 @@ static int __init ipt_netflow_init(void)
 	}
 	add_aggregation(aggregation);
 
+#ifdef SNMP_RULES
 	if (!snmp_rules)
 		snmp_rules = snmp_rules_buf;
 	if (snmp_rules != snmp_rules_buf) {
@@ -3518,6 +3525,7 @@ static int __init ipt_netflow_init(void)
 		snmp_rules = snmp_rules_buf;
 	}
 	add_snmp_rules(snmp_rules);
+#endif
 
 	netflow_switch_version(protocol);
 	_schedule_scan_worker(0);
