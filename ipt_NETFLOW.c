@@ -74,6 +74,10 @@
 # undef ENABLE_DEBUGFS
 # endif
 #endif
+#ifndef CONFIG_NF_CONNTRACK_EVENTS
+/* No conntrack events in the kernel imply no natevents. */
+#undef CONFIG_NF_NAT_NEEDED
+#endif
 
 #ifndef NIPQUAD
 #define NIPQUAD(addr) \
