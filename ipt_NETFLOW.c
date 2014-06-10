@@ -201,7 +201,7 @@ static unsigned int htable_size __read_mostly = 0; /* buckets */
  *  .list - list of flows ordered by exportability (usually it's access time)
  *  .lock - lock to both: that .list and to htable[hash], where
  *  hash to the htable[] is hash_netflow(&tuple) % htable_size
- *  hash to the htable_stripes[] is hash_netflow(&tuple) & LOCK_COUNT_MASK
+ *  hash to the htable_stripes[] is hash & LOCK_COUNT_MASK
  */
 #ifdef HAVE_LLIST
 static LLIST_HEAD(export_llist); /* flows to purge */
@@ -651,7 +651,7 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "%d %02x,%04x %02d",
 	    seq_pcache,
 	    seq_stripe,
-	    hash % htable_size,
+	    hash,
 	    inactive * 10 + active);
 #ifdef SNMP_RULES
 	seq_printf(seq, " %hd,%hd(%hd,%hd)",
@@ -1504,7 +1504,7 @@ static int add_aggregation(char *ptr)
 static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple)
 {
 #define HASH_SEED 0
-	return murmur3(tuple, sizeof(struct ipt_netflow_tuple), HASH_SEED);
+	return murmur3(tuple, sizeof(struct ipt_netflow_tuple), HASH_SEED) % htable_size;
 }
 
 static struct ipt_netflow *
@@ -1551,7 +1551,8 @@ static struct hlist_head *alloc_hashtable(const int size)
 static int set_hashsize(int new_size)
 {
 	struct hlist_head *new_hash, *old_hash;
-	struct ipt_netflow *nf;
+	struct ipt_netflow *nf, *tmp;
+	LIST_HEAD(all_list);
 	int i;
 
 	if (new_size < LOCK_COUNT)
@@ -1569,18 +1570,22 @@ static int set_hashsize(int new_size)
 	htable_size = new_size;
 	for (i = 0; i < LOCK_COUNT; i++) {
 		struct stripe_entry *stripe = &htable_stripes[i];
-
 		spin_lock(&stripe->lock);
-		list_for_each_entry(nf, &stripe->list, flows_list) {
-			unsigned int hash;
+		list_splice_init(&stripe->list, &all_list);
+		spin_unlock(&stripe->lock);
+	}
+	list_for_each_entry_safe(nf, tmp, &all_list, flows_list) {
+		unsigned int hash;
+		struct stripe_entry *stripe;
 
-			hash = hash_netflow(&nf->tuple) % htable_size;
-			hlist_add_head(&nf->hlist, &htable[hash]);
-		}
+		hash = hash_netflow(&nf->tuple);
+		stripe = &htable_stripes[hash & LOCK_COUNT_MASK];
+		spin_lock(&stripe->lock);
+		list_move_tail(&nf->flows_list, &stripe->list);
+		hlist_add_head(&nf->hlist, &htable[hash]);
 		spin_unlock(&stripe->lock);
 	}
 	write_unlock_bh(&htable_rwlock);
-
 	vfree(old_hash);
 
 	return 0;
@@ -3101,7 +3106,6 @@ do_protocols:
 	hash = hash_netflow(&tuple);
 	read_lock(&htable_rwlock);
 	stripe = &htable_stripes[hash & LOCK_COUNT_MASK];
-	hash %= htable_size;
 	spin_lock(&stripe->lock);
 	/* record */
 	nf = ipt_netflow_find(&tuple, hash);
