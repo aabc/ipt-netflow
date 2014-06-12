@@ -2505,7 +2505,7 @@ static void netflow_work_fn(struct work_struct *dummy)
 	wk_count = 0;
 	wk_trylock = 0;
 	wk_llist = 0;
-	wk_cpu = get_cpu();
+	wk_cpu = smp_processor_id();
 	wk_start = jiffies;
 	status = netflow_scan_and_export(DONT_FLUSH);
 	_schedule_scan_worker(status);
