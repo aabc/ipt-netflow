@@ -250,8 +250,8 @@ show_help() {
   echo "  --ipt-inc=..  directory for iptable headers (ex.: /usr/include)"
   echo "  --kver=..     kernel version (ex.: 2.6.30-std-def-alt15)"
   echo "  --kdir=..     directory for kernel source (ex.: /usr/src/kernel)"
-  echo "  --disable-natevents  disables natevents support"
-  echo "  --disable-conntrack  disables conntrack & natevents altogether"
+  echo "  --enable-natevents   enables natevents support"
+  echo "  --enable-connmark    enables connmark support"
   echo "  --enable-debugfs     enables debugfs support for flow lists"
   echo "  --enable-snmp-rules  enables SNMP-index conversion rules"
   exit 0
@@ -273,10 +273,10 @@ do
     --ipt-inc=*) IPTINC="-I$ac_optarg" ;;
     --kver=*)  KVERSION="$ac_optarg" ;;
     --kdir=*)      KDIR="$ac_optarg" ;;
-    --disable-nat*) KOPTS="$KOPTS -DDISABLE_NAT" ;;
-    --disable-con*) KOPTS="$KOPTS -DDISABLE_CT" ;;
+    --enable-nat*)   KOPTS="$KOPTS -DENABLE_NAT -DENABLE_CT" ;;
+    --enable-conn*)  KOPTS="$KOPTS -DENABLE_CT" ;;
     --enable-debug*) KOPTS="$KOPTS -DENABLE_DEBUGFS" ;;
-    --enable-snmp*) KOPTS="$KOPTS -DSNMP_RULES" ;;
+    --enable-snmp*)  KOPTS="$KOPTS -DSNMP_RULES" ;;
     --make) echo called from make ;;
     --help) show_help ;;
     -*) echo Invalid option: $ac_option; exit 1 ;;
@@ -429,6 +429,7 @@ echo -n "Creating Makefile.. "
 sed "$REPLACE" Makefile.in > Makefile
 echo done.
 echo
+echo "  If you need some options enabled run ./configure --help"
 echo "  Now run: make all install"
 echo
 

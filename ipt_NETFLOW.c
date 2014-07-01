@@ -40,12 +40,11 @@
 #include <net/ip6_fib.h>
 #include <net/dst.h>
 #include <linux/netfilter_ipv4/ip_tables.h>
-#ifdef DISABLE_NAT
+#ifndef ENABLE_NAT
 # undef CONFIG_NF_NAT_NEEDED
 #endif
-#ifdef DISABLE_CT
+#ifndef ENABLE_CT
 # undef CONFIG_NF_CONNTRACK_MARK
-# undef CONFIG_NF_NAT_NEEDED
 #endif
 #if defined(CONFIG_NF_NAT_NEEDED) || defined(CONFIG_NF_CONNTRACK_MARK)
 #include <linux/notifier.h>
