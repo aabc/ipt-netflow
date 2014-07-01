@@ -1213,6 +1213,8 @@ static void netflow_sendmsg(void *buffer, const int len)
 			if (ret == -EAGAIN) {
 				atomic_inc(&usock->err_full);
 				suggestion = ": increase sndbuf!";
+			} else if (ret == -ENETUNREACH) {
+				suggestion = ": network is unreachable.";
 			} else
 				atomic_inc(&usock->err_other);
 			printk(KERN_ERR "ipt_NETFLOW: sendmsg[%d] error %d: data loss %llu pkt, %llu bytes%s\n",
@@ -2142,7 +2144,7 @@ static inline s64 portable_ktime_to_ms(const ktime_t kt)
 
 /* encode one field */
 typedef struct in6_addr in6_t;
-static inline void add_ipv4_field(__u8 *ptr, const int type, const struct ipt_netflow *nf)
+static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_netflow *nf)
 {
 	switch (type) {
 		case IN_BYTES:	     *(__be32 *)ptr = htonl(nf->nr_bytes); break;
@@ -2316,7 +2318,7 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 
 		if (!type)
 			break;
-		add_ipv4_field(ptr, type, nf);
+		add_tpl_field(ptr, type, nf);
 		ptr += tpl->fields[i++];
 	}
 
