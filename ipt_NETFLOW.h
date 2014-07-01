@@ -96,8 +96,10 @@ enum {
 	//TOTAL_BYTES_EXP = 40,
 	//TOTAL_PKTS_EXP = 41,
 	//TOTAL_FLOWS_EXP = 42,
+	sourceMacAddress = 56,
 	IPV6_NEXT_HOP = 62,
 	IPV6_OPTION_HEADERS = 64,
+	destinationMacAddress = 80,
 	commonPropertiesId = 137, /* for MARK */
 	ipv4Options = 208,
 	tcpOptions = 209,
@@ -179,6 +181,10 @@ struct ipt_netflow_tuple {
 	__u8		protocol;
 	__u8		tos;
 	__u8		l3proto;
+#ifdef ENABLE_MAC
+	__u8		h_dst[ETH_ALEN];
+	__u8		h_src[ETH_ALEN];
+#endif
 } __attribute__ ((packed));
 
 /* hlist[2] + tuple[]: 8+8 + 41 = 57 (less than usual cache line, 64) */

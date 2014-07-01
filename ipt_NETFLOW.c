@@ -46,6 +46,10 @@
 #ifndef ENABLE_CT
 # undef CONFIG_NF_CONNTRACK_MARK
 #endif
+#ifdef ENABLE_MAC
+#include <linux/if_ether.h>
+#include <linux/etherdevice.h>
+#endif
 #if defined(CONFIG_NF_NAT_NEEDED) || defined(CONFIG_NF_CONNTRACK_MARK)
 #include <linux/notifier.h>
 #include <net/netfilter/nf_conntrack.h>
@@ -1835,6 +1839,8 @@ static u_int8_t tpl_element_sizes[] = {
 	//[TOTAL_BYTES_EXP]	= 4,
 	//[TOTAL_PKTS_EXP]	= 4,
 	//[TOTAL_FLOWS_EXP]	= 4,
+	[sourceMacAddress]		   = ETH_ALEN,
+	[destinationMacAddress]		   = ETH_ALEN,
 	[IPV6_NEXT_HOP]			   = 16,
 	[IPV6_OPTION_HEADERS]		   = 2,
 	[commonPropertiesId]		   = 4,
@@ -1889,6 +1895,10 @@ static struct base_template template_base = {
 		LAST_SWITCHED,
 		PROTOCOL,
 		TOS,
+#ifdef ENABLE_MAC
+		sourceMacAddress,
+		destinationMacAddress,
+#endif
 		0
 	}
 };
@@ -2150,6 +2160,10 @@ static inline void add_ipv4_field(__u8 *ptr, const int type, const struct ipt_ne
 #else
 		case INPUT_SNMP:     *(__be16 *)ptr = htons(nf->tuple.i_ifc); break;
 		case OUTPUT_SNMP:    *(__be16 *)ptr = htons(nf->o_ifc); break;
+#endif
+#ifdef ENABLE_MAC
+		case destinationMacAddress:	memcpy(ptr, &nf->tuple.h_dst, ETH_ALEN); break;
+		case sourceMacAddress:		memcpy(ptr, &nf->tuple.h_src, ETH_ALEN); break;
 #endif
 		case PROTOCOL:	               *ptr = nf->tuple.protocol; break;
 		case TCP_FLAGS:	               *ptr = nf->tcp_flags; break;
@@ -2897,6 +2911,15 @@ static unsigned int netflow_target(
 	tcp_flags	= 0; /* Cisco sometimes have TCP ACK for non TCP packets, don't get it */
 	s_mask		= 0;
 	d_mask		= 0;
+#ifdef ENABLE_MAC
+	if (skb_mac_header(skb) >= skb->head && skb_mac_header(skb) + ETH_HLEN <= skb->data) {
+		memcpy(&tuple.h_dst, eth_hdr(skb)->h_dest, ETH_ALEN);
+		memcpy(&tuple.h_src, eth_hdr(skb)->h_source, ETH_ALEN);
+	} else {
+		memset(&tuple.h_dst, 0, ETH_ALEN);
+		memset(&tuple.h_src, 0, ETH_ALEN);
+	}
+#endif
 
 	if (likely(family == AF_INET)) {
 		tuple.src	= (union nf_inet_addr){ .ip = iph->ip.saddr };

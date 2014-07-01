@@ -254,6 +254,7 @@ show_help() {
   echo "  --enable-connmark    enables connmark support"
   echo "  --enable-debugfs     enables debugfs support for flow lists"
   echo "  --enable-snmp-rules  enables SNMP-index conversion rules"
+  echo "  --enable-macaddress  enables MAC address for v9/IPFIX"
   exit 0
 }
 
@@ -277,6 +278,7 @@ do
     --enable-conn*)  KOPTS="$KOPTS -DENABLE_CT" ;;
     --enable-debug*) KOPTS="$KOPTS -DENABLE_DEBUGFS" ;;
     --enable-snmp*)  KOPTS="$KOPTS -DSNMP_RULES" ;;
+    --enable-mac*)   KOPTS="$KOPTS -DENABLE_MAC" ;;
     --make) echo called from make ;;
     --help) show_help ;;
     -*) echo Invalid option: $ac_option; exit 1 ;;
