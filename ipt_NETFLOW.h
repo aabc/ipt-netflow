@@ -97,6 +97,7 @@ enum {
 	//TOTAL_PKTS_EXP = 41,
 	//TOTAL_FLOWS_EXP = 42,
 	sourceMacAddress = 56,
+	vlanId = 58,
 	IPV6_NEXT_HOP = 62,
 	IPV6_OPTION_HEADERS = 64,
 	destinationMacAddress = 80,
@@ -178,6 +179,9 @@ struct ipt_netflow_tuple {
 	__be16		s_port; // Network byte order
 	__be16		d_port; // -"-
 	__u16		i_ifc;	// Host byte order
+#ifdef ENABLE_VLAN
+	__be16		vlan;	// Host byte order
+#endif
 	__u8		protocol;
 	__u8		tos;
 	__u8		l3proto;

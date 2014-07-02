@@ -46,6 +46,9 @@
 #ifndef ENABLE_CT
 # undef CONFIG_NF_CONNTRACK_MARK
 #endif
+#ifdef ENABLE_VLAN
+#include <linux/if_vlan.h>
+#endif
 #ifdef ENABLE_MAC
 #include <linux/if_ether.h>
 #include <linux/etherdevice.h>
@@ -1842,6 +1845,7 @@ static u_int8_t tpl_element_sizes[] = {
 	//[TOTAL_PKTS_EXP]	= 4,
 	//[TOTAL_FLOWS_EXP]	= 4,
 	[sourceMacAddress]		   = ETH_ALEN,
+	[vlanId]			   = 2,
 	[destinationMacAddress]		   = ETH_ALEN,
 	[IPV6_NEXT_HOP]			   = 16,
 	[IPV6_OPTION_HEADERS]		   = 2,
@@ -1897,6 +1901,9 @@ static struct base_template template_base = {
 		LAST_SWITCHED,
 		PROTOCOL,
 		TOS,
+#ifdef ENABLE_VLAN
+		vlanId,
+#endif
 #ifdef ENABLE_MAC
 		sourceMacAddress,
 		destinationMacAddress,
@@ -2162,6 +2169,9 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 #else
 		case INPUT_SNMP:     *(__be16 *)ptr = htons(nf->tuple.i_ifc); break;
 		case OUTPUT_SNMP:    *(__be16 *)ptr = htons(nf->o_ifc); break;
+#endif
+#ifdef ENABLE_VLAN
+		case vlanId:	     *(__be16 *)ptr = htons(nf->tuple.vlan); break;
 #endif
 #ifdef ENABLE_MAC
 		case destinationMacAddress:	memcpy(ptr, &nf->tuple.h_dst, ETH_ALEN); break;
@@ -2913,8 +2923,17 @@ static unsigned int netflow_target(
 	tcp_flags	= 0; /* Cisco sometimes have TCP ACK for non TCP packets, don't get it */
 	s_mask		= 0;
 	d_mask		= 0;
+#ifdef ENABLE_VLAN
+	if (skb_mac_header(skb) >= skb->head &&
+	    skb_mac_header(skb) + VLAN_ETH_HLEN <= skb->data &&
+	    vlan_eth_hdr(skb)->h_vlan_proto == htons(ETH_P_8021Q)) {
+		tuple.vlan = ntohs(vlan_eth_hdr(skb)->h_vlan_TCI) & VLAN_VID_MASK;
+	} else
+		tuple.vlan = 0;
+#endif
 #ifdef ENABLE_MAC
-	if (skb_mac_header(skb) >= skb->head && skb_mac_header(skb) + ETH_HLEN <= skb->data) {
+	if (skb_mac_header(skb) >= skb->head &&
+	    skb_mac_header(skb) + ETH_HLEN <= skb->data) {
 		memcpy(&tuple.h_dst, eth_hdr(skb)->h_dest, ETH_ALEN);
 		memcpy(&tuple.h_src, eth_hdr(skb)->h_source, ETH_ALEN);
 	} else {
