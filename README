@@ -101,6 +101,40 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
      use -j NETFLOW target in your iptables. See next section.
 
 
+=====================
+= Configure Options =
+=====================
+
+   Configure script allows to enable or disable optional features:
+
+     --enable-connmark
+         enables connmark support (requires conntrack).
+
+     --enable-natevents
+         enables natevents (NEL) support, (this and previous option will
+         require conntrack support enabled into kernel and conntack module
+         (nf_conntrack) loaded before ipt_NETFLOW. Usually this is done
+	 automatically because of `depmod', but if you don't do `make
+	 install' you'll need to load nf_conntrack manually.
+         Read below for explanation of natevents.
+
+     --enable-snmp-rules
+         enables SNMP-index conversion rules. Read below for explanation
+	 of snmp-rules.
+
+     --enable-macaddress
+         enables exporting of src and dst MAC addresses for every flow
+	 in v9/IPFIX. Difference in any of MAC address will be accounted
+	 as differnt flow.
+
+     --enable-vlan
+         enables exporting of VLAN Ids for every flow in v9/IPFIX.
+
+     --disable-aggregation
+         disables aggregation rules (they are enabled by default).
+	 Read below for explanation of aggregation.
+
+
 ===========
 = RUNNING =
 ===========
@@ -200,6 +234,9 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
 	 TCP Flags is SYN+SCK for start event, RST+FIN for stop event.
 	 Pkt/Traffic size is 0 (zero), so it won't interfere with accounting.
 
+       Natevents are compilation disabled by default, to enable you will need to
+       add --enable-natevents option to ./configure script.
+
    inactive_timeout=15
      - export flow after it's inactive 15 seconds. Default value is 15.
 
@@ -238,27 +275,53 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
    aggregation=string..
      - Few aggregation rules (or some say they are rule.)
 
-     Buffer for aggregation string 1024 bytes, and sysctl limit it
-       to ~700 bytes, so don't write there a lot.
-     Rules worked in definition order for each packet, so don't
-       write them a lot again.
-     Rules applied to both directions (dst and src).
-     Rules tried until first match, but for netmask and port
-        aggregations separately.
-     Delimit them with commas.
+       Buffer for aggregation string 1024 bytes, and sysctl limit it
+         to ~700 bytes, so don't write there a lot.
+       Rules worked in definition order for each packet, so don't
+         write them a lot again.
+       Rules applied to both directions (dst and src).
+       Rules tried until first match, but for netmask and port
+          aggregations separately.
+       Delimit them with commas.
 
-     Rules are of two kinds: for netmask aggregation
-        and port aggregation:
+       Rules are of two kinds: for netmask aggregation
+          and port aggregation:
 
-     a) Netmask aggregation example: 192.0.0.0/8=16
-     Which mean to strip addresses matching subnet 192.0.0.0/8 to /16.
+       a) Netmask aggregation example: 192.0.0.0/8=16
+       Which mean to strip addresses matching subnet 192.0.0.0/8 to /16.
 
-     b) Port aggregation example: 80-89=80
-     Which mean to replace ports from 80 to 89 with 80.
+       b) Port aggregation example: 80-89=80
+       Which mean to replace ports from 80 to 89 with 80.
 
-     Full example:
-        aggregation=192.0.0.0/8=16,10.0.0.0/8=16,80-89=80,3128=80
-        
+       Full example:
+          aggregation=192.0.0.0/8=16,10.0.0.0/8=16,80-89=80,3128=80
+
+       Aggregation rules are enabled by default, if you feel you don't need them
+       you may add --disable-aggregation to ./configure script.
+
+   snmp-rules=string...
+     - Few SNMP-index conversion rules similar to fproble-ulog.
+
+       Quoting man fprobe-ulog:
+
+	 "Comma separated list of interface name to SNMP-index conversion
+	 rules.  Each rule consists of interface base name and SNMP-index
+	 base separated by colon (e.g. ppp:200). Final SNMP-index is  sum
+	 of corresponding SNMP-index base and interface number.
+	 In the above example SNMP-index of interface ppp11 is 211.
+
+	 If interface  name  did not fit to any of conversion rules then
+	 SNMP-index will be taken from kernel."
+
+       This implementation isn't optimized for performance (no rule caching
+       or hashing), but should be fast if rules list are short.
+
+       Rules are parsed in order from first to last until first match.
+
+       snmp-rules are compilation disabled by default, to enable you will need
+       to add --enable-snmp option to ./configure script.
+
+
 ====================
 = HOW TO READ STAT =
 ====================
