@@ -1857,10 +1857,10 @@ static u_int8_t tpl_element_sizes[] = {
 	//[TOTAL_PKTS_EXP]	= 4,
 	//[TOTAL_FLOWS_EXP]	= 4,
 	[sourceMacAddress]		   = ETH_ALEN,
-	[vlanId]			   = 2,
-	[destinationMacAddress]		   = ETH_ALEN,
+	[SRC_VLAN]			   = 2,
 	[IPV6_NEXT_HOP]			   = 16,
 	[IPV6_OPTION_HEADERS]		   = 2,
+	[destinationMacAddress]		   = ETH_ALEN,
 	[commonPropertiesId]		   = 4,
 	[ipv4Options]			   = 4,
 	[tcpOptions]			   = 4,
@@ -1869,6 +1869,7 @@ static u_int8_t tpl_element_sizes[] = {
 	[postNAPTSourceTransportPort]	   = 2,
 	[postNAPTDestinationTransportPort] = 2,
 	[natEvent]			   = 1,
+	[dot1qVlanId]			   = 2,
 	[postNATSourceIPv6Address]	   = 16,
 	[postNATDestinationIPv6Address]	   = 16,
 	[IPSecSPI]			   = 4,
@@ -1901,6 +1902,10 @@ struct base_template {
 #define BTPL_OPTIONS4	0x00001000	/* IPv4 Options */
 #define BTPL_OPTIONS6	0x00002000	/* IPv6 Options */
 #define BTPL_TCPOPTIONS	0x00004000	/* TCP Options */
+#define BTPL_MAC	0x00008000	/* MAC addresses */
+#define BTPL_VLAN9	0x00010000	/* outer VLAN for v9 */
+#define BTPL_VLANX	0x00020000	/* outer VLAN for IPFIX */
+#define BTPL_VLANI	0x00040000	/* inner VLAN (IPFIX) */
 #define BTPL_MAX	32
 
 static struct base_template template_base = {
@@ -1913,16 +1918,26 @@ static struct base_template template_base = {
 		LAST_SWITCHED,
 		PROTOCOL,
 		TOS,
-#ifdef ENABLE_VLAN
-		vlanId,
-#endif
-#ifdef ENABLE_MAC
-		sourceMacAddress,
-		destinationMacAddress,
-#endif
 		0
 	}
 };
+#ifdef ENABLE_MAC
+static struct base_template template_mac_ipfix = {
+	.types = { destinationMacAddress, sourceMacAddress, }
+};
+#endif
+#ifdef ENABLE_VLAN
+static struct base_template template_vlan_v9 = {
+	.types = { SRC_VLAN, 0 }
+};
+/* IPFIX is different from v9, see rfc7133. */
+static struct base_template template_vlan_ipfix = {
+	.types = { dot1qVlanId, 0 }
+};
+static struct base_template template_vlan_inner = {
+	.types = { dot1qCustomerVlanId, 0 }
+};
+#endif
 static struct base_template template_ipv4 = {
 	.types = {
 		IPV4_SRC_ADDR,
@@ -2075,6 +2090,20 @@ static struct data_template *get_template(const int tmask)
 		tlist[tnum++] = &template_ipsec;
 	if (tmask & BTPL_MARK)
 		tlist[tnum++] = &template_mark;
+#ifdef ENABLE_MAC
+	if (tmask & BTPL_MAC)
+		tlist[tnum++] = &template_mac_ipfix;
+#endif
+#ifdef ENABLE_VLAN
+	if (tmask & BTPL_VLAN9)
+		tlist[tnum++] = &template_vlan_v9;
+	else {
+		if (tmask & BTPL_VLANX)
+			tlist[tnum++] = &template_vlan_ipfix;
+		if (tmask & BTPL_VLANI)
+			tlist[tnum++] = &template_vlan_inner;
+	}
+#endif
 
 	/* calc memory size */
 	length = 0;
@@ -2183,11 +2212,14 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 		case OUTPUT_SNMP:    *(__be16 *)ptr = htons(nf->o_ifc); break;
 #endif
 #ifdef ENABLE_VLAN
-		case vlanId:	     *(__be16 *)ptr = htons(nf->tuple.vlan); break;
+		case SRC_VLAN:
+		case dot1qVlanId:    *(__be16 *)ptr = htons(nf->tuple.vlan); break;
+		case dot1qCustomerVlanId:
+				     *(__be16 *)ptr = htons(nf->tuple.vlan2); break;
 #endif
 #ifdef ENABLE_MAC
-		case destinationMacAddress:	memcpy(ptr, &nf->tuple.h_dst, ETH_ALEN); break;
-		case sourceMacAddress:		memcpy(ptr, &nf->tuple.h_src, ETH_ALEN); break;
+		case destinationMacAddress: memcpy(ptr, &nf->tuple.h_dst, ETH_ALEN); break;
+		case sourceMacAddress:	    memcpy(ptr, &nf->tuple.h_src, ETH_ALEN); break;
 #endif
 		case PROTOCOL:	               *ptr = nf->tuple.protocol; break;
 		case TCP_FLAGS:	               *ptr = nf->tcp_flags; break;
@@ -2291,6 +2323,22 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 #ifdef CONFIG_NF_CONNTRACK_MARK
 	if (nf->mark)
 		tpl_mask |= BTPL_MARK;
+#endif
+#ifdef ENABLE_MAC
+	if (!is_zero_ether_addr(nf->tuple.h_src) ||
+	    !is_zero_ether_addr(nf->tuple.h_dst))
+		tpl_mask |= BTPL_MAC;
+#endif
+#ifdef ENABLE_VLAN
+	if (nf->tuple.vlan) {
+		if (protocol == 9)
+			tpl_mask |= BTPL_VLAN9;
+		else {
+			tpl_mask |= BTPL_VLANX;
+			if (nf->tuple.vlan2)
+				tpl_mask |= BTPL_VLANI;
+		}
+	}
 #endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	if (nf->nat)
@@ -2862,6 +2910,32 @@ static inline __u32 tcp_options(const struct sk_buff *skb, const unsigned int pt
 	}
 	return ret;
 }
+
+#ifdef ENABLE_VLAN
+/* double tagged header */
+struct vlan_ethhdr2 {
+	unsigned char   h_dest[ETH_ALEN];
+	unsigned char   h_source[ETH_ALEN];
+	__be16          h_vlan_proto;
+	__be16          h_vlan_TCI;
+	__be16          h2_vlan_proto;
+	__be16          h2_vlan_TCI;
+	__be16          h2_vlan_encapsulated_proto;
+};
+static inline struct vlan_ethhdr2 *vlan_eth_hdr2(const struct sk_buff *skb)
+{
+	return (struct vlan_ethhdr2 *)skb_mac_header(skb);
+}
+#define VLAN_ETH_H2LEN	(VLAN_ETH_HLEN + 4)
+#ifndef ETH_P_8021AD
+#define ETH_P_8021AD	0x88A8
+#endif
+#ifndef ETH_P_QINQ1
+#define ETH_P_QINQ1	0x9100
+#define ETH_P_QINQ2	0x9200
+#endif
+#endif /* ENABLE_VLAN */
+
 /* packet receiver */
 static unsigned int netflow_target(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
@@ -2939,11 +3013,20 @@ static unsigned int netflow_target(
 	d_mask		= 0;
 #ifdef ENABLE_VLAN
 	if (skb_mac_header(skb) >= skb->head &&
-	    skb_mac_header(skb) + VLAN_ETH_HLEN <= skb->data &&
-	    vlan_eth_hdr(skb)->h_vlan_proto == htons(ETH_P_8021Q)) {
-		tuple.vlan = ntohs(vlan_eth_hdr(skb)->h_vlan_TCI) & VLAN_VID_MASK;
+	    skb_mac_header(skb) + VLAN_ETH_HLEN <= skb->data) {
+		tuple.vlan2 = 0;
+		switch (vlan_eth_hdr(skb)->h_vlan_proto) {
+		case htons(ETH_P_QINQ1):
+		case htons(ETH_P_QINQ2):
+		case htons(ETH_P_8021AD):
+			if (skb_mac_header(skb) + VLAN_ETH_H2LEN <= skb->data)
+				tuple.vlan2 = ntohs(vlan_eth_hdr2(skb)->h2_vlan_TCI) & VLAN_VID_MASK;
+			/* FALLTHROUGH */
+		case htons(ETH_P_8021Q):
+			tuple.vlan = ntohs(vlan_eth_hdr(skb)->h_vlan_TCI) & VLAN_VID_MASK;
+		}
 	} else
-		tuple.vlan = 0;
+		tuple.vlan = tuple.vlan2 = 0;
 #endif
 #ifdef ENABLE_MAC
 	if (skb_mac_header(skb) >= skb->head &&

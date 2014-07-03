@@ -65,7 +65,9 @@ struct netflow5_pdu {
 } __attribute__ ((packed));
 #define NETFLOW5_HEADER_SIZE (sizeof(struct netflow5_pdu) - NETFLOW5_RECORDS_MAX * sizeof(struct netflow5_record))
 
-/* NetFlow v9 RFC http://www.ietf.org/rfc/rfc3954.txt */
+/* NetFlow v9	http://www.ietf.org/rfc/rfc3954.txt */
+/* IPFIX	http://www.iana.org/assignments/ipfix/ipfix.xhtml */
+/* v9 elements are uppercased, IPFIX camel cased. */
 enum {
 	IN_BYTES = 1,
 	IN_PKTS = 2,
@@ -97,7 +99,8 @@ enum {
 	//TOTAL_PKTS_EXP = 41,
 	//TOTAL_FLOWS_EXP = 42,
 	sourceMacAddress = 56,
-	vlanId = 58,
+	// DST_MAC = 57, /* inconsistency in rfc3954 */
+	SRC_VLAN = 58, /* v9 only, ipfix using 243 */
 	IPV6_NEXT_HOP = 62,
 	IPV6_OPTION_HEADERS = 64,
 	destinationMacAddress = 80,
@@ -109,6 +112,8 @@ enum {
 	postNAPTSourceTransportPort = 227,
 	postNAPTDestinationTransportPort = 228,
 	natEvent = 230,
+	dot1qVlanId = 243, /* ipfix version of 58 */
+	dot1qCustomerVlanId = 245,
 	postNATSourceIPv6Address = 281,
 	postNATDestinationIPv6Address = 282,
 	IPSecSPI = 295,
@@ -180,7 +185,8 @@ struct ipt_netflow_tuple {
 	__be16		d_port; // -"-
 	__u16		i_ifc;	// Host byte order
 #ifdef ENABLE_VLAN
-	__be16		vlan;	// Host byte order
+	__u16		vlan;	// Host byte order
+	__u16		vlan2;	// -"-
 #endif
 	__u8		protocol;
 	__u8		tos;
