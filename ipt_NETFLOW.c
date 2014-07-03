@@ -184,11 +184,18 @@ MODULE_PARM_DESC(maxflows, "maximum number of flows");
 static int peakflows = 0;
 static unsigned long peakflows_at; /* jfffies */
 
+#ifndef DISABLE_AGGR
 #define AGGR_SIZE 1024
 static char aggregation_buf[AGGR_SIZE] = "";
 static char *aggregation = aggregation_buf;
 module_param(aggregation, charp, 0400);
 MODULE_PARM_DESC(aggregation, "aggregation ruleset");
+static LIST_HEAD(aggr_n_list);
+static LIST_HEAD(aggr_p_list);
+static DEFINE_RWLOCK(aggr_lock);
+static void aggregation_remove(struct list_head *list);
+static int add_aggregation(char *ptr);
+#endif
 
 static DEFINE_PER_CPU(struct ipt_netflow_stat, ipt_netflow_stat);
 static LIST_HEAD(usock_list);
@@ -216,9 +223,6 @@ static unsigned int htable_size __read_mostly = 0; /* buckets */
 #ifdef HAVE_LLIST
 static LLIST_HEAD(export_llist); /* flows to purge */
 #endif
-static LIST_HEAD(aggr_n_list);
-static LIST_HEAD(aggr_p_list);
-static DEFINE_RWLOCK(aggr_lock);
 #ifdef CONFIG_NF_NAT_NEEDED
 static LIST_HEAD(nat_list); /* nat events */
 static DEFINE_SPINLOCK(nat_lock);
@@ -275,8 +279,6 @@ static unsigned int metric = 100, min15_metric = 100, min5_metric = 100, min_met
 static int set_hashsize(int new_size);
 static void destination_removeall(void);
 static int add_destinations(char *ptr);
-static void aggregation_remove(struct list_head *list);
-static int add_aggregation(char *ptr);
 static int netflow_scan_and_export(int flush);
 enum {
 	DONT_FLUSH, AND_FLUSH
@@ -364,8 +366,10 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	unsigned long long pkt_drop = 0, traf_drop = 0;
 	unsigned long long pkt_out = 0, traf_out = 0;
 	struct ipt_netflow_sock *usock;
+#ifndef DISABLE_AGGR
 	struct netflow_aggr_n *aggr_n;
 	struct netflow_aggr_p *aggr_p;
+#endif
 	int snum = 0;
 	int peak = (jiffies - peakflows_at) / HZ;
 
@@ -512,6 +516,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	}
 	mutex_unlock(&sock_lock);
 
+#ifndef DISABLE_AGGR
 	read_lock_bh(&aggr_lock);
 	snum = 0;
 	list_for_each_entry(aggr_n, &aggr_n_list, list) {
@@ -534,6 +539,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		snum++;
 	}
 	read_unlock_bh(&aggr_lock);
+#endif
 #ifdef SNMP_RULES
 	{
 		const unsigned char *rules;
@@ -859,6 +865,7 @@ static int destination_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 	return ret;
 }
 
+#ifndef DISABLE_AGGR
 static int aggregation_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
@@ -871,6 +878,7 @@ static int aggregation_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 		add_aggregation(aggregation_buf);
 	return ret;
 }
+#endif
 
 #ifdef SNMP_RULES
 static int add_snmp_rules(char *ptr);
@@ -1018,6 +1026,7 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.maxlen		= sizeof(destination_buf),
 		.proc_handler	= &destination_procctl,
 	},
+#ifndef DISABLE_AGGR
 	{
 		_CTL_NAME(7)
 		.procname	= "aggregation",
@@ -1026,6 +1035,7 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.maxlen		= sizeof(aggregation_buf),
 		.proc_handler	= &aggregation_procctl,
 	},
+#endif
 	{
 		_CTL_NAME(8)
 		.procname	= "maxflows",
@@ -1426,6 +1436,7 @@ static int add_destinations(char *ptr)
 	return 0;
 }
 
+#ifndef DISABLE_AGGR
 static void aggregation_remove(struct list_head *list)
 {
 	write_lock_bh(&aggr_lock);
@@ -1512,6 +1523,7 @@ static int add_aggregation(char *ptr)
 	aggregation_remove(&old_aggr_list);
 	return 0;
 }
+#endif
 
 static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple)
 {
@@ -2895,8 +2907,10 @@ static unsigned int netflow_target(
 	struct ipt_netflow_tuple tuple;
 	struct ipt_netflow *nf;
 	__u8 tcp_flags;
+#ifndef DISABLE_AGGR
 	struct netflow_aggr_n *aggr_n;
 	struct netflow_aggr_p *aggr_p;
+#endif
 	__u8 s_mask, d_mask;
 	unsigned int ptr;
 	int fragment;
@@ -3108,6 +3122,7 @@ do_protocols:
 	       	}
 	} /* not fragmented */
 
+#ifndef DISABLE_AGGR
 	/* aggregate networks */
 	read_lock(&aggr_lock);
 	if (family == AF_INET) {
@@ -3149,6 +3164,7 @@ do_protocols:
 			}
 	}
 	read_unlock(&aggr_lock);
+#endif
 
 	hash = hash_netflow(&tuple);
 	read_lock(&htable_rwlock);
@@ -3554,7 +3570,7 @@ static int __init ipt_netflow_init(void)
 #endif
 
 	if (!destination)
-		destination = aggregation_buf;
+		destination = destination_buf;
 	if (destination != destination_buf) {
 		strlcpy(destination_buf, destination, sizeof(destination_buf));
 		destination = destination_buf;
@@ -3562,6 +3578,7 @@ static int __init ipt_netflow_init(void)
 	if (add_destinations(destination) < 0)
 		goto err_free_sysctl;
 
+#ifndef DISABLE_AGGR
 	if (!aggregation)
 		aggregation = aggregation_buf;
 	if (aggregation != aggregation_buf) {
@@ -3569,6 +3586,7 @@ static int __init ipt_netflow_init(void)
 		aggregation = aggregation_buf;
 	}
 	add_aggregation(aggregation);
+#endif
 
 #ifdef SNMP_RULES
 	if (!snmp_rules)
@@ -3603,8 +3621,10 @@ err_stop_timer:
 	del_timer_sync(&rate_timer);
 	free_templates();
 	destination_removeall();
+#ifndef DISABLE_AGGR
 	aggregation_remove(&aggr_n_list);
 	aggregation_remove(&aggr_p_list);
+#endif
 err_free_sysctl:
 #ifdef CONFIG_SYSCTL
 	unregister_sysctl_table(netflow_sysctl_header);
@@ -3651,8 +3671,10 @@ static void __exit ipt_netflow_fini(void)
 
 	free_templates();
 	destination_removeall();
+#ifndef DISABLE_AGGR
 	aggregation_remove(&aggr_n_list);
 	aggregation_remove(&aggr_p_list);
+#endif
 #ifdef SNMP_RULES
 	kfree(snmp_ruleset);
 #endif

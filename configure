@@ -250,11 +250,12 @@ show_help() {
   echo "  --ipt-inc=..  directory for iptable headers (ex.: /usr/include)"
   echo "  --kver=..     kernel version (ex.: 2.6.30-std-def-alt15)"
   echo "  --kdir=..     directory for kernel source (ex.: /usr/src/kernel)"
-  echo "  --enable-natevents   enables natevents support"
-  echo "  --enable-connmark    enables connmark support"
-  echo "  --enable-debugfs     enables debugfs support for flow lists"
-  echo "  --enable-snmp-rules  enables SNMP-index conversion rules"
-  echo "  --enable-macaddress  enables MAC address for v9/IPFIX"
+  echo "  --enable-natevents     enables natevents support"
+  echo "  --enable-connmark      enables connmark support"
+  echo "  --enable-debugfs       enables debugfs support for flow lists"
+  echo "  --enable-snmp-rules    enables SNMP-index conversion rules"
+  echo "  --enable-macaddress    enables MAC address for v9/IPFIX"
+  echo "  --disable-aggregation  disable aggregation rules"
   exit 0
 }
 
@@ -280,6 +281,7 @@ do
     --enable-snmp*)  KOPTS="$KOPTS -DSNMP_RULES" ;;
     --enable-mac*)   KOPTS="$KOPTS -DENABLE_MAC" ;;
     --enable-vlan*)  KOPTS="$KOPTS -DENABLE_VLAN" ;;
+    --disable-aggr*) KOPTS="$KOPTS -DDISABLE_AGGR" ;;
     --make) echo called from make ;;
     --help) show_help ;;
     -*) echo Invalid option: $ac_option; exit 1 ;;
