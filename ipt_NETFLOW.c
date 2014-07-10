@@ -3347,8 +3347,8 @@ do_protocols:
 			printk(KERN_INFO "ipt_NETFLOW: new (%u) %hd:%hd SRC=%u.%u.%u.%u:%u DST=%u.%u.%u.%u:%u\n",
 			       atomic_read(&ipt_netflow_count),
 			       tuple.i_ifc, nf->o_ifc,
-			       NIPQUAD(tuple.s_addr), ntohs(tuple.s_port),
-			       NIPQUAD(tuple.d_addr), ntohs(tuple.d_port));
+			       NIPQUAD(tuple.src.ip), ntohs(tuple.s_port),
+			       NIPQUAD(tuple.dst.ip), ntohs(tuple.d_port));
 #endif
 	}
 
