@@ -373,7 +373,35 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	int snum = 0;
 	int peak = (jiffies - peakflows_at) / HZ;
 
-	seq_printf(seq, "ipt_NETFLOW version " IPT_NETFLOW_VERSION ", srcversion %s\n",
+	seq_printf(seq, "ipt_NETFLOW version " IPT_NETFLOW_VERSION ", srcversion %s;"
+#ifndef DISABLE_AGGR
+	    " aggr"
+#endif
+#ifdef ENABLE_CT
+	    " ct"
+#endif
+#ifdef ENABLE_DEBUGFS
+	    " debugfs"
+#endif
+#ifdef HAVE_LLIST
+	    " llist"
+#endif
+#ifdef ENABLE_MAC
+	    " mac"
+#endif
+#ifdef CONFIG_NF_CONNTRACK_MARK
+	    " mark"
+#endif
+#ifdef CONFIG_NF_NAT_NEEDED
+	    " nel"
+#endif
+#ifdef SNMP_RULES
+	    " snmp"
+#endif
+#ifdef ENABLE_VLAN
+	    " vlan"
+#endif
+	    "\n",
 	    THIS_MODULE->srcversion);
 	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d"
 	    " (%u ms, %u us, %u:%u"
