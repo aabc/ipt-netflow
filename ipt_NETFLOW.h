@@ -251,7 +251,7 @@ struct ipt_netflow {
 
 #ifdef CONFIG_NF_NAT_NEEDED
 enum {
-	NAT_CREATE, NAT_DESTROY, NAT_POOLEXHAUSTED
+	NAT_CREATE = 1, NAT_DESTROY = 2, NAT_POOLEXHAUSTED = 3
 };
 struct nat_event {
 	struct list_head list;
