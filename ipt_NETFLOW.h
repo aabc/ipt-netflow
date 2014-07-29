@@ -113,7 +113,10 @@ enum {
 	postNAPTDestinationTransportPort = 228,
 	natEvent = 230,
 	dot1qVlanId = 243, /* ipfix version of 58 */
+	dot1qPriority = 244,
 	dot1qCustomerVlanId = 245,
+	dot1qCustomerPriority = 246,
+	ethernetType = 256,
 	postNATSourceIPv6Address = 281,
 	postNATDestinationIPv6Address = 282,
 	IPSecSPI = 295,
@@ -185,8 +188,8 @@ struct ipt_netflow_tuple {
 	__be16		d_port; // -"-
 	__u16		i_ifc;	// Host byte order
 #ifdef ENABLE_VLAN
-	__u16		vlan;	// Host byte order
-	__u16		vlan2;	// -"-
+	__be16		tag1;	// Network byte order (outer tag)
+	__be16		tag2;	// -"-
 #endif
 	__u8		protocol;
 	__u8		tos;
@@ -206,6 +209,9 @@ struct ipt_netflow {
 
 	/* volatile data */
 	union nf_inet_addr nh;
+#if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
+	__be16		ethernetType; /* Network byte order */
+#endif
 	__u16		o_ifc;
 #ifdef SNMP_RULES
 	__u16		i_ifcr;
