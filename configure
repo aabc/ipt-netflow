@@ -256,6 +256,7 @@ show_help() {
   echo "  --enable-snmp-rules    enables SNMP-index conversion rules"
   echo "  --enable-macaddress    enables MAC address for v9/IPFIX"
   echo "  --enable-vlan          enables VLAN Ids for v9/IPFIX"
+  echo "  --enable-direction     enables flowDirection(61) Element"
   echo "  --disable-aggregation  disables aggregation rules"
   exit 0
 }
@@ -282,6 +283,7 @@ do
     --enable-snmp*)  KOPTS="$KOPTS -DSNMP_RULES" ;;
     --enable-mac*)   KOPTS="$KOPTS -DENABLE_MAC" ;;
     --enable-vlan*)  KOPTS="$KOPTS -DENABLE_VLAN" ;;
+    --enable-direc*) KOPTS="$KOPTS -DENABLE_DIRECTION" ;;
     --disable-aggr*) KOPTS="$KOPTS -DDISABLE_AGGR" ;;
     --make) echo called from make ;;
     --help) show_help ;;

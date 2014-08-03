@@ -101,6 +101,7 @@ enum {
 	sourceMacAddress = 56,
 	// DST_MAC = 57, /* inconsistency in rfc3954 */
 	SRC_VLAN = 58, /* v9 only, ipfix using 243 */
+	DIRECTION = 61,
 	IPV6_NEXT_HOP = 62,
 	IPV6_OPTION_HEADERS = 64,
 	destinationMacAddress = 80,
@@ -220,7 +221,9 @@ struct ipt_netflow {
 	__u8		s_mask;
 	__u8		d_mask;
 	__u8		tcp_flags; /* `OR' of all tcp flags */
-
+#ifdef ENABLE_DIRECTION
+	__u8		hooknumx; /* hooknum + 1 */
+#endif
 	/* flow statistics */
 	u_int32_t	nr_packets;
 	u_int32_t	nr_bytes;

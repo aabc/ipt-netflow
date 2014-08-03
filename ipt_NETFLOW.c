@@ -1898,6 +1898,7 @@ static u_int8_t tpl_element_sizes[] = {
 	//[TOTAL_BYTES_EXP]	= 4,
 	//[TOTAL_PKTS_EXP]	= 4,
 	//[TOTAL_FLOWS_EXP]	= 4,
+	[DIRECTION]	= 1,
 	[sourceMacAddress]		   = ETH_ALEN,
 	[SRC_VLAN]			   = 2,
 	[IPV6_NEXT_HOP]			   = 16,
@@ -1953,6 +1954,7 @@ struct base_template {
 #define BTPL_VLANX	0x00020000	/* outer VLAN for IPFIX */
 #define BTPL_VLANI	0x00040000	/* inner VLAN (IPFIX) */
 #define BTPL_ETHERTYPE	0x00080000	/* ethernetType */
+#define BTPL_DIRECTION	0x00100000	/* flowDirection */
 #define BTPL_MAX	32
 
 static struct base_template template_base = {
@@ -2000,6 +2002,11 @@ static struct base_template template_vlan_inner = {
 		dot1qCustomerPriority,
 		0
 	}
+};
+#endif
+#ifdef ENABLE_DIRECTION
+static struct base_template template_direction = {
+	.types = { DIRECTION, 0 }
 };
 #endif
 static struct base_template template_ipv4 = {
@@ -2172,6 +2179,10 @@ static struct data_template *get_template(const int tmask)
 	if (tmask & BTPL_ETHERTYPE)
 		tlist[tnum++] = &template_ethertype;
 #endif
+#ifdef ENABLE_DIRECTION
+	if (tmask & BTPL_DIRECTION)
+		tlist[tnum++] = &template_direction;
+#endif
 
 	/* calc memory size */
 	length = 0;
@@ -2258,6 +2269,22 @@ static inline s64 portable_ktime_to_ms(const ktime_t kt)
 #define ktime_to_ms portable_ktime_to_ms
 #endif
 
+#ifdef ENABLE_DIRECTION
+static inline __u8 hook2dir(const __u8 hooknum)
+{
+	switch (hooknum) {
+	case NF_INET_PRE_ROUTING:
+	case NF_INET_LOCAL_IN:
+		return 0;
+	case NF_INET_LOCAL_OUT:
+	case NF_INET_POST_ROUTING:
+		return 1;
+	default:
+		return -1;
+	}
+}
+#endif
+
 /* encode one field */
 typedef struct in6_addr in6_t;
 static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_netflow *nf)
@@ -2294,6 +2321,9 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 #ifdef ENABLE_MAC
 		case destinationMacAddress: memcpy(ptr, &nf->tuple.h_dst, ETH_ALEN); break;
 		case sourceMacAddress:	    memcpy(ptr, &nf->tuple.h_src, ETH_ALEN); break;
+#endif
+#ifdef ENABLE_DIRECTION
+		case DIRECTION:		       *ptr = hook2dir(nf->hooknumx - 1); break;
 #endif
 		case PROTOCOL:	               *ptr = nf->tuple.protocol; break;
 		case TCP_FLAGS:	               *ptr = nf->tcp_flags; break;
@@ -2417,6 +2447,10 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 #if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
 	if (nf->ethernetType)
 		tpl_mask |= BTPL_ETHERTYPE;
+#endif
+#ifdef ENABLE_DIRECTION
+	if (nf->hooknumx)
+		tpl_mask |= BTPL_DIRECTION;
 #endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	if (nf->nat)
@@ -3093,6 +3127,9 @@ static unsigned int netflow_target(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 	const int family = target->family;
 #else
+#ifdef ENABLE_DIRECTION
+	const int hooknum = par->hooknum;
+#endif
 	const int family = par->family;
 #endif
 	struct ipt_netflow_tuple tuple;
@@ -3418,6 +3455,9 @@ do_protocols:
 #else /* since 2.6.31 */
 		rt = skb_rtable(skb);
 #endif
+#endif
+#ifdef ENABLE_DIRECTION
+		nf->hooknumx = hooknum + 1;
 #endif
 		if (likely(family == AF_INET)) {
 			if (rt)
