@@ -286,6 +286,7 @@ do
     --enable-direc*) KOPTS="$KOPTS -DENABLE_DIRECTION" ;;
     --disable-aggr*) KOPTS="$KOPTS -DDISABLE_AGGR" ;;
     --make) echo called from make ;;
+    -Werror) KOPTS="$KOPTS -Werror" ;;
     --help|-h) show_help ;;
     -*) echo Invalid option: $ac_option; exit 1 ;;
 #    *) ni="$ni $ac_option" ;;
