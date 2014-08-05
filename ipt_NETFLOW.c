@@ -2268,6 +2268,14 @@ static inline s64 portable_ktime_to_ms(const ktime_t kt)
 }
 #define ktime_to_ms portable_ktime_to_ms
 #endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
+static inline s64 portable_ktime_to_us(const ktime_t kt)
+{
+	struct timeval tv = ktime_to_timeval(kt);
+	return (s64) tv.tv_sec * USEC_PER_SEC + tv.tv_usec;
+}
+#define ktime_to_us portable_ktime_to_us
+#endif
 
 #ifdef ENABLE_DIRECTION
 static inline __u8 hook2dir(const __u8 hooknum)
