@@ -4,9 +4,9 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
    kernel. Supporting IPv4 and IPv6. Created to be useful for highly loaded
    linux router. It should be used as iptables target. Also can export NAT
    translation events using NetFlow Event Logging (NEL) for v9, IPFIX, or
-   specially crafted v5 pseudo-flows. Additional options is like SNMP-index
-   translation rules, aggregation rules, ethernet VLAN and MAC addresses
-   exporting.
+   specially crafted v5 pseudo-flows. Additional options is SNMP-index
+   translation rules, aggregation rules, ethernet type, VLAN, and MAC
+   addresses exporting.
 
 
 ============================
@@ -110,31 +110,48 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
    Configure script allows to enable or disable optional features:
 
      --enable-connmark
-         enables connmark support (requires conntrack).
+         enables connmark support (requires conntrack to be enabled).
+         Connmark will be exported in commonPropertiesId(137) Element.
 
      --enable-natevents
          enables natevents (NEL) support, (this and previous option will
-         require conntrack support enabled into kernel and conntack module
-         (nf_conntrack) loaded before ipt_NETFLOW. Usually this is done
-	 automatically because of `depmod', but if you don't do `make
-	 install' you'll need to load nf_conntrack manually.
+         require conntrack support to be enabled into kernel and conntack
+         module (nf_conntrack) loaded before ipt_NETFLOW. Usually this is
+         done automatically because of `depmod', but if you don't do `make
+         install' you'll need to load nf_conntrack manually.
          Read below for explanation of natevents.
 
      --enable-snmp-rules
          enables SNMP-index conversion rules. Read below for explanation
-	 of snmp-rules.
+         of snmp-rules.
 
      --enable-macaddress
          enables exporting of src and dst MAC addresses for every flow
-	 in v9/IPFIX. Difference in any of MAC address will be accounted
-	 as differnt flow.
+         in v9/IPFIX. Difference in any of MAC address will be accounted
+         as differnt flow. I.e. MAC addresses will be part of flow key.
 
      --enable-vlan
-         enables exporting of VLAN Ids for every flow in v9/IPFIX.
+         enables exporting of dot1q VLAN Ids and Priorities for every flow
+         in v9/IPFIX. It supports outer and second dot1q tags if present.
+
+         Any of two previous options will enable exporting of Ethernet Packet
+         Type, ethernetType(256).
+
+     --enable-direction
+         enables exporting of flowDirection(61) Element for v9/IPFIX.
+
+         Packets captured in PREROUTING and INPUT chains will be accounted as
+         ingress flows(0), in OUTPUT and POSTROUTING as egress flows(1), and
+         in FORWARD will have flowDirection set to undefined value 255.
 
      --disable-aggregation
          disables aggregation rules (they are enabled by default).
-	 Read below for explanation of aggregation.
+         Read below for explanation of aggregation.
+
+     --enable-debugfs
+         enabled debugfs interface to active flows list. NB! This is for debug
+         purposes only. cat /sys/kernel/debug/netflow_dump to see all currently
+         accouned flows.
 
 
 ===========
@@ -203,6 +220,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
    For details on how they are exported for different protocol versions see
    below.
 
+
 ===========
 = OPTIONS =
 ===========
@@ -231,20 +249,23 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
          Src IP, Src Port  is Pre-nat source address.
          Dst IP, Dst Port  is Post-nat destination address.
            - These two fields made equal to data flows catched in FORWARD chain.
-	 Nexthop, Src AS  is Post-nat source address for SNAT. Or,
-	 Nexthop, Dst AS  is Pre-nat destination address for DNAT.
-	 TCP Flags is SYN+SCK for start event, RST+FIN for stop event.
-	 Pkt/Traffic size is 0 (zero), so it won't interfere with accounting.
+         Nexthop, Src AS  is Post-nat source address for SNAT. Or,
+         Nexthop, Dst AS  is Pre-nat destination address for DNAT.
+         TCP Flags is SYN+SCK for start event, RST+FIN for stop event.
+         Pkt/Traffic size is 0 (zero), so it won't interfere with accounting.
 
        Natevents are compilation disabled by default, to enable you will need to
        add --enable-natevents option to ./configure script.
 
+       For techical description of NAT Events see:
+         http://tools.ietf.org/html/draft-ietf-behave-ipfix-nat-logging-04
+
    inactive_timeout=15
-     - export flow after it's inactive 15 seconds. Default value is 15.
+     - export flow after it's inactive for 15 seconds. Default value is 15.
 
    active_timeout=1800
-     - export flow after it's active 1800 seconds (30 minutes). Default valuae
-       is 1800.
+     - export flow after it's active for 1800 seconds (30 minutes). Default
+       value is 1800.
 
    refresh-rate=20
      - for NetFlow v9 and IPFIX it's rate how frequently to re-send templates
@@ -258,9 +279,9 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
      - debug level (none).
 
    sndbuf=number
-     - size of output socket buffer in bytes. I recommend you to put
-       higher value if you experience netflow packet drops (can be
-       seen in statistics as 'sock: fail' number.)
+     - size of output socket buffer in bytes. I recommend you to put higher
+       value if you experience netflow packet drops (can be seen in statistics
+       as 'sock: fail' number.)
        Default value is system default.
 
    hashsize=number
@@ -271,7 +292,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 
    maxflows=2000000
      - Maximum number of flows to account. It's here to prevent DOS attacks.
-       After this limit reached new flows will not be accounted. Default is
+       After this limit is reached new flows will not be accounted. Default is
        2000000, zero is unlimited.
 
    aggregation=string..
@@ -306,14 +327,14 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 
        Quoting man fprobe-ulog:
 
-	 "Comma separated list of interface name to SNMP-index conversion
-	 rules.  Each rule consists of interface base name and SNMP-index
-	 base separated by colon (e.g. ppp:200). Final SNMP-index is  sum
-	 of corresponding SNMP-index base and interface number.
-	 In the above example SNMP-index of interface ppp11 is 211.
+         "Comma separated list of interface name to SNMP-index conversion
+         rules.  Each rule consists of interface base name and SNMP-index
+         base separated by colon (e.g. ppp:200). Final SNMP-index is  sum
+         of corresponding SNMP-index base and interface number.
+         In the above example SNMP-index of interface ppp11 is 211.
 
-	 If interface  name  did not fit to any of conversion rules then
-	 SNMP-index will be taken from kernel."
+         If interface  name  did not fit to any of conversion rules then
+         SNMP-index will be taken from kernel."
 
        This implementation isn't optimized for performance (no rule caching
        or hashing), but should be fast if rules list are short.
@@ -336,16 +357,31 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 
   How to interpret the data:
 
-> Flows: active 5187 (peak 83905 reached 0d0h1m ago, maxflows 2000000), mem 283K, worker delay 100/1000.
+> ipt_NETFLOW version v1.8-122-gfae9d59-dirty, srcversion 6141961152BE0DFA6A21EF4; aggr mac vlan
+
+  This line helps to identify actual source that your module is build on.
+  Please always supply it in all bug reports.
+
+  v1.8-122: 1.8 is release, 122 is commit number after release;
+  -gfae9d59: fae9d59 is short git commit id;
+  -dirty: if present, meaning that git detected that sources are changed since
+      last git commit, you may wish to do `git diff' to view changes;
+  srcversion 6141961152BE0DFA6A21EF4: binary version of module, you can
+      compare this with data from `modinfo ./ipt_NETFLOW.ko' to identify
+      actual binary loaded;
+  aggr mac vlan: tags to identify compile time options that are enabled.
+
+> Flows: active 5187 (peak 83905 reached 0d0h1m ago), mem 283K, worker delay 100/1000 (37 ms, 0 us, 4:0 0 [3]).
 
   active X: currently active flows in memory cache.
     - for optimum CPU performance it is recommended to set hash table size to
-      twice of average of this value, or higher.
+      at least twice of average of this value, or higher.
   peak X reached Y ago: peak value of active flows.
   mem XK: how much kilobytes of memory currently taken by active flows.
     - one active flow taking 56 bytes of memory.
     - there is system limit on cache size too.
   worker delay X/HZ: how frequently exporter scan flows table per second.
+  Rest is boring debug info.
 
 > Hash: size 8192 (mem 32K), metric 1.00, [1.00, 1.00, 1.00]. MemTraf: 1420 pkt, 364 K (pdu 0, 0).
 
@@ -465,6 +501,47 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 > aggr0: ...
   aggrX: aggregation rulesets.
     - controlled by sysctl net.netflow.aggregation variable.
+
+==========================
+= NetFlow considerations =
+==========================
+
+  List of all IPFIX Elements http://www.iana.org/assignments/ipfix/ipfix.xhtml
+
+  Flow Keys are Elements that distinguish flows. Quoting RFC: "If a Flow
+  Record for a specific Flow Key value already exists, the Flow Record is
+  updated; otherwise, a new Flow Record is created."
+
+  In this implementation following Elements are treated as Flow Keys:
+
+     IPv4 source address:        sourceIPv4Address(8),
+     IPv6 source address:        sourceIPv6Address(27),
+     IPv4 destination address:   destinationIPv4Address(12),
+     IPv6 destination address:   destinationIPv6Address(28),
+     TCP/UDP source port:        sourceTransportPort(7),
+     TCP/UDP destination port:   destinationTransportPort(11),
+     input interface:            ingressInterface(10),
+     IP protocol:                protocolIdentifier(4),
+     IP TOS:                     ipClassOfService(5),
+     and address family (IP or IPv6).
+
+  If VLAN exporting is enabled:
+     First (outer) dot1q VLAN tag: dot1qVlanId(243) and
+                                 dot1qPriority(244) for IPFIX,
+                                 or vlanId(243) for NetFlow v9.
+     Second (customer) dot1q VLAN tag: dot1qCustomerVlanId(245)
+                                 and dot1qCustomerPriority(246).
+
+  If MAC address exporting is enabled:
+     Destination MAC address:    destinationMacAddress(80),
+     Source MAC address:         sourceMacAddress(56).
+
+  Other Elements are not Flow Keys. Note that outer interface, which is
+  egressInterface(14), is not regarded as Flow Key. Quoting RFC7012: "For
+  Information Elements ... for which the value may change from packet to packet
+  within a single Flow, the exported value of an Information Element is by
+  default determined by the first packet observed for the corresponding Flow".
+
 
 =========
 = VOILA =
