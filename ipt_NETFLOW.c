@@ -111,7 +111,7 @@
 #define ipt_target xt_target
 #endif
 
-#define IPT_NETFLOW_VERSION "1.8.3" /* Note that if you are using git, you
+#define IPT_NETFLOW_VERSION "2.0"   /* Note that if you are using git, you
 				       will see version in other format. */
 #include "version.h"
 #ifdef GITVERSION
