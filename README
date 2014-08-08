@@ -225,6 +225,9 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 = OPTIONS =
 ===========
 
+   Options can be passed as parameters to module or changed dynamically
+   via  sysctl net.netflow
+
    protocol=5
      - what version of NetFlow protocol to use. Default is 5.
        You can choose from 5, 9, or 10 (where 10 is IPFIX). If you plan
@@ -343,6 +346,11 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 
        snmp-rules are compilation disabled by default, to enable you will need
        to add --enable-snmp option to ./configure script.
+
+   scan-min = 1
+     - Minimal interval between flow export scans. Sometimes could be useful
+       to reduce load on exporting CPU by increasing this interval. Value are
+       in kernel jiffies units (which is x/HZ seconds).
 
 
 ====================

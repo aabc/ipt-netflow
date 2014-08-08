@@ -159,6 +159,12 @@ static unsigned int timeout_rate = 30;
 module_param(timeout_rate, uint, 0644);
 MODULE_PARM_DESC(timeout_rate, "NetFlow v9/IPFIX timeout rate (minutes)");
 
+static int one = 1;
+static unsigned int scan_min = 1;
+static unsigned int scan_max = HZ / 10;
+module_param(scan_min, uint, 0644);
+MODULE_PARM_DESC(scan_min, "Minimal interval between export scans (jiffies)");
+
 #ifdef SNMP_RULES
 static char snmp_rules_buf[DST_SIZE] = "";
 static char *snmp_rules = snmp_rules_buf;
@@ -305,8 +311,7 @@ static inline int mask2bits(__be32 mask) {
 /* under that lock worker is always stopped and not rescheduled,
  * and we can call worker sub-functions manually */
 static DEFINE_MUTEX(worker_lock);
-#define MIN_DELAY 1
-#define MAX_DELAY (HZ / 10)
+
 static int worker_delay = HZ / 10;
 static inline void _schedule_scan_worker(const int status)
 {
@@ -317,10 +322,11 @@ static inline void _schedule_scan_worker(const int status)
 		worker_delay /= 2;
 	else
 		worker_delay++;
-	if (worker_delay < MIN_DELAY)
-		worker_delay = MIN_DELAY;
-	else if (worker_delay > MAX_DELAY)
-		worker_delay = MAX_DELAY;
+
+	if (worker_delay < scan_min)
+		worker_delay = scan_min;
+	else if (worker_delay > scan_max)
+		worker_delay = scan_max;
 	schedule_delayed_work(&netflow_work, worker_delay);
 }
 
@@ -404,7 +410,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	    "\n",
 	    THIS_MODULE->srcversion);
 	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d"
-	    " (%u ms, %u us, %u:%u"
+	    " [%d..%d] (%u ms, %u us, %u:%u"
 #ifdef HAVE_LLIST
 	    " %u"
 #endif
@@ -414,6 +420,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
 		   (unsigned int)((nr_flows * sizeof(struct ipt_netflow)) >> 10),
 		   worker_delay, HZ,
+		   scan_min, scan_max,
 		   jiffies_to_msecs(jiffies - wk_start),
 		   jiffies_to_usecs(wk_busy),
 		   wk_count,
@@ -1017,12 +1024,19 @@ static struct ctl_table_header *netflow_sysctl_header;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
 #define _CTL_NAME(x) .ctl_name = x,
+static void ctl_table_renumber(struct ctl_table *table)
+{
+	int c;
+
+	for (c = 1; table->procname; table++, c++)
+		table->ctl_name = c;
+}
 #else
 #define _CTL_NAME(x)
+#define ctl_table_renumber(x)
 #endif
 static struct ctl_table netflow_sysctl_table[] = {
 	{
-		_CTL_NAME(1)
 		.procname	= "active_timeout",
 		.mode		= 0644,
 		.data		= &active_timeout,
@@ -1030,7 +1044,6 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		_CTL_NAME(2)
 		.procname	= "inactive_timeout",
 		.mode		= 0644,
 		.data		= &inactive_timeout,
@@ -1038,7 +1051,6 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		_CTL_NAME(3)
 		.procname	= "debug",
 		.mode		= 0644,
 		.data		= &debug,
@@ -1046,7 +1058,6 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		_CTL_NAME(4)
 		.procname	= "hashsize",
 		.mode		= 0644,
 		.data		= &htable_size,
@@ -1054,14 +1065,12 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &hsize_procctl,
 	},
 	{
-		_CTL_NAME(5)
 		.procname	= "sndbuf",
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &sndbuf_procctl,
 	},
 	{
-		_CTL_NAME(6)
 		.procname	= "destination",
 		.mode		= 0644,
 		.data		= &destination_buf,
@@ -1070,7 +1079,6 @@ static struct ctl_table netflow_sysctl_table[] = {
 	},
 #ifndef DISABLE_AGGR
 	{
-		_CTL_NAME(7)
 		.procname	= "aggregation",
 		.mode		= 0644,
 		.data		= &aggregation_buf,
@@ -1079,7 +1087,6 @@ static struct ctl_table netflow_sysctl_table[] = {
 	},
 #endif
 	{
-		_CTL_NAME(8)
 		.procname	= "maxflows",
 		.mode		= 0644,
 		.data		= &maxflows,
@@ -1087,21 +1094,18 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		_CTL_NAME(9)
 		.procname	= "flush",
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &flush_procctl,
 	},
 	{
-		_CTL_NAME(10)
 		.procname	= "protocol",
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &protocol_procctl,
 	},
 	{
-		_CTL_NAME(11)
 		.procname	= "refresh-rate",
 		.mode		= 0644,
 		.data		= &refresh_rate,
@@ -1109,16 +1113,23 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		_CTL_NAME(12)
 		.procname	= "timeout-rate",
 		.mode		= 0644,
 		.data		= &timeout_rate,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &proc_dointvec,
 	},
+	{
+		.procname	= "scan-min",
+		.mode		= 0644,
+		.data		= &scan_min,
+		.maxlen		= sizeof(int),
+		.proc_handler	= &proc_dointvec_minmax,
+		.extra1		= &one,
+		.extra2		= &scan_max,
+	},
 #ifdef SNMP_RULES
 	{
-		_CTL_NAME(13)
 		.procname	= "snmp-rules",
 		.mode		= 0644,
 		.data		= &snmp_rules_buf,
@@ -1128,7 +1139,6 @@ static struct ctl_table netflow_sysctl_table[] = {
 #endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	{
-		_CTL_NAME(14)
 		.procname	= "natevents",
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
@@ -3798,6 +3808,7 @@ static int __init ipt_netflow_init(void)
 #endif
 
 #ifdef CONFIG_SYSCTL
+	ctl_table_renumber(netflow_sysctl_table);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
 	netflow_sysctl_header = register_sysctl_table(netflow_net_table
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,21)
