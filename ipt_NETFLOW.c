@@ -389,6 +389,9 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 #ifdef ENABLE_DEBUGFS
 	    " debugfs"
 #endif
+#ifdef ENABLE_DIRECTION
+	    " dir"
+#endif
 #ifdef HAVE_LLIST
 	    " llist"
 #endif
