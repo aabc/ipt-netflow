@@ -2090,9 +2090,11 @@ static struct base_template template_nat4 = {
 		0
 	}
 };
+#ifdef CONFIG_NF_CONNTRACK_MARK
 static struct base_template template_mark = {
 	.types = { commonPropertiesId, 0 }
 };
+#endif
 
 struct data_template {
 	struct hlist_node hlist;
@@ -2172,8 +2174,10 @@ static struct data_template *get_template(const int tmask)
 		tlist[tnum++] = &template_igmp;
 	if (tmask & BTPL_IPSEC)
 		tlist[tnum++] = &template_ipsec;
+#ifdef CONFIG_NF_CONNTRACK_MARK
 	if (tmask & BTPL_MARK)
 		tlist[tnum++] = &template_mark;
+#endif
 #ifdef ENABLE_MAC
 	if (tmask & BTPL_MAC)
 		tlist[tnum++] = &template_mac_ipfix;
