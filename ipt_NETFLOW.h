@@ -180,6 +180,10 @@ union nf_inet_addr {
 };
 #endif
 
+#define EXTRACT_SPI(tuple)	((tuple.s_port << 16) | tuple.d_port)
+#define SAVE_SPI(tuple, spi)	{ tuple.s_port = spi >> 16; \
+				  tuple.d_port = spi; }
+
 /* hashed data which identify unique flow */
 /* 16+16 + 2+2 + 2+1+1+1 = 41 */
 struct ipt_netflow_tuple {

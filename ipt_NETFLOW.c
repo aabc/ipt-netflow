@@ -2377,7 +2377,7 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 		case postNAPTDestinationTransportPort: *(__be16 *)ptr = nf->nat->post.d_port; break;
 		case natEvent:				         *ptr = nf->nat->nat_event; break;
 #endif
-		case IPSecSPI:        *(__u32 *)ptr = (nf->tuple.s_port << 16) | nf->tuple.d_port; break;
+		case IPSecSPI:        *(__be32 *)ptr = EXTRACT_SPI(nf->tuple); break;
 		case observationTimeMilliseconds:
 				      *(__be64 *)ptr = cpu_to_be64(ktime_to_ms(nf->ts_obs)); break;
 		case observationTimeMicroseconds:
@@ -2449,6 +2449,9 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 		tpl_mask |= BTPL_ICMP;
 	else if (nf->tuple.protocol == IPPROTO_IGMP)
 		tpl_mask |= BTPL_IGMP;
+        else if (nf->tuple.protocol == IPPROTO_AH ||
+                    nf->tuple.protocol == IPPROTO_ESP)
+                tpl_mask |= BTPL_IPSEC;
 #ifdef CONFIG_NF_CONNTRACK_MARK
 	if (nf->mark)
 		tpl_mask |= BTPL_MARK;
@@ -3182,6 +3185,15 @@ static unsigned int netflow_target(
 		return IPT_CONTINUE;
 	}
 
+#ifdef ENABLE_DEBUGFS
+	if (atomic_read(&freeze)) {
+		NETFLOW_STAT_INC(freeze_err);
+		NETFLOW_STAT_INC(pkt_drop);
+		NETFLOW_STAT_ADD(traf_drop, pkt_len);
+		return IPT_CONTINUE;
+	}
+#endif
+
 	tuple.l3proto	= family;
 	tuple.s_port	= 0;
 	tuple.d_port	= 0;
@@ -3275,15 +3287,17 @@ static unsigned int netflow_target(
 				break;
 			}
 			case IPPROTO_AH: {
-				struct ip_auth_hdr _hdr, *hp;
+				struct ip_auth_hdr _ahdr, *ap;
 
-				if (likely(hp = skb_header_pointer(skb, ptr, 8, &_hdr))) {
-					tuple.s_port = hp->spi >> 16;
-					tuple.d_port = hp->spi;
-				}
-				hdrlen = (hp->hdrlen + 2) << 2;
+				if (likely(ap = skb_header_pointer(skb, ptr, 8, &_ahdr)))
+					SAVE_SPI(tuple, ap->spi);
+				hdrlen = (ap->hdrlen + 2) << 2;
 				break;
 			}
+			case IPPROTO_ESP:
+				/* After this header everything is encrypted. */
+				tuple.protocol = currenthdr;
+				goto do_protocols;
 			default:
 				hdrlen = ipv6_optlen(hp);
 			}
@@ -3293,15 +3307,6 @@ static unsigned int netflow_target(
 		tuple.protocol	= currenthdr;
 		options |= observed_hdrs(currenthdr);
 	}
-
-#ifdef ENABLE_DEBUGFS
-	if (atomic_read(&freeze)) {
-		NETFLOW_STAT_INC(freeze_err);
-		NETFLOW_STAT_INC(pkt_drop);
-		NETFLOW_STAT_ADD(traf_drop, pkt_len);
-		return IPT_CONTINUE;
-	}
-#endif
 
 do_protocols:
 	if (fragment) {
@@ -3342,38 +3347,37 @@ do_protocols:
 			break;
 		    }
 		    case IPPROTO_ICMPV6: {
-			    struct icmp6hdr _icmp6h, *ic;
+			struct icmp6hdr _icmp6h, *ic;
 
-			    if (likely(family == AF_INET6 &&
-					(ic = skb_header_pointer(skb, ptr, 2, &_icmp6h))))
-				    tuple.d_port = htons((ic->icmp6_type << 8) | ic->icmp6_code);
-			    break;
+			if (likely(family == AF_INET6 &&
+				    (ic = skb_header_pointer(skb, ptr, 2, &_icmp6h))))
+				tuple.d_port = htons((ic->icmp6_type << 8) | ic->icmp6_code);
+			break;
 		    }
 		    case IPPROTO_IGMP: {
 			struct igmphdr _hdr, *hp;
 
 			if (likely(hp = skb_header_pointer(skb, ptr, 1, &_hdr)))
 				tuple.d_port = hp->type;
-			}
 			break;
+		    }
 		    case IPPROTO_AH: { /* IPSEC */
 			struct ip_auth_hdr _hdr, *hp;
 
-			if (likely(family == AF_INET && /* For IPv6 it's parsed above. */
-				    (hp = skb_header_pointer(skb, ptr, 8, &_hdr)))) {
-				tuple.s_port = hp->spi >> 16;
-				tuple.d_port = hp->spi;
-			}
+			/* This is for IPv4 only. IPv6 it's parsed above. */
+			if (likely(family == AF_INET &&
+				    (hp = skb_header_pointer(skb, ptr, 8, &_hdr))))
+				SAVE_SPI(tuple, hp->spi);
 			break;
 		    }
 		    case IPPROTO_ESP: {
 			struct ip_esp_hdr _hdr, *hp;
 
+			/* This is for both IPv4 and IPv6. */
 			if (likely(hp = skb_header_pointer(skb, ptr, 4, &_hdr)))
-				tuple.s_port = hp->spi >> 16;
-				tuple.d_port = hp->spi;
-			}
+				SAVE_SPI(tuple, hp->spi);
 			break;
+		    }
 	       	}
 	} /* not fragmented */
 
