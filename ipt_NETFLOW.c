@@ -2310,38 +2310,44 @@ static inline __u8 hook2dir(const __u8 hooknum)
 }
 #endif
 
+static inline void put_unaligned_be24(u32 val, unsigned char *p)
+{
+	*p++ = val >> 16;
+	put_unaligned_be16(val, p);
+}
+
 /* encode one field */
 typedef struct in6_addr in6_t;
 static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_netflow *nf)
 {
 	switch (type) {
-		case IN_BYTES:	     *(__be32 *)ptr = htonl(nf->nr_bytes); break;
-		case IN_PKTS:	     *(__be32 *)ptr = htonl(nf->nr_packets); break;
-		case FIRST_SWITCHED: *(__be32 *)ptr = htonl(jiffies_to_msecs(nf->ts_first)); break;
-		case LAST_SWITCHED:  *(__be32 *)ptr = htonl(jiffies_to_msecs(nf->ts_last)); break;
-		case IPV4_SRC_ADDR:  *(__be32 *)ptr = nf->tuple.src.ip; break;
-		case IPV4_DST_ADDR:  *(__be32 *)ptr = nf->tuple.dst.ip; break;
-		case IPV4_NEXT_HOP:  *(__be32 *)ptr = nf->nh.ip; break;
-		case L4_SRC_PORT:    *(__be16 *)ptr = nf->tuple.s_port; break;
-		case L4_DST_PORT:    *(__be16 *)ptr = nf->tuple.d_port; break;
+		case IN_BYTES:	     put_unaligned_be32(nf->nr_bytes, ptr); break;
+		case IN_PKTS:	     put_unaligned_be32(nf->nr_packets, ptr); break;
+		case FIRST_SWITCHED: put_unaligned_be32(jiffies_to_msecs(nf->ts_first), ptr); break;
+		case LAST_SWITCHED:  put_unaligned_be32(jiffies_to_msecs(nf->ts_last), ptr); break;
+		case IPV4_SRC_ADDR:  put_unaligned(nf->tuple.src.ip, (__be32 *)ptr); break;
+		case IPV4_DST_ADDR:  put_unaligned(nf->tuple.dst.ip, (__be32 *)ptr); break;
+		case IPV4_NEXT_HOP:  put_unaligned(nf->nh.ip, (__be32 *)ptr); break;
+		case L4_SRC_PORT:    put_unaligned(nf->tuple.s_port, (__be16 *)ptr); break;
+		case L4_DST_PORT:    put_unaligned(nf->tuple.d_port, (__be16 *)ptr); break;
 #ifdef SNMP_RULES
-		case INPUT_SNMP:     *(__be16 *)ptr = htons(nf->i_ifcr); break;
-		case OUTPUT_SNMP:    *(__be16 *)ptr = htons(nf->o_ifcr); break;
+		case INPUT_SNMP:     put_unaligned_be16(nf->i_ifcr, ptr); break;
+		case OUTPUT_SNMP:    put_unaligned_be16(nf->o_ifcr, ptr); break;
 #else
-		case INPUT_SNMP:     *(__be16 *)ptr = htons(nf->tuple.i_ifc); break;
-		case OUTPUT_SNMP:    *(__be16 *)ptr = htons(nf->o_ifc); break;
+		case INPUT_SNMP:     put_unaligned_be16(nf->tuple.i_ifc, ptr); break;
+		case OUTPUT_SNMP:    put_unaligned_be16(nf->o_ifc, ptr); break;
 #endif
 #ifdef ENABLE_VLAN
 #define EXTRACT_VLAN_PRIO(tag) ((ntohs(tag) & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT)
 		case SRC_VLAN:
-		case dot1qVlanId:    *(__be16 *)ptr = nf->tuple.tag1 & htons(VLAN_VID_MASK); break;
+		case dot1qVlanId:    put_unaligned(nf->tuple.tag1 & htons(VLAN_VID_MASK), (__be16 *)ptr); break;
 		case dot1qPriority:            *ptr = EXTRACT_VLAN_PRIO(nf->tuple.tag1); break;
 		case dot1qCustomerVlanId:
-				     *(__be16 *)ptr = nf->tuple.tag2 & htons(VLAN_VID_MASK); break;
+				     put_unaligned(nf->tuple.tag2 & htons(VLAN_VID_MASK), (__be16 *)ptr); break;
 		case dot1qCustomerPriority:    *ptr = EXTRACT_VLAN_PRIO(nf->tuple.tag2); break;
 #endif
 #if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
-		case ethernetType:   *(__be16 *)ptr = nf->ethernetType; break;
+		case ethernetType:   put_unaligned(nf->ethernetType, (__be16 *)ptr); break;
 #endif
 #ifdef ENABLE_MAC
 		case destinationMacAddress: memcpy(ptr, &nf->tuple.h_dst, ETH_ALEN); break;
@@ -2356,36 +2362,35 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 		case IPV6_SRC_ADDR:   *(in6_t *)ptr = nf->tuple.src.in6; break;
 		case IPV6_DST_ADDR:   *(in6_t *)ptr = nf->tuple.dst.in6; break;
 		case IPV6_NEXT_HOP:   *(in6_t *)ptr = nf->nh.in6; break;
-		case IPV6_FLOW_LABEL:        *ptr++ = nf->flow_label >> 16;
-				     *(__be16 *)ptr = nf->flow_label;
-				      break;
-		case tcpOptions:     *(__be32 *)ptr = htonl(nf->tcpoptions); break;
-		case ipv4Options:    *(__be32 *)ptr = htonl(nf->options); break;
-		case IPV6_OPTION_HEADERS: *(__be16 *)ptr = htons(nf->options); break;
+		case IPV6_FLOW_LABEL: put_unaligned_be24(nf->flow_label, ptr); break;
+		case tcpOptions:      put_unaligned_be32(nf->tcpoptions, ptr); break;
+		case ipv4Options:     put_unaligned_be32(nf->options, ptr); break;
+		case IPV6_OPTION_HEADERS:
+				     put_unaligned_be16(nf->options, ptr); break;
 #ifdef CONFIG_NF_CONNTRACK_MARK
 		case commonPropertiesId:
-				     *(__be32 *)ptr = htonl(nf->mark); break;
+				     put_unaligned_be32(nf->mark, ptr); break;
 #endif
 		case SRC_MASK:	               *ptr = nf->s_mask; break;
 		case DST_MASK:	               *ptr = nf->d_mask; break;
-		case ICMP_TYPE:	     *(__be16 *)ptr = nf->tuple.d_port; break;
+		case ICMP_TYPE:	     put_unaligned(nf->tuple.d_port, (__be16 *)ptr); break;
 		case MUL_IGMP_TYPE:            *ptr = nf->tuple.d_port; break;
 #ifdef CONFIG_NF_NAT_NEEDED
-		case postNATSourceIPv4Address:	       *(__be32 *)ptr = nf->nat->post.s_addr; break;
-		case postNATDestinationIPv4Address:    *(__be32 *)ptr = nf->nat->post.d_addr; break;
-		case postNAPTSourceTransportPort:      *(__be16 *)ptr = nf->nat->post.s_port; break;
-		case postNAPTDestinationTransportPort: *(__be16 *)ptr = nf->nat->post.d_port; break;
-		case natEvent:				         *ptr = nf->nat->nat_event; break;
+		case postNATSourceIPv4Address:	       put_unaligned(nf->nat->post.s_addr, (__be32 *)ptr); break;
+		case postNATDestinationIPv4Address:    put_unaligned(nf->nat->post.d_addr, (__be32 *)ptr); break;
+		case postNAPTSourceTransportPort:      put_unaligned(nf->nat->post.s_port, (__be16 *)ptr); break;
+		case postNAPTDestinationTransportPort: put_unaligned(nf->nat->post.d_port, (__be16 *)ptr); break;
+		case natEvent:		       *ptr = nf->nat->nat_event; break;
 #endif
-		case IPSecSPI:        *(__be32 *)ptr = EXTRACT_SPI(nf->tuple); break;
+		case IPSecSPI:       put_unaligned(EXTRACT_SPI(nf->tuple), (__be32 *)ptr); break;
 		case observationTimeMilliseconds:
-				      *(__be64 *)ptr = cpu_to_be64(ktime_to_ms(nf->ts_obs)); break;
+				     put_unaligned_be64(ktime_to_ms(nf->ts_obs), ptr); break;
 		case observationTimeMicroseconds:
-				      *(__be64 *)ptr = cpu_to_be64(ktime_to_us(nf->ts_obs)); break;
+				     put_unaligned_be64(ktime_to_us(nf->ts_obs), ptr); break;
 		case observationTimeNanoseconds:
-				      *(__be64 *)ptr = cpu_to_be64(ktime_to_ns(nf->ts_obs)); break;
+				     put_unaligned_be64(ktime_to_ns(nf->ts_obs), ptr); break;
 		default:
-					memset(ptr, 0, tpl_element_sizes[type]);
+				     memset(ptr, 0, tpl_element_sizes[type]);
 	}
 }
 
