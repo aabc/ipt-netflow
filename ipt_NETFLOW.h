@@ -105,7 +105,6 @@ enum {
 	IPV6_NEXT_HOP = 62,
 	IPV6_OPTION_HEADERS = 64,
 	destinationMacAddress = 80,
-	commonPropertiesId = 137, /* for MARK */
 	ipv4Options = 208,
 	tcpOptions = 209,
 	postNATSourceIPv4Address = 225,
@@ -244,9 +243,6 @@ struct ipt_netflow {
 	u_int32_t	flow_label; /* IPv6 */
 	u_int32_t	options; /* IPv4(16) & IPv6(32) Options */
 	u_int32_t	tcpoptions;
-#ifdef CONFIG_NF_CONNTRACK_MARK
-	u_int32_t	mark; /* Exported as commonPropertiesId */
-#endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	__be32		s_as;
 	__be32		d_as;

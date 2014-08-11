@@ -22,7 +22,6 @@ echo
 readarray -t opts <<EOF
 
   --enable-natevents    
-  --enable-connmark     
   --enable-snmp-rules   
   --enable-macaddress   
   --enable-vlan         

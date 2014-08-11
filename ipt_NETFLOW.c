@@ -43,9 +43,6 @@
 #ifndef ENABLE_NAT
 # undef CONFIG_NF_NAT_NEEDED
 #endif
-#ifndef ENABLE_CT
-# undef CONFIG_NF_CONNTRACK_MARK
-#endif
 #ifdef ENABLE_VLAN
 #include <linux/if_vlan.h>
 #endif
@@ -53,7 +50,7 @@
 #include <linux/if_ether.h>
 #include <linux/etherdevice.h>
 #endif
-#if defined(CONFIG_NF_NAT_NEEDED) || defined(CONFIG_NF_CONNTRACK_MARK)
+#if defined(CONFIG_NF_NAT_NEEDED)
 #include <linux/notifier.h>
 #include <net/netfilter/nf_conntrack.h>
 #include <net/netfilter/nf_conntrack_core.h>
@@ -383,9 +380,6 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 #ifndef DISABLE_AGGR
 	    " aggr"
 #endif
-#ifdef ENABLE_CT
-	    " ct"
-#endif
 #ifdef ENABLE_DEBUGFS
 	    " debugfs"
 #endif
@@ -397,9 +391,6 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 #endif
 #ifdef ENABLE_MAC
 	    " mac"
-#endif
-#ifdef CONFIG_NF_CONNTRACK_MARK
-	    " mark"
 #endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	    " nel"
@@ -1917,7 +1908,6 @@ static u_int8_t tpl_element_sizes[] = {
 	[IPV6_NEXT_HOP]			   = 16,
 	[IPV6_OPTION_HEADERS]		   = 2,
 	[destinationMacAddress]		   = ETH_ALEN,
-	[commonPropertiesId]		   = 4,
 	[ipv4Options]			   = 4,
 	[tcpOptions]			   = 4,
 	[postNATSourceIPv4Address]	   = 4,
@@ -1957,17 +1947,16 @@ struct base_template {
 #define BTPL_IGMP	0x00000040	/* IGMP */
 #define BTPL_IPSEC	0x00000080	/* AH&ESP */
 #define BTPL_NAT4	0x00000100	/* NAT IPv4 */
-#define BTPL_MARK	0x00000400	/* connmark */
-#define BTPL_LABEL6	0x00000800	/* IPv6 flow label */
-#define BTPL_OPTIONS4	0x00001000	/* IPv4 Options */
-#define BTPL_OPTIONS6	0x00002000	/* IPv6 Options */
-#define BTPL_TCPOPTIONS	0x00004000	/* TCP Options */
-#define BTPL_MAC	0x00008000	/* MAC addresses */
-#define BTPL_VLAN9	0x00010000	/* outer VLAN for v9 */
-#define BTPL_VLANX	0x00020000	/* outer VLAN for IPFIX */
-#define BTPL_VLANI	0x00040000	/* inner VLAN (IPFIX) */
-#define BTPL_ETHERTYPE	0x00080000	/* ethernetType */
-#define BTPL_DIRECTION	0x00100000	/* flowDirection */
+#define BTPL_LABEL6	0x00000200	/* IPv6 flow label */
+#define BTPL_OPTIONS4	0x00000400	/* IPv4 Options */
+#define BTPL_OPTIONS6	0x00000800	/* IPv6 Options */
+#define BTPL_TCPOPTIONS	0x00001000	/* TCP Options */
+#define BTPL_MAC	0x00002000	/* MAC addresses */
+#define BTPL_VLAN9	0x00004000	/* outer VLAN for v9 */
+#define BTPL_VLANX	0x00008000	/* outer VLAN for IPFIX */
+#define BTPL_VLANI	0x00010000	/* inner VLAN (IPFIX) */
+#define BTPL_ETHERTYPE	0x00020000	/* ethernetType */
+#define BTPL_DIRECTION	0x00040000	/* flowDirection */
 #define BTPL_MAX	32
 
 static struct base_template template_base = {
@@ -2090,11 +2079,6 @@ static struct base_template template_nat4 = {
 		0
 	}
 };
-#ifdef CONFIG_NF_CONNTRACK_MARK
-static struct base_template template_mark = {
-	.types = { commonPropertiesId, 0 }
-};
-#endif
 
 struct data_template {
 	struct hlist_node hlist;
@@ -2174,10 +2158,6 @@ static struct data_template *get_template(const int tmask)
 		tlist[tnum++] = &template_igmp;
 	if (tmask & BTPL_IPSEC)
 		tlist[tnum++] = &template_ipsec;
-#ifdef CONFIG_NF_CONNTRACK_MARK
-	if (tmask & BTPL_MARK)
-		tlist[tnum++] = &template_mark;
-#endif
 #ifdef ENABLE_MAC
 	if (tmask & BTPL_MAC)
 		tlist[tnum++] = &template_mac_ipfix;
@@ -2367,10 +2347,6 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 		case ipv4Options:     put_unaligned_be32(nf->options, ptr); break;
 		case IPV6_OPTION_HEADERS:
 				     put_unaligned_be16(nf->options, ptr); break;
-#ifdef CONFIG_NF_CONNTRACK_MARK
-		case commonPropertiesId:
-				     put_unaligned_be32(nf->mark, ptr); break;
-#endif
 		case SRC_MASK:	               *ptr = nf->s_mask; break;
 		case DST_MASK:	               *ptr = nf->d_mask; break;
 		case ICMP_TYPE:	     put_unaligned(nf->tuple.d_port, (__be16 *)ptr); break;
@@ -2457,10 +2433,6 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
         else if (nf->tuple.protocol == IPPROTO_AH ||
                     nf->tuple.protocol == IPPROTO_ESP)
                 tpl_mask |= BTPL_IPSEC;
-#ifdef CONFIG_NF_CONNTRACK_MARK
-	if (nf->mark)
-		tpl_mask |= BTPL_MARK;
-#endif
 #ifdef ENABLE_MAC
 	if (!is_zero_ether_addr(nf->tuple.h_src) ||
 	    !is_zero_ether_addr(nf->tuple.h_dst))
@@ -3511,16 +3483,6 @@ do_protocols:
 			       NIPQUAD(tuple.dst.ip), ntohs(tuple.d_port));
 #endif
 	}
-
-#ifdef CONFIG_NF_CONNTRACK_MARK
-	{
-		struct nf_conn *ct;
-		enum ip_conntrack_info ctinfo;
-		ct = nf_ct_get(skb, &ctinfo);
-		if (ct)
-			nf->mark = ct->mark;
-	}
-#endif
 
 	nf->nr_packets++;
 	nf->nr_bytes += pkt_len;

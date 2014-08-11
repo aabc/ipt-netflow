@@ -109,13 +109,9 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 
    Configure script allows to enable or disable optional features:
 
-     --enable-connmark
-         enables connmark support (requires conntrack to be enabled).
-         Connmark will be exported in commonPropertiesId(137) Element.
-
      --enable-natevents
-         enables natevents (NEL) support, (this and previous option will
-         require conntrack support to be enabled into kernel and conntack
+         enables natevents (NEL) support, (this and option will require
+	 conntrack support to be enabled into kernel and conntack
          module (nf_conntrack) loaded before ipt_NETFLOW. Usually this is
          done automatically because of `depmod', but if you don't do `make
          install' you'll need to load nf_conntrack manually.

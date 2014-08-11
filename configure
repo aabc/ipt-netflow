@@ -251,7 +251,6 @@ show_help() {
   echo "  --kver=..     kernel version (ex.: 2.6.30-std-def-alt15)"
   echo "  --kdir=..     directory for kernel source (ex.: /usr/src/kernel)"
   echo "  --enable-natevents     enables natevents support"
-  echo "  --enable-connmark      enables connmark support"
   echo "  --enable-debugfs       enables debugfs support for flow lists"
   echo "  --enable-snmp-rules    enables SNMP-index conversion rules"
   echo "  --enable-macaddress    enables MAC address for v9/IPFIX"
@@ -277,8 +276,7 @@ do
     --ipt-inc=*) IPTINC="-I$ac_optarg" ;;
     --kver=*)  KVERSION="$ac_optarg" ;;
     --kdir=*)      KDIR="$ac_optarg" ;;
-    --enable-nat*)   KOPTS="$KOPTS -DENABLE_NAT -DENABLE_CT" ;;
-    --enable-conn*)  KOPTS="$KOPTS -DENABLE_CT" ;;
+    --enable-nat*)   KOPTS="$KOPTS -DENABLE_NAT" ;;
     --enable-debug*) KOPTS="$KOPTS -DENABLE_DEBUGFS" ;;
     --enable-snmp*)  KOPTS="$KOPTS -DSNMP_RULES" ;;
     --enable-mac*)   KOPTS="$KOPTS -DENABLE_MAC" ;;
