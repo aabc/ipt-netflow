@@ -383,7 +383,6 @@ kernel_check_config() {
   kconfig CONFIG_PROC_FS		"proc interface"
   kconfig CONFIG_NF_NAT_NEEDED		"natevents"
   kconfig CONFIG_NF_CONNTRACK_EVENTS	"natevents"
-  kconfig CONFIG_NF_CONNTRACK_MARK	"connmark tracking"
   kconfig CONFIG_IPV6			"IPv6"
   kconfig CONFIG_IP6_NF_IPTABLES	"ip6tables target"
 }
