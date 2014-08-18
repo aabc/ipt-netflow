@@ -32,6 +32,7 @@
 #include <linux/hash.h>
 #include <linux/delay.h>
 #include <linux/spinlock_types.h>
+#include <linux/ktime.h>
 #include <net/icmp.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
@@ -121,6 +122,9 @@ MODULE_AUTHOR("<abc@telekom.ru>");
 MODULE_DESCRIPTION("iptables NETFLOW target module");
 MODULE_VERSION(IPT_NETFLOW_VERSION);
 MODULE_ALIAS("ip6t_NETFLOW");
+
+static char version_string[128];
+static int  version_string_size;
 
 #define DST_SIZE 256
 static char destination_buf[DST_SIZE] = "127.0.0.1:2055";
@@ -238,10 +242,13 @@ static atomic_t ipt_netflow_count = ATOMIC_INIT(0);
 static long long pdu_packets = 0, pdu_traf = 0; /* how much accounted traffic in pdu */
 static unsigned int pdu_count = 0;
 static unsigned int pdu_seq = 0;
-static unsigned int pdu_data_records = 0;
+static unsigned int pdu_data_records = 0; /* Data records */
+static unsigned int pdu_flow_records = 0; /* Data records with flows (for stat only) */
 static unsigned int pdu_tpl_records = 0;
 static unsigned long pdu_ts_mod; /* ts(jiffies) of last flow */
+static unsigned int pdu_needs_export = 0;
 static union {
+	__be16 version;
 	struct netflow5_pdu v5;
 	struct netflow9_pdu v9;
 	struct ipfix_pdu ipfix;
@@ -249,7 +256,6 @@ static union {
 static int engine_id = 0; /* Observation Domain */
 static __u8 *pdu_data_used;
 static __u8 *pdu_high_wm; /* high watermark */
-static unsigned int pdu_max_size; /* sizeof pdu */
 static struct flowset_data *pdu_flowset = NULL; /* current data flowset */
 
 static unsigned long wk_start; /* last start of worker (jiffies) */
@@ -364,8 +370,8 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	int cpu;
 	unsigned long long searched = 0, found = 0, notfound = 0;
 	unsigned int truncated = 0, frags = 0, alloc_err = 0, maxflows_err = 0;
-	unsigned int sock_errors = 0, send_failed = 0, send_success = 0;
-	unsigned long long pkt_total = 0, traf_total = 0, exported_size = 0;
+	unsigned int sock_errors = 0, send_failed = 0, exported_pkt = 0;
+	unsigned long long pkt_total = 0, traf_total = 0, exported_traf = 0;
 	unsigned long long pkt_drop = 0, traf_drop = 0;
 	unsigned long long pkt_out = 0, traf_out = 0;
 	struct ipt_netflow_sock *usock;
@@ -427,23 +433,23 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	for_each_present_cpu(cpu) {
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
 
-		searched += st->searched;
-		found += st->found;
-		notfound += st->notfound;
-		truncated += st->truncated;
-		frags += st->frags;
-		alloc_err += st->alloc_err;
-		maxflows_err += st->maxflows_err;
-		send_success += st->send_success;
-		send_failed += st->send_failed;
-		sock_errors += st->sock_errors;
-		exported_size += st->exported_size;
-		pkt_total += st->pkt_total;
-		traf_total += st->traf_total;
-		pkt_drop += st->pkt_drop;
-		traf_drop += st->traf_drop;
-		pkt_out += st->pkt_out;
-		traf_out += st->traf_out;
+		searched	+= st->searched;
+		found		+= st->found;
+		notfound	+= st->notfound;
+		truncated	+= st->truncated;
+		frags		+= st->frags;
+		alloc_err	+= st->alloc_err;
+		maxflows_err	+= st->maxflows_err;
+		exported_pkt	+= st->exported_pkt;
+		exported_traf	+= st->exported_traf;
+		send_failed	+= st->send_failed;
+		sock_errors	+= st->sock_errors;
+		pkt_total	+= st->pkt_total;
+		traf_total	+= st->traf_total;
+		pkt_drop	+= st->pkt_drop  + st->pkt_lost;
+		traf_drop	+= st->traf_drop + st->traf_lost;
+		pkt_out		+= st->pkt_out;
+		traf_out	+= st->traf_out;
 	}
 
 #define FFLOAT(x, prec) (int)(x) / prec, (int)(x) % prec
@@ -477,8 +483,8 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	    (unsigned long long)notfound,
 	    FFLOAT(SAFEDIV(100LL * (searched + found + notfound), (found + notfound)), 100),
 	    truncated, frags, alloc_err, maxflows_err,
-	    send_success, send_failed, sock_errors,
-	    (unsigned long long)exported_size >> 10,
+	    exported_pkt, send_failed, sock_errors,
+	    (unsigned long long)exported_traf >> 10,
 	    (unsigned long long)pkt_total, (unsigned long long)traf_total >> 20,
 	    (unsigned long long)pkt_drop, (unsigned long long)traf_drop >> 10);
 
@@ -488,15 +494,15 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 
 			st = &per_cpu(ipt_netflow_stat, cpu);
 			seq_printf(seq, "cpu%u  stat: %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
-			    " sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
+			    " sock: %6llu %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
 			    cpu,
 			    (unsigned long long)st->searched,
 			    (unsigned long long)st->found,
 			    (unsigned long long)st->notfound,
 			    FFLOAT(SAFEDIV(100LL * (st->searched + st->found + st->notfound), (st->found + st->notfound)), 100),
 			    st->truncated, st->frags, st->alloc_err, st->maxflows_err,
-			    st->send_success, st->send_failed, st->sock_errors,
-			    (unsigned long long)st->exported_size >> 10,
+			    st->exported_pkt, st->send_failed, st->sock_errors,
+			    (unsigned long long)st->exported_traf >> 10,
 			    (unsigned long long)st->pkt_total, (unsigned long long)st->traf_total >> 20,
 			    (unsigned long long)st->pkt_drop, (unsigned long long)st->traf_drop >> 10);
 		}
@@ -760,8 +766,8 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, " %d,%d %lu,%lu\n",
 	    nf->nr_packets,
 	    nf->nr_bytes,
-	    jiffies - nf->ts_first,
-	    jiffies - nf->ts_last
+	    jiffies - nf->nf_ts_first,
+	    jiffies - nf->nf_ts_last
 	    );
 
 	return 0;
@@ -1240,6 +1246,8 @@ static void usock_connect(struct ipt_netflow_sock *usock, const int sendmsg)
 	atomic_set(&usock->err_other, 0);
 }
 
+ktime_t ktime_get_real(void);
+
 // return numbers of sends succeded, 0 if none
 /* only called in scan worker path */
 static void netflow_sendmsg(void *buffer, const int len)
@@ -1255,7 +1263,7 @@ static void netflow_sendmsg(void *buffer, const int len)
 		if (!usock->sock)
 			usock_connect(usock, 1);
 		if (!usock->sock) {
-			NETFLOW_STAT_INC_ATOMIC(send_failed);
+			NETFLOW_STAT_INC(send_failed);
 			continue;
 		}
 		if (debug)
@@ -1268,7 +1276,7 @@ static void netflow_sendmsg(void *buffer, const int len)
 		if (ret < 0) {
 			char *suggestion = "";
 
-			NETFLOW_STAT_INC_ATOMIC(send_failed);
+			NETFLOW_STAT_INC(send_failed);
 			if (ret == -EAGAIN) {
 				atomic_inc(&usock->err_full);
 				suggestion = ": increase sndbuf!";
@@ -1282,8 +1290,8 @@ static void netflow_sendmsg(void *buffer, const int len)
 			unsigned int wmem = atomic_read(&usock->sock->sk->sk_wmem_alloc);
 			if (wmem > atomic_read(&usock->wmem_peak))
 				atomic_set(&usock->wmem_peak, wmem);
-			NETFLOW_STAT_INC_ATOMIC(send_success);
-			NETFLOW_STAT_ADD_ATOMIC(exported_size, ret);
+			NETFLOW_STAT_INC(exported_pkt);
+			NETFLOW_STAT_ADD(exported_traf, ret);
 			retok++;
 		}
 		snum++;
@@ -1291,8 +1299,12 @@ static void netflow_sendmsg(void *buffer, const int len)
 	mutex_unlock(&sock_lock);
 	if (retok == 0) {
 		/* not least one send succeded, account stat for dropped packets */
-		NETFLOW_STAT_ADD_ATOMIC(pkt_drop, pdu_packets);
-		NETFLOW_STAT_ADD_ATOMIC(traf_drop, pdu_traf);
+		NETFLOW_STAT_ADD(pkt_lost, pdu_packets);
+		NETFLOW_STAT_ADD(traf_lost, pdu_traf);
+		NETFLOW_STAT_ADD(flow_lost, pdu_flow_records);
+		NETFLOW_STAT_TS(lost);
+	} else {
+		NETFLOW_STAT_ADD(exported_flow, pdu_flow_records);
 	}
 }
 
@@ -1726,7 +1738,7 @@ static void netflow_export_pdu_v5(void)
 
 	pdu_seq += pdu_data_records;
 	pdu_count++;
-	pdu_data_records = 0;
+	pdu_flow_records = pdu_data_records = 0;
 }
 
 /* only called in scan worker path */
@@ -1741,6 +1753,7 @@ static void netflow_export_flow_v5(struct ipt_netflow *nf)
 	pdu_traf += nf->nr_bytes;
 	pdu_ts_mod = jiffies;
 	rec = &pdu.v5.flow[pdu_data_records++];
+	pdu_flow_records++;
 
 	/* make V5 flow record */
 	rec->s_addr	= nf->tuple.src.ip;
@@ -1755,8 +1768,8 @@ static void netflow_export_flow_v5(struct ipt_netflow *nf)
 #endif
 	rec->nr_packets = htonl(nf->nr_packets);
 	rec->nr_octets	= htonl(nf->nr_bytes);
-	rec->first_ms	= htonl(jiffies_to_msecs(nf->ts_first));
-	rec->last_ms	= htonl(jiffies_to_msecs(nf->ts_last));
+	rec->first_ms	= htonl(jiffies_to_msecs(nf->nf_ts_first));
+	rec->last_ms	= htonl(jiffies_to_msecs(nf->nf_ts_last));
 	rec->s_port	= nf->tuple.s_port;
 	rec->d_port	= nf->tuple.d_port;
 	//rec->reserved	= 0; /* pdu is always zeroized for v5 in netflow_switch_version */
@@ -1806,7 +1819,7 @@ static void netflow_export_pdu_v9(void)
 
 	pdu_seq++;
 	pdu_count++;
-	pdu_data_records = pdu_tpl_records = 0;
+	pdu_flow_records = pdu_data_records = pdu_tpl_records = 0;
 	pdu_data_used = pdu.v9.data;
 	pdu_flowset = NULL;
 }
@@ -1838,7 +1851,7 @@ static void netflow_export_pdu_ipfix(void)
 
 	pdu_seq += pdu_data_records;
 	pdu_count++;
-	pdu_data_records = pdu_tpl_records = 0;
+	pdu_flow_records = pdu_data_records = pdu_tpl_records = 0;
 	pdu_data_used = pdu.ipfix.data;
 	pdu_flowset = NULL;
 }
@@ -1855,8 +1868,13 @@ static inline unsigned char *pdu_grab_space(const size_t size)
 	return ptr;
 }
 
-// allocate data space in pdu, or fail if pdu is reallocated.
-static inline unsigned char *pdu_alloc_fail(const size_t size)
+static inline void pdu_rewind_space(const size_t size)
+{
+	pdu_data_used -= size;
+}
+
+/* allocate data space in pdu, or export (reallocate) and fail. */
+static inline unsigned char *pdu_alloc_fail_export(const size_t size)
 {
 	if (!pdu_have_space(size)) {
 		netflow_export_pdu();
@@ -1866,67 +1884,19 @@ static inline unsigned char *pdu_alloc_fail(const size_t size)
 }
 
 /* doesn't fail, but can provide empty pdu. */
-static unsigned char *pdu_alloc(const size_t size)
+static unsigned char *pdu_alloc_export(const size_t size)
 {
-	return pdu_alloc_fail(size) ?: pdu_grab_space(size);
+	return pdu_alloc_fail_export(size) ?: pdu_grab_space(size);
 }
 
 /* global table of sizes of template field types */
+#define two(id, a, b, len)	[id] = len,
+#define one(id, a, len)		[id] = len,
 static u_int8_t tpl_element_sizes[] = {
-	[IN_BYTES]	= 4,
-	[IN_PKTS]	= 4,
-	[PROTOCOL]	= 1,
-	[TOS]		= 1,
-	[TCP_FLAGS]	= 1,
-	[L4_SRC_PORT]	= 2,
-	[IPV4_SRC_ADDR]	= 4,
-	[SRC_MASK]	= 1,
-	[INPUT_SNMP]	= 2,
-	[L4_DST_PORT]	= 2,
-	[IPV4_DST_ADDR]	= 4,
-	[DST_MASK]	= 1,
-	[OUTPUT_SNMP]	= 2,
-	[IPV4_NEXT_HOP]	= 4,
-	//[SRC_AS]		= 2,
-	//[DST_AS]		= 2,
-	//[BGP_IPV4_NEXT_HOP]	= 4,
-	//[MUL_DST_PKTS]	= 4,
-	//[MUL_DST_BYTES]	= 4,
-	[LAST_SWITCHED]	= 4,
-	[FIRST_SWITCHED]= 4,
-	[IPV6_SRC_ADDR]	= 16,
-	[IPV6_DST_ADDR]	= 16,
-	[IPV6_FLOW_LABEL] = 3,
-	[ICMP_TYPE]	= 2,
-	[MUL_IGMP_TYPE]	= 1,
-	//[TOTAL_BYTES_EXP]	= 4,
-	//[TOTAL_PKTS_EXP]	= 4,
-	//[TOTAL_FLOWS_EXP]	= 4,
-	[DIRECTION]	= 1,
-	[sourceMacAddress]		   = ETH_ALEN,
-	[SRC_VLAN]			   = 2,
-	[IPV6_NEXT_HOP]			   = 16,
-	[IPV6_OPTION_HEADERS]		   = 2,
-	[destinationMacAddress]		   = ETH_ALEN,
-	[ipv4Options]			   = 4,
-	[tcpOptions]			   = 4,
-	[postNATSourceIPv4Address]	   = 4,
-	[postNATDestinationIPv4Address]	   = 4,
-	[postNAPTSourceTransportPort]	   = 2,
-	[postNAPTDestinationTransportPort] = 2,
-	[natEvent]			   = 1,
-	[dot1qVlanId]			   = 2,
-	[dot1qPriority]			   = 1,
-	[dot1qCustomerVlanId]		   = 2,
-	[dot1qCustomerPriority]		   = 1,
-	[ethernetType]			   = 2,
-	[postNATSourceIPv6Address]	   = 16,
-	[postNATDestinationIPv6Address]	   = 16,
-	[IPSecSPI]			   = 4,
-	[observationTimeMilliseconds]	   = 8,
-	[observationTimeMicroseconds]	   = 8,
-	[observationTimeNanoseconds]	   = 8,
+	Elements
 };
+#undef two
+#undef one
 
 #define TEMPLATES_HASH_BSIZE	8
 #define TEMPLATES_HASH_SIZE	(1<<TEMPLATES_HASH_BSIZE)
@@ -1937,7 +1907,7 @@ struct base_template {
 	u_int16_t types[]; /* {type, size} pairs */
 };
 
-/* base templates */
+/* Data Templates */
 #define BTPL_BASE	0x00000001	/* base stat */
 #define BTPL_IP4	0x00000002	/* IPv4 */
 #define BTPL_MASK4	0x00000004	/* Aggregated */
@@ -1948,8 +1918,8 @@ struct base_template {
 #define BTPL_IPSEC	0x00000080	/* AH&ESP */
 #define BTPL_NAT4	0x00000100	/* NAT IPv4 */
 #define BTPL_LABEL6	0x00000200	/* IPv6 flow label */
-#define BTPL_OPTIONS4	0x00000400	/* IPv4 Options */
-#define BTPL_OPTIONS6	0x00000800	/* IPv6 Options */
+#define BTPL_IP4OPTIONS	0x00000400	/* IPv4 Options */
+#define BTPL_IP6OPTIONS	0x00000800	/* IPv6 Options */
 #define BTPL_TCPOPTIONS	0x00001000	/* TCP Options */
 #define BTPL_MAC	0x00002000	/* MAC addresses */
 #define BTPL_VLAN9	0x00004000	/* outer VLAN for v9 */
@@ -1957,7 +1927,14 @@ struct base_template {
 #define BTPL_VLANI	0x00010000	/* inner VLAN (IPFIX) */
 #define BTPL_ETHERTYPE	0x00020000	/* ethernetType */
 #define BTPL_DIRECTION	0x00040000	/* flowDirection */
+#define BTPL_OPTION	0x80000000	/* Options Template */
 #define BTPL_MAX	32
+/* Options Templates */
+#define OTPL(x) (BTPL_OPTION | x)
+#define OTPL_SYSITIME	OTPL(1)		/* systemInitTimeMilliseconds */
+#define OTPL_MPSTAT	OTPL(2)		/* The Metering Process Statistics (rfc5101) */
+#define OTPL_MPRSTAT	OTPL(3)		/* The Metering Process Reliability Statistics */
+#define OTPL_EPRSTAT	OTPL(4)		/* The Exporting Process Reliability Statistics */
 
 static struct base_template template_base = {
 	.types = {
@@ -2080,16 +2057,62 @@ static struct base_template template_nat4 = {
 	}
 };
 
+static struct base_template template_sys_init_time = {
+	.types = {
+		observationDomainId,
+		systemInitTimeMilliseconds,
+		observationDomainName,
+		0
+	}
+};
+
+/* http://tools.ietf.org/html/rfc5101#section-4 */
+/* The Metering Process Statistics Option Template */
+static struct base_template template_meter_stat = {
+	.types = {
+		observationDomainId,
+		exportedMessageTotalCount,
+		exportedFlowRecordTotalCount,
+		exportedOctetTotalCount,
+		observedFlowTotalCount,
+		0
+	}
+};
+/* The Metering Process Reliability Statistics Option Template */
+static struct base_template template_meter_rel_stat = {
+	.types = {
+		observationDomainId,
+		ignoredPacketTotalCount,
+		ignoredOctetTotalCount,
+		flowStartMilliseconds,
+		flowEndMilliseconds,
+		0
+	}
+};
+/* The Exporting Process Reliability Statistics Option Template */
+static struct base_template template_exp_rel_stat = {
+	.types = {
+		exportingProcessId,
+		notSentFlowTotalCount,
+		notSentPacketTotalCount,
+		notSentOctetTotalCount,
+		flowStartMilliseconds,
+		flowEndMilliseconds,
+		0
+	}
+};
+
 struct data_template {
 	struct hlist_node hlist;
-	int tpl_mask;
+	unsigned int tpl_key;
 
-	int length; /* number of elements in template */
-	int tpl_size; /* summary size of template with flowset header */
-	int rec_size; /* summary size of all recods of template (w/o flowset header) */
-	int template_id_n; /* assigned from template_ids, network order. */
+	char options;	/* is it Options Template */
+	short length;	/* number of elements in template */
+	short tpl_size;	/* whole size of template itself (with header), for alloc */
+	short rec_size;	/* size of one template record (w/o header) */
+	int template_id_n; /* uassigned from template_ids, network order. */
 	int		exported_cnt;
-	unsigned long	exported_ts; /* jiffies */
+	unsigned long	exported_ts; /* last exported (jiffies) */
 	u_int16_t fields[]; /* {type, size} pairs */
 } __attribute__ ((packed));
 
@@ -2114,8 +2137,8 @@ static void free_templates(void)
 	tpl_count = 0;
 }
 
-/* create combined template from mask */
-static struct data_template *get_template(const int tmask)
+/* find old, or create new combined template from template key (tmask) */
+static struct data_template *get_template(const unsigned int tmask)
 {
 	struct base_template *tlist[BTPL_MAX];
 	struct data_template *tpl;
@@ -2128,60 +2151,79 @@ static struct data_template *get_template(const int tmask)
 	int hash = hash_long(tmask, TEMPLATES_HASH_BSIZE);
 
 	compat_hlist_for_each_entry(tpl, pos, &templates_hash[hash], hlist)
-		if (tpl->tpl_mask == tmask)
+		if (tpl->tpl_key == tmask)
 			return tpl;
 
+	/* assemble array of base_templates from template key */
 	tnum = 0;
-	if (tmask & BTPL_IP4) {
-		tlist[tnum++] = &template_ipv4;
-		if (tmask & BTPL_OPTIONS4)
-			tlist[tnum++] = &template_options4;
-		if (tmask & BTPL_MASK4)
-			tlist[tnum++] = &template_ipv4_mask;
-	} else if (tmask & BTPL_IP6) {
-		tlist[tnum++] = &template_ipv6;
-		if (tmask & BTPL_LABEL6)
-			tlist[tnum++] = &template_label6;
-		if (tmask & BTPL_OPTIONS6)
-			tlist[tnum++] = &template_options6;
-	} else if (tmask & BTPL_NAT4)
-		tlist[tnum++] = &template_nat4;
-	if (tmask & BTPL_PORTS)
-		tlist[tnum++] = &template_ports;
-	if (tmask & BTPL_BASE)
-		tlist[tnum++] = &template_base;
-	if (tmask & BTPL_TCPOPTIONS)
-		tlist[tnum++] = &template_tcpoptions;
-	if (tmask & BTPL_ICMP)
-		tlist[tnum++] = &template_icmp;
-	if (tmask & BTPL_IGMP)
-		tlist[tnum++] = &template_igmp;
-	if (tmask & BTPL_IPSEC)
-		tlist[tnum++] = &template_ipsec;
+	if (tmask & BTPL_OPTION) {
+		switch (tmask) {
+		case OTPL_SYSITIME:
+			tlist[tnum++] = &template_sys_init_time;
+			break;
+		case OTPL_MPSTAT:
+			tlist[tnum++] = &template_meter_stat;
+			break;
+		case OTPL_MPRSTAT:
+			tlist[tnum++] = &template_meter_rel_stat;
+			break;
+		case OTPL_EPRSTAT:
+			tlist[tnum++] = &template_exp_rel_stat;
+			break;
+		}
+	} else {
+		if (tmask & BTPL_IP4) {
+			tlist[tnum++] = &template_ipv4;
+			if (tmask & BTPL_IP4OPTIONS)
+				tlist[tnum++] = &template_options4;
+			if (tmask & BTPL_MASK4)
+				tlist[tnum++] = &template_ipv4_mask;
+		} else if (tmask & BTPL_IP6) {
+			tlist[tnum++] = &template_ipv6;
+			if (tmask & BTPL_LABEL6)
+				tlist[tnum++] = &template_label6;
+			if (tmask & BTPL_IP6OPTIONS)
+				tlist[tnum++] = &template_options6;
+		} else if (tmask & BTPL_NAT4)
+			tlist[tnum++] = &template_nat4;
+		if (tmask & BTPL_PORTS)
+			tlist[tnum++] = &template_ports;
+		if (tmask & BTPL_BASE)
+			tlist[tnum++] = &template_base;
+		if (tmask & BTPL_TCPOPTIONS)
+			tlist[tnum++] = &template_tcpoptions;
+		if (tmask & BTPL_ICMP)
+			tlist[tnum++] = &template_icmp;
+		if (tmask & BTPL_IGMP)
+			tlist[tnum++] = &template_igmp;
+		if (tmask & BTPL_IPSEC)
+			tlist[tnum++] = &template_ipsec;
 #ifdef ENABLE_MAC
-	if (tmask & BTPL_MAC)
-		tlist[tnum++] = &template_mac_ipfix;
+		if (tmask & BTPL_MAC)
+			tlist[tnum++] = &template_mac_ipfix;
 #endif
 #ifdef ENABLE_VLAN
-	if (tmask & BTPL_VLAN9)
-		tlist[tnum++] = &template_vlan_v9;
-	else {
-		if (tmask & BTPL_VLANX)
-			tlist[tnum++] = &template_vlan_ipfix;
-		if (tmask & BTPL_VLANI)
-			tlist[tnum++] = &template_vlan_inner;
-	}
+		if (tmask & BTPL_VLAN9)
+			tlist[tnum++] = &template_vlan_v9;
+		else {
+			if (tmask & BTPL_VLANX)
+				tlist[tnum++] = &template_vlan_ipfix;
+			if (tmask & BTPL_VLANI)
+				tlist[tnum++] = &template_vlan_inner;
+		}
 #endif
 #if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
-	if (tmask & BTPL_ETHERTYPE)
-		tlist[tnum++] = &template_ethertype;
+		if (tmask & BTPL_ETHERTYPE)
+			tlist[tnum++] = &template_ethertype;
 #endif
 #ifdef ENABLE_DIRECTION
-	if (tmask & BTPL_DIRECTION)
-		tlist[tnum++] = &template_direction;
+		if (tmask & BTPL_DIRECTION)
+			tlist[tnum++] = &template_direction;
 #endif
+	} /* !BTPL_OPTION */
 
-	/* calc memory size */
+	/* calculate resulting template length
+	 * and update base_template array lengths  */
 	length = 0;
 	for (i = 0; i < tnum; i++) {
 		if (!tlist[i]->length) {
@@ -2190,20 +2232,25 @@ static struct data_template *get_template(const int tmask)
 		}
 		length += tlist[i]->length;
 	}
-	/* elements are pairs + one termiantor */
+	/* elements are [type, len] pairs + one termiantor */
 	tpl = kmalloc(sizeof(struct data_template) + (length * 2 + 1) * sizeof(u_int16_t), GFP_KERNEL);
 	if (!tpl) {
-		printk(KERN_ERR "ipt_NETFLOW: unable to kmalloc template.\n");
+		printk(KERN_ERR "ipt_NETFLOW: unable to kmalloc template (%#x).\n", tmask);
 		return NULL;
 	}
-	tpl->tpl_mask = tmask;
+	tpl->tpl_key = tmask;
+	tpl->options = (tmask & BTPL_OPTION) != 0;
+	if (tpl->options)
+		tpl->tpl_size = sizeof(struct flowset_opt_tpl_v9); /* ipfix is of the same size */
+	else
+		tpl->tpl_size = sizeof(struct flowset_template);
 	tpl->length = length;
-	tpl->tpl_size = sizeof(struct flowset_template);
 	tpl->rec_size = 0;
 	tpl->template_id_n = htons(template_ids++);
 	tpl->exported_cnt = 0;
 	tpl->exported_ts = 0;
 
+	/* construct resulting data_template and fill lengths */
 	j = 0;
 	for (i = 0; i < tnum; i++) {
 		struct base_template *btpl = tlist[i];
@@ -2227,27 +2274,83 @@ static struct data_template *get_template(const int tmask)
 	return tpl;
 }
 
+static u_int16_t scope_ipfix_to_v9(const u_int16_t elem)
+{
+	switch (elem) {
+	case observationDomainId:
+	case meteringProcessId:
+	case exportingProcessId:
+		return SCOPE_SYSTEM;
+	case ingressInterface:
+	case portId:
+		return SCOPE_INTERFACE;
+	case observationPointId:
+	case LineCardId:
+		return SCOPE_LINECARD;
+	case TemplateId:
+		return SCOPE_TEMPLATE;
+	default:
+		return -1;
+	}
+}
+
+/* add template of any type and version */
 static void pdu_add_template(struct data_template *tpl)
 {
-	int i;
-	unsigned char *ptr;
+	__u8 *ptr;
 	struct flowset_template *ntpl;
-	__be16 *sptr;
+	__be16 *sptr, *fields;
+	size_t added_size = 0;
 
-	ptr = pdu_alloc(tpl->tpl_size);
-	ntpl = (struct flowset_template *)ptr;
-	ntpl->flowset_id  = protocol == 9? htons(FLOWSET_TEMPLATE) : htons(IPFIX_TEMPLATE);
+	/* for options template we also make sure there is enough
+	 * room in the packet for one record, with flowset header */
+	if (tpl->options)
+		added_size = sizeof(struct flowset_data) + tpl->rec_size;
+	ptr = pdu_alloc_export(tpl->tpl_size + added_size);
+	pdu_rewind_space(added_size);
+	ntpl = (void *)ptr;
+
+	/* first three fields are equal for all types of templates */
+	if (tpl->options)
+		ntpl->flowset_id = protocol == 9? htons(FLOWSET_OPTIONS) : htons(IPFIX_OPTIONS);
+	else
+		ntpl->flowset_id = protocol == 9? htons(FLOWSET_TEMPLATE) : htons(IPFIX_TEMPLATE);
 	ntpl->length	  = htons(tpl->tpl_size);
 	ntpl->template_id = tpl->template_id_n;
-	ntpl->field_count = htons(tpl->length);
-	ptr += sizeof(struct flowset_template);
+
+	if (tpl->options) {
+		/* option templates should be defined with first element being scope */
+		if (protocol == 9) {
+			struct flowset_opt_tpl_v9 *otpl = (void *)ptr;
+
+			otpl->scope_len   = htons(TPL_FIELD_NSIZE);
+			otpl->opt_len     = htons((tpl->length - 1) * TPL_FIELD_NSIZE);
+			ptr += sizeof(struct flowset_opt_tpl_v9);
+		} else {
+			struct flowset_opt_tpl_ipfix *otpl = (void *)ptr;
+
+			otpl->field_count = htons(tpl->length);
+			otpl->scope_count = htons(1);
+			ptr += sizeof(struct flowset_opt_tpl_ipfix);
+		}
+	} else {
+		ntpl->field_count = htons(tpl->length);
+		ptr += sizeof(struct flowset_template);
+	}
+
 	sptr = (__be16 *)ptr;
-	for (i = 0; ; ) {
-		int type = tpl->fields[i++];
+	fields = tpl->fields;
+	if (tpl->options && protocol == 9) {
+		/* v9 scope */
+		*sptr++ = htons(scope_ipfix_to_v9(*fields++));
+		*sptr++ = htons(*fields++);
+	}
+	for (;;) {
+		const int type = *fields++;
 		if (!type)
 			break;
 		*sptr++ = htons(type);
-		*sptr++ = htons(tpl->fields[i++]);
+		*sptr++ = htons(*fields++);
 	}
 
 	tpl->exported_cnt = pdu_count;
@@ -2290,83 +2393,98 @@ static inline __u8 hook2dir(const __u8 hooknum)
 }
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)
+static inline void put_unaligned_be16(u16 val, void *p)
+{
+	put_unaligned(cpu_to_be16(val), (__be16 *)p);
+}
+static inline void put_unaligned_be32(u32 val, void *p)
+{
+	put_unaligned(cpu_to_be32(val), (__be32 *)p);
+}
+static inline void put_unaligned_be64(u64 val, void *p)
+{
+	put_unaligned(cpu_to_be64(val), (__be64 *)p);
+}
+#endif
+
 static inline void put_unaligned_be24(u32 val, unsigned char *p)
 {
 	*p++ = val >> 16;
 	put_unaligned_be16(val, p);
 }
 
-/* encode one field */
 typedef struct in6_addr in6_t;
+/* encode one field (data records only) */
 static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_netflow *nf)
 {
 	switch (type) {
-		case IN_BYTES:	     put_unaligned_be32(nf->nr_bytes, ptr); break;
-		case IN_PKTS:	     put_unaligned_be32(nf->nr_packets, ptr); break;
-		case FIRST_SWITCHED: put_unaligned_be32(jiffies_to_msecs(nf->ts_first), ptr); break;
-		case LAST_SWITCHED:  put_unaligned_be32(jiffies_to_msecs(nf->ts_last), ptr); break;
-		case IPV4_SRC_ADDR:  put_unaligned(nf->tuple.src.ip, (__be32 *)ptr); break;
-		case IPV4_DST_ADDR:  put_unaligned(nf->tuple.dst.ip, (__be32 *)ptr); break;
-		case IPV4_NEXT_HOP:  put_unaligned(nf->nh.ip, (__be32 *)ptr); break;
-		case L4_SRC_PORT:    put_unaligned(nf->tuple.s_port, (__be16 *)ptr); break;
-		case L4_DST_PORT:    put_unaligned(nf->tuple.d_port, (__be16 *)ptr); break;
+	case IN_BYTES:	     put_unaligned_be32(nf->nr_bytes, ptr); break;
+	case IN_PKTS:	     put_unaligned_be32(nf->nr_packets, ptr); break;
+	case FIRST_SWITCHED: put_unaligned_be32(jiffies_to_msecs(nf->nf_ts_first), ptr); break;
+	case LAST_SWITCHED:  put_unaligned_be32(jiffies_to_msecs(nf->nf_ts_last), ptr); break;
+	case IPV4_SRC_ADDR:  put_unaligned(nf->tuple.src.ip, (__be32 *)ptr); break;
+	case IPV4_DST_ADDR:  put_unaligned(nf->tuple.dst.ip, (__be32 *)ptr); break;
+	case IPV4_NEXT_HOP:  put_unaligned(nf->nh.ip, (__be32 *)ptr); break;
+	case L4_SRC_PORT:    put_unaligned(nf->tuple.s_port, (__be16 *)ptr); break;
+	case L4_DST_PORT:    put_unaligned(nf->tuple.d_port, (__be16 *)ptr); break;
 #ifdef SNMP_RULES
-		case INPUT_SNMP:     put_unaligned_be16(nf->i_ifcr, ptr); break;
-		case OUTPUT_SNMP:    put_unaligned_be16(nf->o_ifcr, ptr); break;
+	case INPUT_SNMP:     put_unaligned_be16(nf->i_ifcr, ptr); break;
+	case OUTPUT_SNMP:    put_unaligned_be16(nf->o_ifcr, ptr); break;
 #else
-		case INPUT_SNMP:     put_unaligned_be16(nf->tuple.i_ifc, ptr); break;
-		case OUTPUT_SNMP:    put_unaligned_be16(nf->o_ifc, ptr); break;
+	case INPUT_SNMP:     put_unaligned_be16(nf->tuple.i_ifc, ptr); break;
+	case OUTPUT_SNMP:    put_unaligned_be16(nf->o_ifc, ptr); break;
 #endif
 #ifdef ENABLE_VLAN
 #define EXTRACT_VLAN_PRIO(tag) ((ntohs(tag) & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT)
-		case SRC_VLAN:
-		case dot1qVlanId:    put_unaligned(nf->tuple.tag1 & htons(VLAN_VID_MASK), (__be16 *)ptr); break;
-		case dot1qPriority:            *ptr = EXTRACT_VLAN_PRIO(nf->tuple.tag1); break;
-		case dot1qCustomerVlanId:
-				     put_unaligned(nf->tuple.tag2 & htons(VLAN_VID_MASK), (__be16 *)ptr); break;
-		case dot1qCustomerPriority:    *ptr = EXTRACT_VLAN_PRIO(nf->tuple.tag2); break;
+	case SRC_VLAN:
+	case dot1qVlanId:    put_unaligned(nf->tuple.tag1 & htons(VLAN_VID_MASK), (__be16 *)ptr); break;
+	case dot1qPriority:            *ptr = EXTRACT_VLAN_PRIO(nf->tuple.tag1); break;
+	case dot1qCustomerVlanId:
+			     put_unaligned(nf->tuple.tag2 & htons(VLAN_VID_MASK), (__be16 *)ptr); break;
+	case dot1qCustomerPriority:    *ptr = EXTRACT_VLAN_PRIO(nf->tuple.tag2); break;
 #endif
 #if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
-		case ethernetType:   put_unaligned(nf->ethernetType, (__be16 *)ptr); break;
+	case ethernetType:   put_unaligned(nf->ethernetType, (__be16 *)ptr); break;
 #endif
 #ifdef ENABLE_MAC
-		case destinationMacAddress: memcpy(ptr, &nf->tuple.h_dst, ETH_ALEN); break;
-		case sourceMacAddress:	    memcpy(ptr, &nf->tuple.h_src, ETH_ALEN); break;
+	case destinationMacAddress: memcpy(ptr, &nf->tuple.h_dst, ETH_ALEN); break;
+	case sourceMacAddress:	    memcpy(ptr, &nf->tuple.h_src, ETH_ALEN); break;
 #endif
 #ifdef ENABLE_DIRECTION
-		case DIRECTION:		       *ptr = hook2dir(nf->hooknumx - 1); break;
+	case DIRECTION:		       *ptr = hook2dir(nf->hooknumx - 1); break;
 #endif
-		case PROTOCOL:	               *ptr = nf->tuple.protocol; break;
-		case TCP_FLAGS:	               *ptr = nf->tcp_flags; break;
-		case TOS:	               *ptr = nf->tuple.tos; break;
-		case IPV6_SRC_ADDR:   *(in6_t *)ptr = nf->tuple.src.in6; break;
-		case IPV6_DST_ADDR:   *(in6_t *)ptr = nf->tuple.dst.in6; break;
-		case IPV6_NEXT_HOP:   *(in6_t *)ptr = nf->nh.in6; break;
-		case IPV6_FLOW_LABEL: put_unaligned_be24(nf->flow_label, ptr); break;
-		case tcpOptions:      put_unaligned_be32(nf->tcpoptions, ptr); break;
-		case ipv4Options:     put_unaligned_be32(nf->options, ptr); break;
-		case IPV6_OPTION_HEADERS:
-				     put_unaligned_be16(nf->options, ptr); break;
-		case SRC_MASK:	               *ptr = nf->s_mask; break;
-		case DST_MASK:	               *ptr = nf->d_mask; break;
-		case ICMP_TYPE:	     put_unaligned(nf->tuple.d_port, (__be16 *)ptr); break;
-		case MUL_IGMP_TYPE:            *ptr = nf->tuple.d_port; break;
+	case PROTOCOL:	               *ptr = nf->tuple.protocol; break;
+	case TCP_FLAGS:	               *ptr = nf->tcp_flags; break;
+	case TOS:	               *ptr = nf->tuple.tos; break;
+	case IPV6_SRC_ADDR:   *(in6_t *)ptr = nf->tuple.src.in6; break;
+	case IPV6_DST_ADDR:   *(in6_t *)ptr = nf->tuple.dst.in6; break;
+	case IPV6_NEXT_HOP:   *(in6_t *)ptr = nf->nh.in6; break;
+	case IPV6_FLOW_LABEL: put_unaligned_be24(nf->flow_label, ptr); break;
+	case tcpOptions:      put_unaligned_be32(nf->tcpoptions, ptr); break;
+	case ipv4Options:     put_unaligned_be32(nf->options, ptr); break;
+	case IPV6_OPTION_HEADERS:
+			     put_unaligned_be16(nf->options, ptr); break;
+	case SRC_MASK:	               *ptr = nf->s_mask; break;
+	case DST_MASK:	               *ptr = nf->d_mask; break;
+	case ICMP_TYPE:	     put_unaligned(nf->tuple.d_port, (__be16 *)ptr); break;
+	case MUL_IGMP_TYPE:            *ptr = nf->tuple.d_port; break;
 #ifdef CONFIG_NF_NAT_NEEDED
-		case postNATSourceIPv4Address:	       put_unaligned(nf->nat->post.s_addr, (__be32 *)ptr); break;
-		case postNATDestinationIPv4Address:    put_unaligned(nf->nat->post.d_addr, (__be32 *)ptr); break;
-		case postNAPTSourceTransportPort:      put_unaligned(nf->nat->post.s_port, (__be16 *)ptr); break;
-		case postNAPTDestinationTransportPort: put_unaligned(nf->nat->post.d_port, (__be16 *)ptr); break;
-		case natEvent:		       *ptr = nf->nat->nat_event; break;
+	case postNATSourceIPv4Address:	       put_unaligned(nf->nat->post.s_addr, (__be32 *)ptr); break;
+	case postNATDestinationIPv4Address:    put_unaligned(nf->nat->post.d_addr, (__be32 *)ptr); break;
+	case postNAPTSourceTransportPort:      put_unaligned(nf->nat->post.s_port, (__be16 *)ptr); break;
+	case postNAPTDestinationTransportPort: put_unaligned(nf->nat->post.d_port, (__be16 *)ptr); break;
+	case natEvent:		       *ptr = nf->nat->nat_event; break;
 #endif
-		case IPSecSPI:       put_unaligned(EXTRACT_SPI(nf->tuple), (__be32 *)ptr); break;
-		case observationTimeMilliseconds:
-				     put_unaligned_be64(ktime_to_ms(nf->ts_obs), ptr); break;
-		case observationTimeMicroseconds:
-				     put_unaligned_be64(ktime_to_us(nf->ts_obs), ptr); break;
-		case observationTimeNanoseconds:
-				     put_unaligned_be64(ktime_to_ns(nf->ts_obs), ptr); break;
-		default:
-				     memset(ptr, 0, tpl_element_sizes[type]);
+	case IPSecSPI:       put_unaligned(EXTRACT_SPI(nf->tuple), (__be32 *)ptr); break;
+	case observationTimeMilliseconds:
+			     put_unaligned_be64(ktime_to_ms(nf->nf_ts_obs), ptr); break;
+	case observationTimeMicroseconds:
+			     put_unaligned_be64(ktime_to_us(nf->nf_ts_obs), ptr); break;
+	case observationTimeNanoseconds:
+			     put_unaligned_be64(ktime_to_ns(nf->nf_ts_obs), ptr); break;
+	default:
+			     memset(ptr, 0, tpl_element_sizes[type]);
 	}
 }
 
@@ -2395,25 +2513,78 @@ static inline unsigned long timeout_rate_j(void)
 #define time_is_before_jiffies(a) time_after(jiffies, a)
 #endif
 
+/* return buffer where to write records data */
+static unsigned char *alloc_record_tpl(struct data_template *tpl)
+{
+	unsigned char *ptr;
+
+	/* If previous write was to the same template and there is room, then we just add new record,
+	 * otherwise we (re)allocate flowset (and/or whole pdu). */
+	if (unlikely(!pdu_flowset ||
+	    pdu_flowset->flowset_id != tpl->template_id_n ||
+	    !(ptr = pdu_alloc_fail_export(tpl->rec_size)))) {
+
+		/* if there was previous data template we should pad it to 4 bytes */
+		if (pdu_flowset) {
+			int padding = (PAD_SIZE - ntohs(pdu_flowset->length) % PAD_SIZE) % PAD_SIZE;
+			if (padding && (ptr = pdu_alloc_fail_export(padding))) {
+				pdu_flowset->length = htons(ntohs(pdu_flowset->length) + padding);
+				for (; padding; padding--)
+					*ptr++ = 0;
+			}
+		}
+
+		/* export template if needed */
+		if (!tpl->exported_ts ||
+		    pdu_count > (tpl->exported_cnt + refresh_rate) ||
+		    time_is_before_jiffies(tpl->exported_ts + timeout_rate_j())) {
+			pdu_add_template(tpl);
+		}
+
+		/* new flowset */
+		ptr = pdu_alloc_export(sizeof(struct flowset_data) + tpl->rec_size);
+		pdu_flowset		= (struct flowset_data *)ptr;
+		pdu_flowset->flowset_id = tpl->template_id_n;
+		pdu_flowset->length	= htons(sizeof(struct flowset_data));
+		ptr += sizeof(struct flowset_data);
+	}
+	return ptr;
+}
+
+static unsigned char *alloc_record_key(const unsigned int t_key, struct data_template **ptpl)
+{
+	struct data_template *tpl;
+
+	tpl = get_template(t_key);
+	if (unlikely(!tpl)) {
+		printk(KERN_INFO "ipt_NETFLOW: template %#x allocation failed.\n", t_key);
+		NETFLOW_STAT_INC_ATOMIC(alloc_err);
+		return NULL;
+	}
+	*ptpl = tpl;
+	return alloc_record_tpl(tpl);
+}
+
 static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 {
 	unsigned char *ptr;
-	int i;
 	struct data_template *tpl;
-	int tpl_mask = BTPL_BASE;
+	unsigned int tpl_mask = BTPL_BASE;
+	int i;
 
 	if (unlikely(debug > 2))
 		printk(KERN_INFO "adding flow to export (%d)\n",
 		    pdu_data_records + pdu_tpl_records);
 
+	/* build template key */
 	if (likely(nf->tuple.l3proto == AF_INET)) {
 		tpl_mask |= BTPL_IP4;
 		if (unlikely(nf->options))
-			tpl_mask |= BTPL_OPTIONS4;
+			tpl_mask |= BTPL_IP4OPTIONS;
 	} else {
 		tpl_mask |= BTPL_IP6;
 		if (unlikely(nf->options))
-			tpl_mask |= BTPL_OPTIONS6;
+			tpl_mask |= BTPL_IP6OPTIONS;
 		if (unlikely(nf->flow_label))
 			tpl_mask |= BTPL_LABEL6;
 	}
@@ -2459,44 +2630,17 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 #endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	if (nf->nat)
-		tpl_mask = BTPL_NAT4;
+		tpl_mask = BTPL_NAT4; /* note '=' */
 #endif
 
-	tpl = get_template(tpl_mask);
-	if (unlikely(!tpl)) {
-		printk(KERN_INFO "ipt_NETFLOW: template allocation failed.\n");
-		NETFLOW_STAT_INC(alloc_err);
-		NETFLOW_STAT_ADD_ATOMIC(pkt_drop, nf->nr_packets);
-		NETFLOW_STAT_ADD_ATOMIC(traf_drop, nf->nr_bytes);
+	ptr = alloc_record_key(tpl_mask, &tpl);
+	if (unlikely(!ptr)) {
+		NETFLOW_STAT_ADD(pkt_lost, nf->nr_packets);
+		NETFLOW_STAT_ADD(traf_lost, nf->nr_bytes);
+		NETFLOW_STAT_INC(flow_lost);
+		NETFLOW_STAT_TS(lost);
 		ipt_netflow_free(nf);
 		return;
-	}
-
-	if (unlikely(!pdu_flowset ||
-	    pdu_flowset->flowset_id != tpl->template_id_n ||
-	    !(ptr = pdu_alloc_fail(tpl->rec_size)))) {
-
-		/* if there was previous data template we should pad it to 4 bytes */
-		if (pdu_flowset) {
-			int padding = (PAD_SIZE - ntohs(pdu_flowset->length) % PAD_SIZE) % PAD_SIZE;
-			if (padding && (ptr = pdu_alloc_fail(padding))) {
-				pdu_flowset->length = htons(ntohs(pdu_flowset->length) + padding);
-				for (; padding; padding--)
-					*ptr++ = 0;
-			}
-		}
-
-		if (!tpl->exported_ts ||
-		    pdu_count > (tpl->exported_cnt + refresh_rate) ||
-		    time_is_before_jiffies(tpl->exported_ts + timeout_rate_j())) {
-			pdu_add_template(tpl);
-		}
-
-		ptr = pdu_alloc(sizeof(struct flowset_data) + tpl->rec_size);
-		pdu_flowset = (struct flowset_data *)ptr;
-		pdu_flowset->flowset_id = tpl->template_id_n;
-		pdu_flowset->length     = htons(sizeof(struct flowset_data));
-		ptr += sizeof(struct flowset_data);
 	}
 
 	/* encode all fields */
@@ -2510,6 +2654,7 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 	}
 
 	pdu_data_records++;
+	pdu_flow_records++;
 	pdu_flowset->length = htons(ntohs(pdu_flowset->length) + tpl->rec_size);
 
 	pdu_packets += nf->nr_packets;
@@ -2519,30 +2664,157 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 	pdu_ts_mod = jiffies;
 }
 
+static u64 get_sys_init_time_ms(void)
+{
+	static u64 sys_init_time = 0;
+
+	if (!sys_init_time)
+		sys_init_time = ktime_to_ms(ktime_get_real()) - jiffies_to_msecs(jiffies);
+	return sys_init_time;
+}
+
+static void export_stat_ts(const unsigned int tpl_mask, struct ipt_netflow_stat *st, struct duration *ts)
+{
+	unsigned char *ptr;
+	struct data_template *tpl;
+	int i;
+
+	ptr = alloc_record_key(tpl_mask, &tpl);
+	if (unlikely(!ptr))
+		return;
+
+	/* encode all fields */
+	for (i = 0; ; ) {
+		int type = tpl->fields[i++];
+
+		if (!type)
+			break;
+		switch (type) {
+		case observationDomainId:	put_unaligned_be32(engine_id, ptr); break;
+		case exportingProcessId:	put_unaligned_be32(engine_id, ptr); break;
+		case observedFlowTotalCount:	put_unaligned_be64(st->notfound, ptr); break;
+		case exportedMessageTotalCount:	put_unaligned_be64(st->exported_pkt, ptr); break;
+		case exportedOctetTotalCount:	put_unaligned_be64(st->exported_traf, ptr); break;
+		case exportedFlowRecordTotalCount: put_unaligned_be64(st->exported_flow, ptr); break;
+		case ignoredPacketTotalCount:	put_unaligned_be64(st->pkt_drop, ptr); break;
+		case ignoredOctetTotalCount:	put_unaligned_be64(st->traf_drop, ptr); break;
+		case notSentFlowTotalCount:	put_unaligned_be64(st->flow_lost, ptr); break;
+		case notSentPacketTotalCount:	put_unaligned_be64(st->pkt_lost, ptr); break;
+		case notSentOctetTotalCount:	put_unaligned_be64(st->traf_lost, ptr); break;
+		case flowStartMilliseconds:	put_unaligned_be64(ktime_to_ms(ts->first), ptr); break;
+		case flowEndMilliseconds:	put_unaligned_be64(ktime_to_ms(ts->last), ptr); break;
+		case systemInitTimeMilliseconds: put_unaligned_be64(get_sys_init_time_ms(), ptr); break;
+		case observationDomainName:     memcpy(ptr, version_string, version_string_size + 1); break;
+		}
+		ptr += tpl->fields[i++];
+	}
+
+	pdu_data_records++;
+	pdu_flowset->length = htons(ntohs(pdu_flowset->length) + tpl->rec_size);
+
+	pdu_ts_mod = jiffies;
+}
+
+static inline void export_stat_st(const unsigned int tpl_mask, struct ipt_netflow_stat *st)
+{
+	export_stat_ts(tpl_mask, st, NULL);
+}
+
+static inline void export_stat(const unsigned int tpl_mask)
+{
+	export_stat_st(tpl_mask, NULL);
+}
+
+#ifndef min_not_zero
+#define min_not_zero(x, y) ({			\
+	typeof(x) __x = (x);			\
+	typeof(y) __y = (y);			\
+	__x == 0 ? __y : ((__y == 0) ? __x : min(__x, __y)); })
+#endif
+static unsigned long ts_stat_last = 0;
+static unsigned long ts_sysinf_last = 0;
+#define STAT_INTERVAL	 (1*60)
+#define SYSINFO_INTERVAL (5*60)
+
+#ifndef time_is_before_jiffies
+#define time_is_before_jiffies(a) time_after(jiffies, a)
+#endif
+#ifndef time_is_after_jiffies
+#define time_is_after_jiffies(a) time_before(jiffies, a)
+#endif
+
+static void netflow_export_stats(void)
+{
+	struct ipt_netflow_stat t = { 0 };
+	int cpu;
+
+	if (unlikely(!ts_sysinf_last) ||
+	    time_is_before_jiffies(ts_sysinf_last + SYSINFO_INTERVAL * HZ)) {
+		export_stat(OTPL_SYSITIME);
+		ts_sysinf_last = jiffies;
+		pdu_needs_export++;
+	}
+
+	if (unlikely(!ts_stat_last))
+		ts_stat_last = jiffies;
+	if (likely(time_is_after_jiffies(ts_stat_last + STAT_INTERVAL * HZ)))
+		return;
+
+	for_each_present_cpu(cpu) {
+		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+
+		t.notfound	+= st->notfound; // observedFlowTotalCount
+		t.exported_pkt	+= st->exported_pkt;  // exportedMessageTotalCount
+		t.exported_traf	+= st->exported_traf; // exportedOctetTotalCount
+		t.exported_flow	+= st->exported_flow; // exportedFlowRecordTotalCount
+		t.pkt_drop	+= st->pkt_drop;  // ignoredPacketTotalCount
+		t.traf_drop	+= st->traf_drop; // ignoredOctetTotalCount
+		t.flow_lost	+= st->flow_lost; // notSentFlowTotalCount
+		t.pkt_lost	+= st->pkt_lost;  // notSentPacketTotalCount
+		t.traf_lost	+= st->traf_lost; // notSentOctetTotalCount
+		t.drop.first.tv64 = min_not_zero(t.drop.first.tv64, st->drop.first.tv64);
+		t.drop.last.tv64  = max(t.drop.last.tv64, st->drop.last.tv64);
+		t.lost.first.tv64 = min_not_zero(t.lost.first.tv64, st->lost.first.tv64);
+		t.lost.last.tv64  = max(t.lost.last.tv64, st->lost.last.tv64);
+	}
+
+	export_stat_st(OTPL_MPSTAT, &t);
+	if (t.pkt_drop)
+		export_stat_ts(OTPL_MPRSTAT, &t, &t.drop);
+	if (t.pkt_lost)
+		export_stat_ts(OTPL_EPRSTAT, &t, &t.lost);
+
+	ts_stat_last = jiffies;
+	pdu_needs_export++;
+}
+
+/* under pause_scan_worker() */
 static void netflow_switch_version(const int ver)
 {
 	protocol = ver;
 	if (protocol == 5) {
 		memset(&pdu, 0, sizeof(pdu));
+		pdu_data_used	    = NULL;
+		pdu_high_wm	    = NULL;
 		netflow_export_flow = &netflow_export_flow_v5;
-		netflow_export_pdu = &netflow_export_pdu_v5;
+		netflow_export_pdu  = &netflow_export_pdu_v5;
 	} else if (protocol == 9) {
-		pdu_data_used = pdu.v9.data;
-		pdu_max_size = sizeof(pdu.v9);
-		pdu_high_wm = (unsigned char *)&pdu + pdu_max_size;
+		pdu_data_used	    = pdu.v9.data;
+		pdu_high_wm	    = (unsigned char *)&pdu + sizeof(pdu.v9);
 		netflow_export_flow = &netflow_export_flow_tpl;
-		netflow_export_pdu = &netflow_export_pdu_v9;
+		netflow_export_pdu  = &netflow_export_pdu_v9;
 	} else { /* IPFIX */
-		pdu_data_used = pdu.ipfix.data;
-		pdu_max_size = sizeof(pdu.ipfix);
-		pdu_high_wm = (unsigned char *)&pdu + pdu_max_size;
+		pdu_data_used	    = pdu.ipfix.data;
+		pdu_high_wm	    = (unsigned char *)&pdu + sizeof(pdu.ipfix);
 		netflow_export_flow = &netflow_export_flow_tpl;
-		netflow_export_pdu = &netflow_export_pdu_ipfix;
+		netflow_export_pdu  = &netflow_export_pdu_ipfix;
 	}
+	pdu.version = htons(protocol);
 	if (protocol != 5)
 		free_templates();
-	pdu_data_records = pdu_tpl_records = 0;
+	pdu_flow_records = pdu_data_records = pdu_tpl_records = 0;
 	pdu_flowset = NULL;
+	ts_sysinf_last = ts_stat_last = 0;
 	printk(KERN_INFO "ipt_NETFLOW protocol version %d (%s) enabled.\n",
 	    protocol, protocol == 10? "IPFIX" : "NetFlow");
 }
@@ -2557,7 +2829,7 @@ static void export_nat_event(struct nat_event *nel)
 	nf.nat = nel; /* this is also flag of dummy flow */
 	nf.tcp_flags = (nel->nat_event == NAT_DESTROY)? TCP_FIN_RST : TCP_SYN_ACK;
 	if (protocol >= 9) {
-		nf.ts_obs = nel->ts_ktime;
+		nf.nf_ts_obs = nel->ts_ktime;
 		nf.tuple.src.ip = nel->pre.s_addr;
 		nf.tuple.dst.ip = nel->pre.d_addr;
 		nf.tuple.s_port = nel->pre.s_port;
@@ -2576,8 +2848,8 @@ static void export_nat_event(struct nat_event *nel)
 		nf.tuple.dst.ip = nel->post.d_addr;
 		nf.tuple.d_port = nel->post.d_port;
 
-		nf.ts_first = nel->ts_jiffies;
-		nf.ts_last = nel->ts_jiffies;
+		nf.nf_ts_first = nel->ts_jiffies;
+		nf.nf_ts_last = nel->ts_jiffies;
 		if (nel->pre.s_addr != nel->post.s_addr ||
 		    nel->pre.s_port != nel->post.s_port) {
 			nf.nh.ip = nel->post.s_addr;
@@ -2600,10 +2872,10 @@ static void export_nat_event(struct nat_event *nel)
 static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout, const unsigned long jiff)
 {
 	/* active too long, finishing, or having too much bytes */
-	return ((jiff - nf->ts_first) > a_timeout) ||
+	return ((jiff - nf->nf_ts_first) > a_timeout) ||
 		(nf->tuple.protocol == IPPROTO_TCP &&
 		 (nf->tcp_flags & TCP_FIN_RST) &&
-		 (jiff - nf->ts_last) > (1 * HZ)) ||
+		 (jiff - nf->nf_ts_last) > (1 * HZ)) ||
 		nf->nr_bytes >= FLOW_FULL_WATERMARK;
 }
 
@@ -2626,6 +2898,9 @@ static int netflow_scan_and_export(const int flush)
 	if (flush)
 		i_timeout = 0;
 
+	if (protocol >= 9)
+		netflow_export_stats();
+
 	read_lock_bh(&htable_rwlock);
 	for (i = 0; i < LOCK_COUNT; i++) {
 		struct stripe_entry *stripe = &htable_stripes[i];
@@ -2636,7 +2911,7 @@ static int netflow_scan_and_export(const int flush)
 		}
 		list_for_each_entry_safe_reverse(nf, tmp, &stripe->list, flows_list) {
 			++wk_count;
-			if (((jiffies - nf->ts_last) >= i_timeout)
+			if (((jiffies - nf->nf_ts_last) >= i_timeout)
 #ifdef HAVE_LLIST
 			    /* exportable actives already go into export_llist,
 			     * thus this check is redundant. */
@@ -2690,8 +2965,10 @@ static int netflow_scan_and_export(const int flush)
 #endif
 	/* flush flows stored in pdu if there no new flows for too long */
 	/* Note: using >= to allow flow purge on zero timeout */
-	if ((jiffies - pdu_ts_mod) >= i_timeout)
+	if ((jiffies - pdu_ts_mod) >= i_timeout || pdu_needs_export) {
 		netflow_export_pdu();
+		pdu_needs_export = 0;
+	}
 
 	return pdu_count - pdu_c;
 }
@@ -3159,6 +3436,7 @@ static unsigned int netflow_target(
 	if (unlikely(iph == NULL)) {
 		NETFLOW_STAT_INC(truncated);
 		NETFLOW_STAT_INC(pkt_drop);
+		NETFLOW_STAT_TS(drop);
 		return IPT_CONTINUE;
 	}
 
@@ -3167,6 +3445,7 @@ static unsigned int netflow_target(
 		NETFLOW_STAT_INC(freeze_err);
 		NETFLOW_STAT_INC(pkt_drop);
 		NETFLOW_STAT_ADD(traf_drop, pkt_len);
+		NETFLOW_STAT_TS(drop);
 		return IPT_CONTINUE;
 	}
 #endif
@@ -3416,6 +3695,7 @@ do_protocols:
 			NETFLOW_STAT_INC(maxflows_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, pkt_len);
+			NETFLOW_STAT_TS(drop);
 			goto unlock_return;
 		}
 
@@ -3424,11 +3704,12 @@ do_protocols:
 			NETFLOW_STAT_INC(alloc_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, pkt_len);
+			NETFLOW_STAT_TS(drop);
 			goto unlock_return;
 		}
 		hlist_add_head(&nf->hlist, &htable[hash]);
 
-		nf->ts_first = jiffies;
+		nf->nf_ts_first = jiffies;
 		nf->tcp_flags = tcp_flags;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 		nf->o_ifc = if_out? if_out->ifindex : -1;
@@ -3486,7 +3767,7 @@ do_protocols:
 
 	nf->nr_packets++;
 	nf->nr_bytes += pkt_len;
-	nf->ts_last = jiffies;
+	nf->nf_ts_last = jiffies;
 	nf->tcp_flags |= tcp_flags;
 	nf->options |= options;
 	if (tuple.protocol == IPPROTO_TCP)
@@ -3723,6 +4004,10 @@ static int __init ipt_netflow_init(void)
 #endif
 	printk(KERN_INFO "ipt_NETFLOW version %s, srcversion %s\n",
 		IPT_NETFLOW_VERSION, THIS_MODULE->srcversion);
+
+	version_string_size = scnprintf(version_string, sizeof(version_string),
+		    "ipt_NETFLOW " IPT_NETFLOW_VERSION " %s", THIS_MODULE->srcversion);
+	tpl_element_sizes[observationDomainName] = version_string_size + 1;
 
 	/* determine hash size (idea from nf_conntrack_core.c) */
 	if (!hashsize) {
