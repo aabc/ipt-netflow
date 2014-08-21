@@ -20,13 +20,13 @@ done
 echo
 
 readarray -t opts <<EOF
-
-  --enable-natevents    
-  --enable-snmp-rules   
-  --enable-macaddress   
-  --enable-vlan         
-  --enable-direction    
-  --disable-aggregation 
+  --disable-aggregation
+  --enable-natevents
+  --enable-snmp-rules
+  --enable-macaddress
+  --enable-vlan
+  --enable-direction
+  --enable-sampler
 EOF
 
 colorecho() {

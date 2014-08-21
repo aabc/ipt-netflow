@@ -6,7 +6,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
    translation events using NetFlow Event Logging (NEL) for v9, IPFIX, or
    specially crafted v5 pseudo-flows. Additional options is SNMP-index
    translation rules, aggregation rules, ethernet type, VLAN, and MAC
-   addresses exporting.
+   addresses exporting, flow sampling.
 
 
 ============================
@@ -140,6 +140,10 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
          ingress flows(0), in OUTPUT and POSTROUTING as egress flows(1), and
          in FORWARD will have flowDirection set to undefined value 255.
 
+     --enable-sampler
+         enables flow sampler. Read below for explanation of its configuration
+	 option.
+
      --disable-aggregation
          disables aggregation rules (they are enabled by default).
          Read below for explanation of aggregation.
@@ -238,6 +242,22 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
    destination=127.0.0.1:2055,192.0.0.1:2055
      - mirror flows to two (can be more) addresses, separate addresses
        with comma.
+
+   sampler=random:123
+   sampler=deterministic:123
+     - enables Flow Sampling. To disable set to the empty value. Note, that
+       this is flow sampling (as of RFC 7014), not packet sampling (PSAMP).
+       There is two standard sampling modes:
+
+         deterministic:  select each N-th observed flow; in IPFIX this mode
+                         is called Systematic count-based Sampling;
+         random:         select randomly one out of N flows.
+
+       Number after colon is population size N, with valid values 2-16383.
+       Using this sampling does not reduce CPU load caused by module, it
+       reduces amount of flows which go to the collector.  All required
+       NetFlow/IPFIX information to signal use of sampling is also sent.
+       Flow Sampling is compatible with NetFlow v5, v9, and IPFIX.
 
    natevents=1
      - Collect and send NAT translation events as NetFlow Event Logging (NEL)
@@ -506,6 +526,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
   aggrX: aggregation rulesets.
     - controlled by sysctl net.netflow.aggregation variable.
 
+
 ==========================
 = NetFlow considerations =
 ==========================
@@ -541,13 +562,15 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
      Source MAC address:         sourceMacAddress(56).
 
   Other Elements are not Flow Keys. Note that outer interface, which is
-  egressInterface(14), is not regarded as Flow Key. Quoting RFC7012: "For
+  egressInterface(14), is not regarded as Flow Key. Quoting RFC 7012: "For
   Information Elements ... for which the value may change from packet to packet
   within a single Flow, the exported value of an Information Element is by
   default determined by the first packet observed for the corresponding Flow".
+
+  Note that NetFlow and IPFIX modes of operation may have slightly different
+  Elements being used and different statistics sent via Options Templates.
 
 
 =========
 = VOILA =
 =========
-

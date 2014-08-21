@@ -19,6 +19,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/ctype.h>
 #include <linux/skbuff.h>
 #include <linux/proc_fs.h>
 #include <linux/vmalloc.h>
@@ -131,6 +132,29 @@ static char destination_buf[DST_SIZE] = "127.0.0.1:2055";
 static char *destination = destination_buf;
 module_param(destination, charp, 0444);
 MODULE_PARM_DESC(destination, "export destination ipaddress:port");
+
+#ifdef ENABLE_SAMPLER
+static char sampler_buf[128] = "";
+static char *sampler = sampler_buf;
+module_param(sampler, charp, 0444);
+MODULE_PARM_DESC(sampler, "flow sampler parameters");
+static atomic_t flow_count = ATOMIC_INIT(0); /* flow counter for deterministic sampler */
+static atomic64_t flows_observed = ATOMIC_INIT(0);
+static atomic64_t flows_selected = ATOMIC_INIT(0);
+static atomic64_t pkts_observed = ATOMIC_INIT(0);
+static atomic64_t pkts_selected = ATOMIC_INIT(0);
+#define SAMPLER_INFO_INTERVAL (5*60)
+static unsigned long ts_sampler_last = 0;
+enum {
+	SAMPLER_DETERMINISTIC = 1,
+	SAMPLER_RANDOM = 2
+};
+static __u16 sampling_code; /* single variable for atomic access, and u16 fits v5. */
+#define SAMPLER_SHIFT       14
+#define SAMPLER_MODE(x)     ((x) >> SAMPLER_SHIFT)
+#define SAMPLER_INTERVAL_M  ((1 << SAMPLER_SHIFT) - 1)
+#define SAMPLER_INTERVAL(x) ((x) & SAMPLER_INTERVAL_M)
+#endif
 
 static int inactive_timeout = 15;
 module_param(inactive_timeout, int, 0644);
@@ -294,6 +318,10 @@ enum {
 };
 static int template_ids = FLOWSET_DATA_FIRST;
 static int tpl_count = 0; /* how much active templates */
+#define STAT_INTERVAL	 (1*60)
+#define SYSINFO_INTERVAL (5*60)
+static unsigned long ts_stat_last = 0; /* (jiffies) */
+static unsigned long ts_sysinf_last = 0; /* (jiffies) */
 #ifdef ENABLE_DEBUGFS
 static atomic_t freeze = ATOMIC_INIT(0);
 static struct dentry *flows_dump_d;
@@ -362,6 +390,23 @@ static inline void pause_scan_worker(void)
 #define INIT_NET(x) init_net.x
 #endif
 
+#ifdef ENABLE_SAMPLER
+static inline unsigned char get_sampler_mode(void)
+{
+	return SAMPLER_MODE(sampling_code);
+}
+static inline unsigned short get_sampler_interval(void)
+{
+	return SAMPLER_INTERVAL(sampling_code);
+}
+static inline const char *sampler_mode_string(void)
+{
+	const int mode = get_sampler_mode();
+	return mode == SAMPLER_DETERMINISTIC? "deterministic" :
+		mode == SAMPLER_RANDOM? "random" : "unknown";
+}
+#endif
+
 #ifdef CONFIG_PROC_FS
 /* procfs statistics /proc/net/stat/ipt_netflow */
 static int nf_seq_show(struct seq_file *seq, void *v)
@@ -382,7 +427,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	int snum = 0;
 	int peak = (jiffies - peakflows_at) / HZ;
 
-	seq_printf(seq, "ipt_NETFLOW version " IPT_NETFLOW_VERSION ", srcversion %s;"
+	seq_printf(seq, "ipt_NETFLOW " IPT_NETFLOW_VERSION ", srcversion %s;"
 #ifndef DISABLE_AGGR
 	    " aggr"
 #endif
@@ -400,6 +445,9 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 #endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	    " nel"
+#endif
+#ifdef ENABLE_SAMPLER
+	    " sampl"
 #endif
 #ifdef SNMP_RULES
 	    " snmp"
@@ -521,6 +569,21 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	    active_timeout,
 	    inactive_timeout,
 	    maxflows);
+
+#ifdef ENABLE_SAMPLER
+	if (sampling_code) {
+		seq_printf(seq, "Flow sampling mode %s one-out-of %u."
+		    " Flows selected %lu, discarded %lu."
+		    " Pkts selected %lu, discarded %lu.\n",
+		    sampler_mode_string(),
+		    get_sampler_interval(),
+		    atomic64_read(&flows_selected),
+		    atomic64_read(&flows_observed) - atomic64_read(&flows_selected),
+		    atomic64_read(&pkts_selected),
+		    atomic64_read(&pkts_observed) - atomic64_read(&pkts_selected));
+	} else
+		seq_printf(seq, "Flow sampling is disabled.\n");
+#endif
 
 #ifdef CONFIG_NF_NAT_NEEDED
 	seq_printf(seq, "Natevents %s, count start %lu, stop %lu.\n", natevents? "enabled" : "disabled",
@@ -899,6 +962,7 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 	return ret;
 }
 
+static void free_templates(void);
 static int destination_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
@@ -909,6 +973,7 @@ static int destination_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 		pause_scan_worker();
 		destination_removeall();
 		add_destinations(destination_buf);
+		free_templates();
 		cont_scan_worker();
 	}
 	return ret;
@@ -925,6 +990,32 @@ static int aggregation_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 	ret = proc_dostring(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (ret >= 0 && write)
 		add_aggregation(aggregation_buf);
+	return ret;
+}
+#endif
+
+#ifdef ENABLE_SAMPLER
+static int parse_sampler(char *ptr);
+static int sampler_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+			 void __user *buffer, size_t *lenp, loff_t *fpos)
+{
+	int ret;
+
+	if (debug > 1)
+		printk(KERN_INFO "sampler_procctl (%d) %u %llu\n", write, (unsigned int)(*lenp), *fpos);
+	ret = proc_dostring(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+	if (ret >= 0 && write) {
+		pause_scan_worker();
+		netflow_scan_and_export(AND_FLUSH);
+		/* paused for sampling_code reads to be consistent */
+		ret = parse_sampler(sampler_buf);
+		ts_sampler_last = 0;
+		atomic64_set(&flows_observed, 0);
+		atomic64_set(&flows_selected, 0);
+		atomic64_set(&pkts_observed, 0);
+		atomic64_set(&pkts_selected, 0);
+		cont_scan_worker();
+	}
 	return ret;
 }
 #endif
@@ -1119,6 +1210,15 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.maxlen		= sizeof(int),
 		.proc_handler	= &proc_dointvec,
 	},
+#ifdef ENABLE_SAMPLER
+	{
+		.procname	= "sampler",
+		.mode		= 0644,
+		.data		= &sampler_buf,
+		.maxlen		= sizeof(sampler_buf),
+		.proc_handler	= &sampler_procctl,
+	},
+#endif
 	{
 		.procname	= "scan-min",
 		.mode		= 0644,
@@ -1356,6 +1456,78 @@ static void add_usock(struct ipt_netflow_sock *usock)
 	mutex_unlock(&sock_lock);
 }
 
+#if defined(ENABLE_SAMPLER) || defined(SNMP_RULES)
+static inline int xisdigit(int ch)
+{
+	return (ch >= '0') && (ch <= '9');
+}
+
+static inline int simple_atoi(const char *p)
+{
+	int i;
+
+	for (i = 0; xisdigit(*p); p++)
+		i = i * 10 + *p - '0';
+	return i;
+}
+#endif
+
+#ifdef ENABLE_SAMPLER
+static void set_sampler(unsigned char mode, unsigned short interval)
+{
+	if (!mode || interval > SAMPLER_INTERVAL_M) {
+		*sampler_buf = 0;
+		sampling_code = 0;
+		printk(KERN_ERR "ipt_NETFLOW: flow sampling is disabled.\n");
+	} else {
+		sampling_code = (mode << 14) | interval;
+		sprintf(sampler_buf, "%s:%u", sampler_mode_string(), interval);
+		printk(KERN_ERR "ipt_NETFLOW: flow sampling is enabled, mode %s one-out-of %u.\n",
+		    sampler_mode_string(), interval);
+	}
+}
+
+static int parse_sampler(char *ptr)
+{
+	char *p;
+	unsigned char mode;
+	unsigned int val;
+	int ret = 0;
+
+	switch (tolower(*ptr)) {
+	case 'd': mode = SAMPLER_DETERMINISTIC; break;
+	case 'r': mode = SAMPLER_RANDOM; break;
+	default:
+		printk(KERN_ERR "ipt_NETFLOW: sampler parse error (%s '%s').\n",
+		    "unknown mode", ptr);
+		ret = -EINVAL;
+		/* FALLTHROUGH */
+	case '\0': /* empty */
+	case 'n':  /* none */
+	case 'o':  /* off */
+	case '0':  /* zero */
+		  set_sampler(0, 0);
+		  return ret;
+	}
+	p = strchr(ptr, ':');
+	if (!p) {
+		printk(KERN_ERR "ipt_NETFLOW: sampler parse error (%s '%s').\n",
+		    "no interval specified", ptr);
+		set_sampler(0, 0);
+		return -EINVAL;
+	}
+	val = simple_atoi(++p);
+	if (val < 2 || val > SAMPLER_INTERVAL_M) {
+		printk(KERN_ERR "ipt_NETFLOW: sampler parse error (%s '%s').\n",
+		    "illegal interval", p);
+		set_sampler(0, 0);
+		return -EINVAL;
+	}
+	set_sampler(mode, val);
+	return 0;
+}
+#endif
+
 #ifdef SNMP_RULES
 /* source string: eth:100,ppp:200,vlan:300 */
 /* reformat to: length[1], prefix[len], offset[2], ..., null[1]. */
@@ -1422,20 +1594,6 @@ static int add_snmp_rules(char *ptr)
 	if (old)
 		kfree(old);
 	return 0;
-}
-
-static inline int isdigit(int ch)
-{
-	return (ch >= '0') && (ch <= '9');
-}
-
-static inline int simple_atoi(const char *p)
-{
-	int i;
-
-	for (i = 0; isdigit(*p); p++)
-		i = i * 10 + *p - '0';
-	return i;
 }
 
 static inline int resolve_snmp(const struct net_device *ifc)
@@ -1727,8 +1885,9 @@ static void netflow_export_pdu_v5(void)
 	pdu.v5.seq		= htonl(pdu_seq);
 	//pdu.v5.eng_type	= 0;
 	pdu.v5.eng_id		= engine_id;
-	//pdu.v5.padding	= 0;
-
+#ifdef ENABLE_SAMPLER
+	pdu.v5.sampling		= htons(sampling_code);
+#endif
 	pdusize = NETFLOW5_HEADER_SIZE + sizeof(struct netflow5_record) * pdu_data_records;
 
 	netflow_sendmsg(&pdu.v5, pdusize);
@@ -1927,6 +2086,8 @@ struct base_template {
 #define BTPL_VLANI	0x00010000	/* inner VLAN (IPFIX) */
 #define BTPL_ETHERTYPE	0x00020000	/* ethernetType */
 #define BTPL_DIRECTION	0x00040000	/* flowDirection */
+#define BTPL_SAMPLERID	0x00080000	/* samplerId (v9) */
+#define BTPL_SELECTORID	0x00100000	/* selectorId (IPFIX) */
 #define BTPL_OPTION	0x80000000	/* Options Template */
 #define BTPL_MAX	32
 /* Options Templates */
@@ -1935,6 +2096,10 @@ struct base_template {
 #define OTPL_MPSTAT	OTPL(2)		/* The Metering Process Statistics (rfc5101) */
 #define OTPL_MPRSTAT	OTPL(3)		/* The Metering Process Reliability Statistics */
 #define OTPL_EPRSTAT	OTPL(4)		/* The Exporting Process Reliability Statistics */
+#define OTPL_SAMPLER	OTPL(5)		/* Flow Sampler for v9 */
+#define OTPL_SEL_RAND	OTPL(6)		/* Random Flow Selector for IPFIX */
+#define OTPL_SEL_COUNT	OTPL(7)		/* Systematic count-based Flow Selector for IPFIX */
+#define OTPL_SEL_STAT	OTPL(8)		/* rfc7014 */
 
 static struct base_template template_base = {
 	.types = {
@@ -2102,6 +2267,57 @@ static struct base_template template_exp_rel_stat = {
 	}
 };
 
+#ifdef ENABLE_SAMPLER
+static struct base_template template_samplerid = {
+	.types = { FLOW_SAMPLER_ID, 0 }
+};
+static struct base_template template_selectorid = {
+	.types = { selectorId, 0 }
+};
+
+/* sampler for v9 */
+static struct base_template template_sampler = {
+	.types = {
+		observationDomainId,
+		FLOW_SAMPLER_ID,
+		FLOW_SAMPLER_MODE,
+		FLOW_SAMPLER_RANDOM_INTERVAL,
+		0
+	}
+};
+/* sampler for ipfix */
+static struct base_template template_selector_systematic = {
+	.types = {
+		observationDomainId,
+		selectorId,
+		flowSelectorAlgorithm,
+		samplingFlowInterval,
+		samplingFlowSpacing,
+		0
+	}
+};
+static struct base_template template_selector_random = {
+	.types = {
+		observationDomainId,
+		selectorId,
+		flowSelectorAlgorithm,
+		samplingSize,
+		samplingPopulation,
+		0
+	}
+};
+static struct base_template template_selector_stat = {
+	.types = {
+		selectorId,
+		selectorIDTotalFlowsObserved,
+		selectorIDTotalFlowsSelected,
+		selectorIdTotalPktsObserved,
+		selectorIdTotalPktsSelected,
+		0
+	}
+};
+#endif
+
 struct data_template {
 	struct hlist_node hlist;
 	unsigned int tpl_key;
@@ -2135,6 +2351,12 @@ static void free_templates(void)
 		INIT_HLIST_HEAD(thead);
 	}
 	tpl_count = 0;
+
+	/* reinitialize template timeouts */
+	ts_sysinf_last = ts_stat_last = 0;
+#ifdef ENABLE_SAMPLER
+	ts_sampler_last = 0;
+#endif
 }
 
 /* find old, or create new combined template from template key (tmask) */
@@ -2154,8 +2376,9 @@ static struct data_template *get_template(const unsigned int tmask)
 		if (tpl->tpl_key == tmask)
 			return tpl;
 
-	/* assemble array of base_templates from template key */
 	tnum = 0;
+	/* assemble array of base_templates from template key */
+	/* NB: this should not have protocol dependent checks */
 	if (tmask & BTPL_OPTION) {
 		switch (tmask) {
 		case OTPL_SYSITIME:
@@ -2170,6 +2393,20 @@ static struct data_template *get_template(const unsigned int tmask)
 		case OTPL_EPRSTAT:
 			tlist[tnum++] = &template_exp_rel_stat;
 			break;
+#ifdef ENABLE_SAMPLER
+		case OTPL_SAMPLER:
+			tlist[tnum++] = &template_sampler;
+			break;
+		case OTPL_SEL_RAND:
+			tlist[tnum++] = &template_selector_random;
+			break;
+		case OTPL_SEL_COUNT:
+			tlist[tnum++] = &template_selector_systematic;
+			break;
+		case OTPL_SEL_STAT:
+			tlist[tnum++] = &template_selector_stat;
+			break;
+#endif
 		}
 	} else {
 		if (tmask & BTPL_IP4) {
@@ -2219,6 +2456,12 @@ static struct data_template *get_template(const unsigned int tmask)
 #ifdef ENABLE_DIRECTION
 		if (tmask & BTPL_DIRECTION)
 			tlist[tnum++] = &template_direction;
+#endif
+#ifdef ENABLE_SAMPLER
+		if (tmask & BTPL_SAMPLERID)
+			tlist[tnum++] = &template_samplerid;
+		else if (tmask & BTPL_SELECTORID)
+			tlist[tnum++] = &template_selectorid;
 #endif
 	} /* !BTPL_OPTION */
 
@@ -2483,6 +2726,11 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 			     put_unaligned_be64(ktime_to_us(nf->nf_ts_obs), ptr); break;
 	case observationTimeNanoseconds:
 			     put_unaligned_be64(ktime_to_ns(nf->nf_ts_obs), ptr); break;
+#ifdef ENABLE_SAMPLER
+	case FLOW_SAMPLER_ID:
+	case selectorId:
+			     *ptr = get_sampler_mode(); break;
+#endif
 	default:
 			     memset(ptr, 0, tpl_element_sizes[type]);
 	}
@@ -2565,16 +2813,57 @@ static unsigned char *alloc_record_key(const unsigned int t_key, struct data_tem
 	return alloc_record_tpl(tpl);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,14,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
+#define prandom_u32 get_random_int
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0)
+#define prandom_u32 random32
+#endif
+static inline u32 prandom_u32_max(u32 ep_ro)
+{
+	return (u32)(((u64) prandom_u32() * ep_ro) >> 32);
+}
+#endif
+
 static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 {
 	unsigned char *ptr;
 	struct data_template *tpl;
 	unsigned int tpl_mask = BTPL_BASE;
 	int i;
+#ifdef ENABLE_SAMPLER
+	const char mode = get_sampler_mode();
+#endif
 
 	if (unlikely(debug > 2))
 		printk(KERN_INFO "adding flow to export (%d)\n",
 		    pdu_data_records + pdu_tpl_records);
+
+#ifdef ENABLE_SAMPLER
+	/* first check is flow should sampled at all */
+	if (mode
+#ifdef CONFIG_NF_NAT_NEEDED
+	    && !nf->nat
+#endif
+	    ) {
+		const unsigned int interval = get_sampler_interval();
+		unsigned int val; /* [0..interval) */
+
+		atomic64_inc(&flows_observed);
+		atomic64_add(nf->nr_packets, &pkts_observed);
+		if (mode == SAMPLER_DETERMINISTIC)
+			val = nf->sampler_count % interval;
+		else
+			val = prandom_u32_max(interval);
+		if (val) {
+			ipt_netflow_free(nf);
+			return;
+		}
+		atomic64_inc(&flows_selected);
+		atomic64_add(nf->nr_packets, &pkts_selected);
+		tpl_mask |= (protocol == 9)? BTPL_SAMPLERID : BTPL_SELECTORID;
+	}
+#endif
 
 	/* build template key */
 	if (likely(nf->tuple.l3proto == AF_INET)) {
@@ -2659,9 +2948,9 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 
 	pdu_packets += nf->nr_packets;
 	pdu_traf    += nf->nr_bytes;
+	pdu_ts_mod = jiffies;
 
 	ipt_netflow_free(nf);
-	pdu_ts_mod = jiffies;
 }
 
 static u64 get_sys_init_time_ms(void)
@@ -2672,6 +2961,21 @@ static u64 get_sys_init_time_ms(void)
 		sys_init_time = ktime_to_ms(ktime_get_real()) - jiffies_to_msecs(jiffies);
 	return sys_init_time;
 }
+
+#ifdef ENABLE_SAMPLER
+/* http://www.iana.org/assignments/ipfix/ipfix.xml#ipfix-flowselectoralgorithm */
+static unsigned char get_flowselectoralgo(void)
+{
+	switch (get_sampler_mode()) {
+	case SAMPLER_DETERMINISTIC:
+		return 1; /* Systematic count-based Sampling */
+	case SAMPLER_RANDOM:
+		return 3; /* Random n-out-of-N Sampling */
+	default:
+		return 0; /* Unassigned */
+	}
+}
+#endif
 
 static void export_stat_ts(const unsigned int tpl_mask, struct ipt_netflow_stat *st, struct duration *ts)
 {
@@ -2705,6 +3009,24 @@ static void export_stat_ts(const unsigned int tpl_mask, struct ipt_netflow_stat 
 		case flowEndMilliseconds:	put_unaligned_be64(ktime_to_ms(ts->last), ptr); break;
 		case systemInitTimeMilliseconds: put_unaligned_be64(get_sys_init_time_ms(), ptr); break;
 		case observationDomainName:     memcpy(ptr, version_string, version_string_size + 1); break;
+#ifdef ENABLE_SAMPLER
+		case FLOW_SAMPLER_ID:
+		case selectorId:
+		case FLOW_SAMPLER_MODE:
+						*ptr = get_sampler_mode(); break;
+		case flowSelectorAlgorithm:	*ptr = get_flowselectoralgo(); break;
+		case samplingSize:
+		case samplingFlowInterval:
+						*ptr = 1 /* always 'one-out-of' */; break;
+		case samplingFlowSpacing:
+		case samplingPopulation:
+		case FLOW_SAMPLER_RANDOM_INTERVAL:
+						put_unaligned_be16(get_sampler_interval(), ptr); break;
+		case selectorIDTotalFlowsObserved: put_unaligned_be64(atomic64_read(&flows_observed), ptr); break;
+		case selectorIDTotalFlowsSelected: put_unaligned_be64(atomic64_read(&flows_selected), ptr); break;
+		case selectorIdTotalPktsObserved:  put_unaligned_be64(atomic64_read(&pkts_observed), ptr); break;
+		case selectorIdTotalPktsSelected:  put_unaligned_be64(atomic64_read(&pkts_selected), ptr); break;
+#endif
 		}
 		ptr += tpl->fields[i++];
 	}
@@ -2731,11 +3053,6 @@ static inline void export_stat(const unsigned int tpl_mask)
 	typeof(y) __y = (y);			\
 	__x == 0 ? __y : ((__y == 0) ? __x : min(__x, __y)); })
 #endif
-static unsigned long ts_stat_last = 0;
-static unsigned long ts_sysinf_last = 0;
-#define STAT_INTERVAL	 (1*60)
-#define SYSINFO_INTERVAL (5*60)
-
 #ifndef time_is_before_jiffies
 #define time_is_before_jiffies(a) time_after(jiffies, a)
 #endif
@@ -2783,10 +3100,35 @@ static void netflow_export_stats(void)
 		export_stat_ts(OTPL_MPRSTAT, &t, &t.drop);
 	if (t.pkt_lost)
 		export_stat_ts(OTPL_EPRSTAT, &t, &t.lost);
+#ifdef ENABLE_SAMPLER
+	if (protocol == 10 && sampling_code)
+		export_stat(OTPL_SEL_STAT);
+#endif
 
 	ts_stat_last = jiffies;
 	pdu_needs_export++;
 }
+
+#ifdef ENABLE_SAMPLER
+static void export_sampler_parameters(void)
+{
+	if (sampling_code &&
+	    (unlikely(!ts_sampler_last) ||
+	     time_is_before_jiffies(ts_sampler_last + SAMPLER_INFO_INTERVAL * HZ))) {
+		if (protocol == 9)
+			export_stat(OTPL_SAMPLER);
+		else {
+			const unsigned char mode = get_sampler_mode();
+
+			if (mode == SAMPLER_RANDOM)
+				export_stat(OTPL_SEL_RAND);
+			else if (mode == SAMPLER_DETERMINISTIC)
+				export_stat(OTPL_SEL_COUNT);
+		}
+		ts_sampler_last = jiffies;
+	}
+}
+#endif
 
 /* under pause_scan_worker() */
 static void netflow_switch_version(const int ver)
@@ -2810,11 +3152,9 @@ static void netflow_switch_version(const int ver)
 		netflow_export_pdu  = &netflow_export_pdu_ipfix;
 	}
 	pdu.version = htons(protocol);
-	if (protocol != 5)
-		free_templates();
+	free_templates();
 	pdu_flow_records = pdu_data_records = pdu_tpl_records = 0;
 	pdu_flowset = NULL;
-	ts_sysinf_last = ts_stat_last = 0;
 	printk(KERN_INFO "ipt_NETFLOW protocol version %d (%s) enabled.\n",
 	    protocol, protocol == 10? "IPFIX" : "NetFlow");
 }
@@ -2898,8 +3238,12 @@ static int netflow_scan_and_export(const int flush)
 	if (flush)
 		i_timeout = 0;
 
-	if (protocol >= 9)
+	if (protocol >= 9) {
 		netflow_export_stats();
+#ifdef ENABLE_SAMPLER
+		export_sampler_parameters();
+#endif
+	}
 
 	read_lock_bh(&htable_rwlock);
 	for (i = 0; i < LOCK_COUNT; i++) {
@@ -3709,6 +4053,12 @@ do_protocols:
 		}
 		hlist_add_head(&nf->hlist, &htable[hash]);
 
+#ifdef ENABLE_SAMPLER
+		/* I only increment if deterministic sampler is enabled to
+		 * avoid cache conflict by default. */
+		if (get_sampler_mode() == SAMPLER_DETERMINISTIC)
+			nf->sampler_count = atomic_inc_return(&flow_count);
+#endif
 		nf->nf_ts_first = jiffies;
 		nf->tcp_flags = tcp_flags;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
@@ -4105,6 +4455,16 @@ static int __init ipt_netflow_init(void)
 		aggregation = aggregation_buf;
 	}
 	add_aggregation(aggregation);
+#endif
+
+#ifdef ENABLE_SAMPLER
+	if (!sampler)
+		sampler = sampler_buf;
+	if (sampler != sampler_buf) {
+		strlcpy(sampler_buf, sampler, sizeof(sampler_buf));
+		sampler = sampler_buf;
+	}
+	parse_sampler(sampler);
 #endif
 
 #ifdef SNMP_RULES

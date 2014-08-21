@@ -60,7 +60,7 @@ struct netflow5_pdu {
 	__be32			seq;
 	__u8			eng_type;
 	__u8			eng_id;
-	__u16			padding;
+	__u16			sampling;
 	struct netflow5_record	flow[NETFLOW5_RECORDS_MAX];
 } __attribute__ ((packed));
 #define NETFLOW5_HEADER_SIZE (sizeof(struct netflow5_pdu) - NETFLOW5_RECORDS_MAX * sizeof(struct netflow5_record))
@@ -99,6 +99,9 @@ struct netflow5_pdu {
 	two(40,  TOTAL_BYTES_EXP, exportedOctetTotalCount, 8) \
 	two(41,  TOTAL_PKTS_EXP, exportedMessageTotalCount, 8) \
 	two(42,  TOTAL_FLOWS_EXP, exportedFlowRecordTotalCount, 8) \
+	two(48,  FLOW_SAMPLER_ID, samplerId, 1) \
+	two(49,  FLOW_SAMPLER_MODE, samplerMode, 1) \
+	two(50,  FLOW_SAMPLER_RANDOM_INTERVAL, samplerRandomInterval, 2) \
 	one(52,  minimumTTL, 1) \
 	one(53,  maximumTTL, 1) \
 	two(56,  SRC_MAC, sourceMacAddress, 6) \
@@ -140,9 +143,19 @@ struct netflow5_pdu {
 	one(256, ethernetType, 2) \
 	one(295, IPSecSPI, 4) \
 	one(300, observationDomainName, 128) \
+	one(302, selectorId, 1) \
+	one(309, samplingSize, 1) \
+	one(310, samplingPopulation, 2) \
+	one(318, selectorIdTotalPktsObserved, 8) \
+	one(319, selectorIdTotalPktsSelected, 8) \
 	one(323, observationTimeMilliseconds, 8) \
 	one(324, observationTimeMicroseconds, 8) \
-	one(325, observationTimeNanoseconds, 8)
+	one(325, observationTimeNanoseconds, 8) \
+	one(390, flowSelectorAlgorithm, 1) \
+	one(394, selectorIDTotalFlowsObserved, 8) \
+	one(395, selectorIDTotalFlowsSelected, 8) \
+	one(396, samplingFlowInterval, 1) \
+	one(397, samplingFlowSpacing, 2)
 
 enum {
 	Elements
@@ -281,6 +294,9 @@ struct ipt_netflow {
 	/* flow statistics */
 	u_int32_t	nr_packets;
 	u_int32_t	nr_bytes;
+#ifdef ENABLE_SAMPLER
+	unsigned int	sampler_count; /* for deterministic sampler only */
+#endif
 	union {
 		struct {
 			unsigned long first;
