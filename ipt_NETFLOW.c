@@ -141,19 +141,24 @@ MODULE_PARM_DESC(sampler, "flow sampler parameters");
 static atomic_t flow_count = ATOMIC_INIT(0); /* flow counter for deterministic sampler */
 static atomic64_t flows_observed = ATOMIC_INIT(0);
 static atomic64_t flows_selected = ATOMIC_INIT(0);
-static atomic64_t pkts_observed = ATOMIC_INIT(0);
-static atomic64_t pkts_selected = ATOMIC_INIT(0);
 #define SAMPLER_INFO_INTERVAL (5*60)
 static unsigned long ts_sampler_last = 0;
+#define SAMPLER_SHIFT       14
+#define SAMPLER_INTERVAL_M  ((1 << SAMPLER_SHIFT) - 1)
 enum {
 	SAMPLER_DETERMINISTIC = 1,
-	SAMPLER_RANDOM = 2
+	SAMPLER_RANDOM	      = 2,
+	SAMPLER_HASH	      = 3
 };
-static __u16 sampling_code; /* single variable for atomic access, and u16 fits v5. */
-#define SAMPLER_SHIFT       14
-#define SAMPLER_MODE(x)     ((x) >> SAMPLER_SHIFT)
-#define SAMPLER_INTERVAL_M  ((1 << SAMPLER_SHIFT) - 1)
-#define SAMPLER_INTERVAL(x) ((x) & SAMPLER_INTERVAL_M)
+struct sampling {
+	union {
+		u32		v32;
+		struct {
+			u8	mode;
+			u16 	interval;
+		};
+	};
+} samp;
 #endif
 
 static int inactive_timeout = 15;
@@ -393,17 +398,27 @@ static inline void pause_scan_worker(void)
 #ifdef ENABLE_SAMPLER
 static inline unsigned char get_sampler_mode(void)
 {
-	return SAMPLER_MODE(sampling_code);
+	return samp.mode;
 }
 static inline unsigned short get_sampler_interval(void)
 {
-	return SAMPLER_INTERVAL(sampling_code);
+	return samp.interval;
 }
 static inline const char *sampler_mode_string(void)
 {
 	const int mode = get_sampler_mode();
 	return mode == SAMPLER_DETERMINISTIC? "deterministic" :
-		mode == SAMPLER_RANDOM? "random" : "unknown";
+		mode == SAMPLER_RANDOM? "random" : "hash";
+}
+/* map SAMPLER_HASH into SAMPLER_RANDOM */
+static unsigned char get_sampler_mode_nf(void)
+{
+	const unsigned char mode = get_sampler_mode();
+	return (mode == SAMPLER_HASH)? SAMPLER_RANDOM : mode;
+}
+static inline unsigned short sampler_nf_v5(void)
+{
+	return (get_sampler_mode_nf() << SAMPLER_SHIFT) | get_sampler_interval();
 }
 #endif
 
@@ -419,6 +434,9 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	unsigned long long pkt_total = 0, traf_total = 0, exported_traf = 0;
 	unsigned long long pkt_drop = 0, traf_drop = 0;
 	unsigned long long pkt_out = 0, traf_out = 0;
+#ifdef ENABLE_SAMPLER
+	unsigned long long pkts_selected = 0, pkts_observed = 0;
+#endif
 	struct ipt_netflow_sock *usock;
 #ifndef DISABLE_AGGR
 	struct netflow_aggr_n *aggr_n;
@@ -447,7 +465,10 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	    " nel"
 #endif
 #ifdef ENABLE_SAMPLER
-	    " sampl"
+	    " samp"
+# ifdef SAMPLING_HASH
+	    "-h"
+# endif
 #endif
 #ifdef SNMP_RULES
 	    " snmp"
@@ -498,6 +519,10 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		traf_drop	+= st->traf_drop + st->traf_lost;
 		pkt_out		+= st->pkt_out;
 		traf_out	+= st->traf_out;
+#ifdef ENABLE_SAMPLER
+		pkts_selected	+= st->pkts_selected;
+		pkts_observed	+= st->pkts_observed;
+#endif
 	}
 
 #define FFLOAT(x, prec) (int)(x) / prec, (int)(x) % prec
@@ -571,16 +596,19 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	    maxflows);
 
 #ifdef ENABLE_SAMPLER
-	if (sampling_code) {
-		seq_printf(seq, "Flow sampling mode %s one-out-of %u."
-		    " Flows selected %lu, discarded %lu."
-		    " Pkts selected %lu, discarded %lu.\n",
+	if (get_sampler_mode()) {
+		seq_printf(seq, "Flow sampling mode %s one-out-of %u.",
 		    sampler_mode_string(),
-		    get_sampler_interval(),
-		    atomic64_read(&flows_selected),
-		    atomic64_read(&flows_observed) - atomic64_read(&flows_selected),
-		    atomic64_read(&pkts_selected),
-		    atomic64_read(&pkts_observed) - atomic64_read(&pkts_selected));
+		    get_sampler_interval());
+		if (get_sampler_mode() != SAMPLER_HASH)
+			seq_printf(seq, " Flows selected %lu, discarded %lu.",
+			    atomic64_read(&flows_selected),
+			    atomic64_read(&flows_observed) - atomic64_read(&flows_selected));
+		else
+			seq_printf(seq, " Flows selected %lu.", atomic64_read(&flows_selected));
+		seq_printf(seq, " Pkts selected %llu, discarded %llu.\n",
+		    pkts_selected,
+		    pkts_observed - pkts_selected);
 	} else
 		seq_printf(seq, "Flow sampling is disabled.\n");
 #endif
@@ -1005,15 +1033,22 @@ static int sampler_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fi
 		printk(KERN_INFO "sampler_procctl (%d) %u %llu\n", write, (unsigned int)(*lenp), *fpos);
 	ret = proc_dostring(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (ret >= 0 && write) {
+		int cpu;
+
 		pause_scan_worker();
 		netflow_scan_and_export(AND_FLUSH);
 		/* paused for sampling_code reads to be consistent */
 		ret = parse_sampler(sampler_buf);
+		/* resend templates */
 		ts_sampler_last = 0;
+		/* zero stat */
 		atomic64_set(&flows_observed, 0);
 		atomic64_set(&flows_selected, 0);
-		atomic64_set(&pkts_observed, 0);
-		atomic64_set(&pkts_selected, 0);
+		for_each_present_cpu(cpu) {
+			struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+			st->pkts_selected = 0;
+			st->pkts_observed = 0;
+		}
 		cont_scan_worker();
 	}
 	return ret;
@@ -1475,12 +1510,16 @@ static inline int simple_atoi(const char *p)
 #ifdef ENABLE_SAMPLER
 static void set_sampler(unsigned char mode, unsigned short interval)
 {
+	struct sampling s;
+
+	s.mode = mode;
+	s.interval = interval;
 	if (!mode || interval > SAMPLER_INTERVAL_M) {
 		*sampler_buf = 0;
-		sampling_code = 0;
+		samp.v32 = s.v32;
 		printk(KERN_ERR "ipt_NETFLOW: flow sampling is disabled.\n");
 	} else {
-		sampling_code = (mode << 14) | interval;
+		samp.v32 = s.v32;
 		sprintf(sampler_buf, "%s:%u", sampler_mode_string(), interval);
 		printk(KERN_ERR "ipt_NETFLOW: flow sampling is enabled, mode %s one-out-of %u.\n",
 		    sampler_mode_string(), interval);
@@ -1497,6 +1536,9 @@ static int parse_sampler(char *ptr)
 	switch (tolower(*ptr)) {
 	case 'd': mode = SAMPLER_DETERMINISTIC; break;
 	case 'r': mode = SAMPLER_RANDOM; break;
+#ifdef SAMPLING_HASH
+	case 'h': mode = SAMPLER_HASH; break;
+#endif
 	default:
 		printk(KERN_ERR "ipt_NETFLOW: sampler parse error (%s '%s').\n",
 		    "unknown mode", ptr);
@@ -1741,10 +1783,20 @@ static int add_aggregation(char *ptr)
 }
 #endif
 
+#ifdef SAMPLING_HASH
+static uint32_t hash_seed;
+#define HASH_SEED hash_seed
+#else
+#define HASH_SEED 0
+#endif
+static inline u_int32_t __hash_netflow(const struct ipt_netflow_tuple *tuple)
+{
+	return murmur3(tuple, sizeof(struct ipt_netflow_tuple), HASH_SEED);
+}
+
 static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple)
 {
-#define HASH_SEED 0
-	return murmur3(tuple, sizeof(struct ipt_netflow_tuple), HASH_SEED) % htable_size;
+	return __hash_netflow(tuple) % htable_size;
 }
 
 static struct ipt_netflow *
@@ -1886,7 +1938,7 @@ static void netflow_export_pdu_v5(void)
 	//pdu.v5.eng_type	= 0;
 	pdu.v5.eng_id		= engine_id;
 #ifdef ENABLE_SAMPLER
-	pdu.v5.sampling		= htons(sampling_code);
+	pdu.v5.sampling		= htons(sampler_nf_v5());
 #endif
 	pdusize = NETFLOW5_HEADER_SIZE + sizeof(struct netflow5_record) * pdu_data_records;
 
@@ -2100,6 +2152,7 @@ struct base_template {
 #define OTPL_SEL_RAND	OTPL(6)		/* Random Flow Selector for IPFIX */
 #define OTPL_SEL_COUNT	OTPL(7)		/* Systematic count-based Flow Selector for IPFIX */
 #define OTPL_SEL_STAT	OTPL(8)		/* rfc7014 */
+#define OTPL_SEL_STATH	OTPL(9)		/* OTPL_SEL_STAT, except selectorIDTotalFlowsObserved */
 
 static struct base_template template_base = {
 	.types = {
@@ -2316,6 +2369,17 @@ static struct base_template template_selector_stat = {
 		0
 	}
 };
+/* can't calc selectorIDTotalFlowsObserved for hash sampling,
+ * because dropped flows are not accounted */
+static struct base_template template_selector_stat_hash = {
+	.types = {
+		selectorId,
+		selectorIDTotalFlowsSelected,
+		selectorIdTotalPktsObserved,
+		selectorIdTotalPktsSelected,
+		0
+	}
+};
 #endif
 
 struct data_template {
@@ -2405,6 +2469,9 @@ static struct data_template *get_template(const unsigned int tmask)
 			break;
 		case OTPL_SEL_STAT:
 			tlist[tnum++] = &template_selector_stat;
+			break;
+		case OTPL_SEL_STATH:
+			tlist[tnum++] = &template_selector_stat_hash;
 			break;
 #endif
 		}
@@ -2850,17 +2917,23 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 		unsigned int val; /* [0..interval) */
 
 		atomic64_inc(&flows_observed);
-		atomic64_add(nf->nr_packets, &pkts_observed);
-		if (mode == SAMPLER_DETERMINISTIC)
+		NETFLOW_STAT_ADD_ATOMIC(pkts_observed, nf->nr_packets);
+		switch (mode) {
+		case SAMPLER_DETERMINISTIC:
 			val = nf->sampler_count % interval;
-		else
+			break;
+		case SAMPLER_RANDOM:
 			val = prandom_u32_max(interval);
+			break;
+		default: /* SAMPLER_HASH */
+			val = 0;
+		}
 		if (val) {
 			ipt_netflow_free(nf);
 			return;
 		}
 		atomic64_inc(&flows_selected);
-		atomic64_add(nf->nr_packets, &pkts_selected);
+		NETFLOW_STAT_ADD_ATOMIC(pkts_selected, nf->nr_packets);
 		tpl_mask |= (protocol == 9)? BTPL_SAMPLERID : BTPL_SELECTORID;
 	}
 #endif
@@ -2969,6 +3042,7 @@ static unsigned char get_flowselectoralgo(void)
 	switch (get_sampler_mode()) {
 	case SAMPLER_DETERMINISTIC:
 		return 1; /* Systematic count-based Sampling */
+	case SAMPLER_HASH:
 	case SAMPLER_RANDOM:
 		return 3; /* Random n-out-of-N Sampling */
 	default:
@@ -3012,8 +3086,9 @@ static void export_stat_ts(const unsigned int tpl_mask, struct ipt_netflow_stat 
 #ifdef ENABLE_SAMPLER
 		case FLOW_SAMPLER_ID:
 		case selectorId:
-		case FLOW_SAMPLER_MODE:
 						*ptr = get_sampler_mode(); break;
+		case FLOW_SAMPLER_MODE:
+						*ptr = get_sampler_mode_nf(); break;
 		case flowSelectorAlgorithm:	*ptr = get_flowselectoralgo(); break;
 		case samplingSize:
 		case samplingFlowInterval:
@@ -3024,8 +3099,8 @@ static void export_stat_ts(const unsigned int tpl_mask, struct ipt_netflow_stat 
 						put_unaligned_be16(get_sampler_interval(), ptr); break;
 		case selectorIDTotalFlowsObserved: put_unaligned_be64(atomic64_read(&flows_observed), ptr); break;
 		case selectorIDTotalFlowsSelected: put_unaligned_be64(atomic64_read(&flows_selected), ptr); break;
-		case selectorIdTotalPktsObserved:  put_unaligned_be64(atomic64_read(&pkts_observed), ptr); break;
-		case selectorIdTotalPktsSelected:  put_unaligned_be64(atomic64_read(&pkts_selected), ptr); break;
+		case selectorIdTotalPktsObserved:  put_unaligned_be64(st->pkts_observed, ptr); break;
+		case selectorIdTotalPktsSelected:  put_unaligned_be64(st->pkts_selected, ptr); break;
 #endif
 		}
 		ptr += tpl->fields[i++];
@@ -3089,6 +3164,10 @@ static void netflow_export_stats(void)
 		t.flow_lost	+= st->flow_lost; // notSentFlowTotalCount
 		t.pkt_lost	+= st->pkt_lost;  // notSentPacketTotalCount
 		t.traf_lost	+= st->traf_lost; // notSentOctetTotalCount
+#ifdef ENABLE_SAMPLER
+		t.pkts_selected	+= st->pkts_selected;
+		t.pkts_observed	+= st->pkts_observed;
+#endif
 		t.drop.first.tv64 = min_not_zero(t.drop.first.tv64, st->drop.first.tv64);
 		t.drop.last.tv64  = max(t.drop.last.tv64, st->drop.last.tv64);
 		t.lost.first.tv64 = min_not_zero(t.lost.first.tv64, st->lost.first.tv64);
@@ -3101,8 +3180,16 @@ static void netflow_export_stats(void)
 	if (t.pkt_lost)
 		export_stat_ts(OTPL_EPRSTAT, &t, &t.lost);
 #ifdef ENABLE_SAMPLER
-	if (protocol == 10 && sampling_code)
-		export_stat(OTPL_SEL_STAT);
+	if (protocol == 10) {
+		switch (get_sampler_mode()) {
+		case SAMPLER_HASH:
+			export_stat_st(OTPL_SEL_STATH, &t);
+			break;
+		case SAMPLER_DETERMINISTIC:
+		case SAMPLER_RANDOM:
+			export_stat_st(OTPL_SEL_STAT, &t);
+		}
+	}
 #endif
 
 	ts_stat_last = jiffies;
@@ -3112,7 +3199,7 @@ static void netflow_export_stats(void)
 #ifdef ENABLE_SAMPLER
 static void export_sampler_parameters(void)
 {
-	if (sampling_code &&
+	if (get_sampler_mode() &&
 	    (unlikely(!ts_sampler_last) ||
 	     time_is_before_jiffies(ts_sampler_last + SAMPLER_INFO_INTERVAL * HZ))) {
 		if (protocol == 9)
@@ -3120,10 +3207,10 @@ static void export_sampler_parameters(void)
 		else {
 			const unsigned char mode = get_sampler_mode();
 
-			if (mode == SAMPLER_RANDOM)
-				export_stat(OTPL_SEL_RAND);
-			else if (mode == SAMPLER_DETERMINISTIC)
+			if (mode == SAMPLER_DETERMINISTIC)
 				export_stat(OTPL_SEL_COUNT);
+			else
+				export_stat(OTPL_SEL_RAND);
 		}
 		ts_sampler_last = jiffies;
 	}
@@ -4025,7 +4112,22 @@ do_protocols:
 	read_unlock(&aggr_lock);
 #endif
 
+#ifdef SAMPLING_HASH
+	hash = __hash_netflow(&tuple);
+	{
+		struct sampling hs = samp;
+
+		if (hs.mode == SAMPLER_HASH) {
+			NETFLOW_STAT_INC(pkts_observed);
+			if ((u32)(((u64)hash * hs.interval) >> 32))
+				return IPT_CONTINUE;
+			NETFLOW_STAT_INC(pkts_selected);
+		}
+	}
+	hash %= htable_size;
+#else /* !SAMPLING_HASH */
 	hash = hash_netflow(&tuple);
+#endif
 	read_lock(&htable_rwlock);
 	stripe = &htable_stripes[hash & LOCK_COUNT_MASK];
 	spin_lock(&stripe->lock);
@@ -4465,6 +4567,9 @@ static int __init ipt_netflow_init(void)
 		sampler = sampler_buf;
 	}
 	parse_sampler(sampler);
+#ifdef SAMPLING_HASH
+	hash_seed = prandom_u32();
+#endif
 #endif
 
 #ifdef SNMP_RULES

@@ -144,6 +144,9 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
          enables flow sampler. Read below for explanation of its configuration
 	 option.
 
+     --enable-sampler=hash
+         additionally enables 'hash' sampler.
+
      --disable-aggregation
          disables aggregation rules (they are enabled by default).
          Read below for explanation of aggregation.
@@ -243,8 +246,9 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
      - mirror flows to two (can be more) addresses, separate addresses
        with comma.
 
-   sampler=random:123
    sampler=deterministic:123
+   sampler=random:123
+   sampler=hash:123
      - enables Flow Sampling. To disable set to the empty value. Note, that
        this is flow sampling (as of RFC 7014), not packet sampling (PSAMP).
        There is two standard sampling modes:
@@ -252,12 +256,23 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
          deterministic:  select each N-th observed flow; in IPFIX this mode
                          is called Systematic count-based Sampling;
          random:         select randomly one out of N flows.
+         hash:           select hash-randomly one out of N flows.
 
        Number after colon is population size N, with valid values 2-16383.
-       Using this sampling does not reduce CPU load caused by module, it
-       reduces amount of flows which go to the collector.  All required
-       NetFlow/IPFIX information to signal use of sampling is also sent.
-       Flow Sampling is compatible with NetFlow v5, v9, and IPFIX.
+       (This 16383 limit is for compatibility with NetFlow v5.)
+         Using 'deterministic' and 'random' sampling will not reduce resource
+       usage caused by the module, because flows are sampled late in exporting
+       process. This will reduces amount of flows which go to the collector,
+       thus, reducing load on the collector.
+         On the other hand, using 'hash' sampling will reduce CPU and memory
+       load caused by the module, because flows are discarded early in the
+       processing chain. They are discarded almost like in random sampler,
+       except that pseudo-random value is depend on the Flow Key hash for each
+       packet.
+         All required NetFlow/IPFIX information to signal use of sampling is
+       also sent to the collector. 'Hash' sampling will be presented as 'random'
+       sampling to the collector, because of their similarity.
+       Note, that Flow Sampling is compatible with NetFlow v5, v9, and IPFIX.
 
    natevents=1
      - Collect and send NAT translation events as NetFlow Event Logging (NEL)

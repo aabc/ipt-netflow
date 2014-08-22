@@ -27,6 +27,7 @@ readarray -t opts <<EOF
   --enable-vlan
   --enable-direction
   --enable-sampler
+  --enable-sampler=hash
 EOF
 
 colorecho() {

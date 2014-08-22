@@ -383,6 +383,7 @@ struct netflow_aggr_p {
 
 #define NETFLOW_STAT_INC(count) (__get_cpu_var(ipt_netflow_stat).count++)
 #define NETFLOW_STAT_ADD(count, val) (__get_cpu_var(ipt_netflow_stat).count += (unsigned long long)val)
+#define NETFLOW_STAT_SET(count, val) (__get_cpu_var(ipt_netflow_stat).count = (unsigned long long)val)
 #define NETFLOW_STAT_TS(count)							 \
 	do {									 \
 		ktime_t kts = ktime_get_real();					 \
@@ -445,6 +446,10 @@ struct ipt_netflow_stat {
 	struct duration lost;
 	u64  pkt_out;			// packets out of the memory
 	u64 traf_out;			// traffic out of the memory
+#ifdef ENABLE_SAMPLER
+	u64 pkts_observed;		// sampler stat
+	u64 pkts_selected;		// sampler stat
+#endif
 };
 
 #ifndef list_first_entry
