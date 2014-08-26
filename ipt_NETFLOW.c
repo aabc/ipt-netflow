@@ -126,6 +126,7 @@ MODULE_ALIAS("ip6t_NETFLOW");
 
 static char version_string[128];
 static int  version_string_size;
+static struct duration start_ts; /* ts of module start (ktime) */
 
 #define DST_SIZE 256
 static char destination_buf[DST_SIZE] = "127.0.0.1:2055";
@@ -142,7 +143,8 @@ static atomic_t flow_count = ATOMIC_INIT(0); /* flow counter for deterministic s
 static atomic64_t flows_observed = ATOMIC_INIT(0);
 static atomic64_t flows_selected = ATOMIC_INIT(0);
 #define SAMPLER_INFO_INTERVAL (5*60)
-static unsigned long ts_sampler_last = 0;
+static unsigned long ts_sampler_last = 0; /* template send time (jiffies) */
+static struct duration sampling_ts; /* ts of sampling start (ktime) */
 #define SAMPLER_SHIFT       14
 #define SAMPLER_INTERVAL_M  ((1 << SAMPLER_SHIFT) - 1)
 enum {
@@ -1519,6 +1521,8 @@ static void set_sampler(unsigned char mode, unsigned short interval)
 		samp.v32 = s.v32;
 		printk(KERN_ERR "ipt_NETFLOW: flow sampling is disabled.\n");
 	} else {
+		sampling_ts.first = ktime_get_real();
+		/* no race here, becasue exporting process is stopped */
 		samp.v32 = s.v32;
 		sprintf(sampler_buf, "%s:%u", sampler_mode_string(), interval);
 		printk(KERN_ERR "ipt_NETFLOW: flow sampling is enabled, mode %s one-out-of %u.\n",
@@ -2278,8 +2282,20 @@ static struct base_template template_nat4 = {
 static struct base_template template_sys_init_time = {
 	.types = {
 		observationDomainId,
+
+		/* ipfix does not report sys_uptime_ms like v9 does,
+		 * so this could be useful to detect system restart
+		 * (rfc5102), and conversion of flow times to absolute
+		 * time (rfc5153 4.7) */
 		systemInitTimeMilliseconds,
+
+		/* this will let collector detect module version and
+		 * recompilation (by srcversion) */
 		observationDomainName,
+
+		/* useful to detect module reload */
+		flowStartMilliseconds,
+		flowEndMilliseconds,
 		0
 	}
 };
@@ -2302,7 +2318,7 @@ static struct base_template template_meter_rel_stat = {
 		observationDomainId,
 		ignoredPacketTotalCount,
 		ignoredOctetTotalCount,
-		flowStartMilliseconds,
+		flowStartMilliseconds, /* sampling start time */
 		flowEndMilliseconds,
 		0
 	}
@@ -2314,7 +2330,7 @@ static struct base_template template_exp_rel_stat = {
 		notSentFlowTotalCount,
 		notSentPacketTotalCount,
 		notSentOctetTotalCount,
-		flowStartMilliseconds,
+		flowStartMilliseconds, /* sampling start time */
 		flowEndMilliseconds,
 		0
 	}
@@ -2366,6 +2382,8 @@ static struct base_template template_selector_stat = {
 		selectorIDTotalFlowsSelected,
 		selectorIdTotalPktsObserved,
 		selectorIdTotalPktsSelected,
+		flowStartMilliseconds,
+		flowEndMilliseconds,
 		0
 	}
 };
@@ -2377,6 +2395,8 @@ static struct base_template template_selector_stat_hash = {
 		selectorIDTotalFlowsSelected,
 		selectorIdTotalPktsObserved,
 		selectorIdTotalPktsSelected,
+		flowStartMilliseconds,
+		flowEndMilliseconds,
 		0
 	}
 };
@@ -3051,7 +3071,7 @@ static unsigned char get_flowselectoralgo(void)
 }
 #endif
 
-static void export_stat_ts(const unsigned int tpl_mask, struct ipt_netflow_stat *st, struct duration *ts)
+static void export_stat_st_ts(const unsigned int tpl_mask, struct ipt_netflow_stat *st, struct duration *ts)
 {
 	unsigned char *ptr;
 	struct data_template *tpl;
@@ -3112,9 +3132,14 @@ static void export_stat_ts(const unsigned int tpl_mask, struct ipt_netflow_stat 
 	pdu_ts_mod = jiffies;
 }
 
+static inline void export_stat_ts(const unsigned int tpl_mask, struct duration *ts)
+{
+	export_stat_st_ts(tpl_mask, NULL, ts);
+}
+
 static inline void export_stat_st(const unsigned int tpl_mask, struct ipt_netflow_stat *st)
 {
-	export_stat_ts(tpl_mask, st, NULL);
+	export_stat_st_ts(tpl_mask, st, NULL);
 }
 
 static inline void export_stat(const unsigned int tpl_mask)
@@ -3142,7 +3167,8 @@ static void netflow_export_stats(void)
 
 	if (unlikely(!ts_sysinf_last) ||
 	    time_is_before_jiffies(ts_sysinf_last + SYSINFO_INTERVAL * HZ)) {
-		export_stat(OTPL_SYSITIME);
+		start_ts.last = ktime_get_real();
+		export_stat_ts(OTPL_SYSITIME, &start_ts);
 		ts_sysinf_last = jiffies;
 		pdu_needs_export++;
 	}
@@ -3176,18 +3202,19 @@ static void netflow_export_stats(void)
 
 	export_stat_st(OTPL_MPSTAT, &t);
 	if (t.pkt_drop)
-		export_stat_ts(OTPL_MPRSTAT, &t, &t.drop);
+		export_stat_st_ts(OTPL_MPRSTAT, &t, &t.drop);
 	if (t.pkt_lost)
-		export_stat_ts(OTPL_EPRSTAT, &t, &t.lost);
+		export_stat_st_ts(OTPL_EPRSTAT, &t, &t.lost);
 #ifdef ENABLE_SAMPLER
 	if (protocol == 10) {
+		sampling_ts.last = ktime_get_real();
 		switch (get_sampler_mode()) {
 		case SAMPLER_HASH:
-			export_stat_st(OTPL_SEL_STATH, &t);
+			export_stat_st_ts(OTPL_SEL_STATH, &t, &sampling_ts);
 			break;
 		case SAMPLER_DETERMINISTIC:
 		case SAMPLER_RANDOM:
-			export_stat_st(OTPL_SEL_STAT, &t);
+			export_stat_st_ts(OTPL_SEL_STAT, &t, &sampling_ts);
 		}
 	}
 #endif
@@ -4460,6 +4487,8 @@ static int __init ipt_netflow_init(void)
 	version_string_size = scnprintf(version_string, sizeof(version_string),
 		    "ipt_NETFLOW " IPT_NETFLOW_VERSION " %s", THIS_MODULE->srcversion);
 	tpl_element_sizes[observationDomainName] = version_string_size + 1;
+
+	start_ts.first = ktime_get_real();
 
 	/* determine hash size (idea from nf_conntrack_core.c) */
 	if (!hashsize) {
