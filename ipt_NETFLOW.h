@@ -422,6 +422,9 @@ struct ipt_netflow_stat {
 	u64 searched;			// hash stat
 	u64 found;			// hash stat
 	u64 notfound;			// hash stat (new flows)
+	u64  pkt_total;			// packets metered
+	u64 traf_total;			// traffic metered
+	/* above is grouped for cache */
 	unsigned int truncated;		// packets stat (drop)
 	unsigned int frags;		// packets stat (drop)
 	unsigned int maxflows_err;	// maxflows reached (drop)
@@ -436,8 +439,8 @@ struct ipt_netflow_stat {
 	u64 exported_pkt;		// netflow traffic itself
 	u64 exported_traf;		// netflow traffic itself
 	u64 exported_flow;		// netflow traffic itself
-	u64  pkt_total;			// packets metered
-	u64 traf_total;			// traffic metered
+	u64  pkt_total_prev;		// packets metered previos interval
+	u32  pkt_total_rate;		// packet rate for this cpu
 	u64  pkt_drop;			// packets not metered
 	u64 traf_drop;			// traffic not metered
 	u64 flow_lost;			// flows not sent to collector

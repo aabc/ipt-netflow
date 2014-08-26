@@ -436,6 +436,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	unsigned long long pkt_total = 0, traf_total = 0, exported_traf = 0;
 	unsigned long long pkt_drop = 0, traf_drop = 0;
 	unsigned long long pkt_out = 0, traf_out = 0;
+	unsigned int pkt_rate = 0;
 #ifdef ENABLE_SAMPLER
 	unsigned long long pkts_selected = 0, pkts_observed = 0;
 #endif
@@ -516,6 +517,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		send_failed	+= st->send_failed;
 		sock_errors	+= st->sock_errors;
 		pkt_total	+= st->pkt_total;
+		pkt_rate	+= st->pkt_total_rate;
 		traf_total	+= st->traf_total;
 		pkt_drop	+= st->pkt_drop  + st->pkt_lost;
 		traf_drop	+= st->traf_drop + st->traf_lost;
@@ -547,12 +549,13 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	    " Avg 1 min: %llu bps, %llu pps; 5 min: %llu bps, %llu pps\n",
 	    sec_brate, sec_prate, min_brate, min_prate, min5_brate, min5_prate);
 
-	seq_printf(seq, "cpu#  stat: <search found new [metric], trunc frag alloc maxflows>,"
+	seq_printf(seq, "cpu#     pps; <search found new [metric], trunc frag alloc maxflows>,"
 	    " sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
 
 #define SAFEDIV(x,y) ((y)? ({ u64 __tmp = x; do_div(__tmp, y); (int)__tmp; }) : 0)
-	seq_printf(seq, "Total stat: %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
+	seq_printf(seq, "Total %6u; %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
 	    " sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
+	    pkt_rate,
 	    searched,
 	    (unsigned long long)found,
 	    (unsigned long long)notfound,
@@ -568,9 +571,10 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 			struct ipt_netflow_stat *st;
 
 			st = &per_cpu(ipt_netflow_stat, cpu);
-			seq_printf(seq, "cpu%u  stat: %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
+			seq_printf(seq, "cpu%-2u %6u; %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
 			    " sock: %6llu %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
 			    cpu,
+			    st->pkt_total_rate,
 			    (unsigned long long)st->searched,
 			    (unsigned long long)st->found,
 			    (unsigned long long)st->notfound,
@@ -3473,8 +3477,11 @@ static void rate_timer_calc(unsigned long dummy)
 
 	for_each_present_cpu(cpu) {
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+		u64 pkt_t = st->pkt_total;
 
-		pkt_total += st->pkt_total;
+		pkt_total += pkt_t;
+		st->pkt_total_rate = (pkt_t - st->pkt_total_prev) >> RATESHIFT;
+		st->pkt_total_prev = pkt_t;
 		traf_total += st->traf_total;
 		searched += st->searched;
 		found += st->found;
@@ -3503,6 +3510,7 @@ static void rate_timer_calc(unsigned long dummy)
 	CALC_RATE(min5_metric, (unsigned long long)metric, 5);
 	CALC_RATE(min_metric, (unsigned long long)metric, 1);
 
+	/* yes, timer delay is not accounted, but this stat is just estimational */
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
 }
 
