@@ -1,0 +1,311 @@
+#!/usr/bin/ruby
+# Obeserve irq and softirq in top fashion
+# (c) 2014 <abc@telekom.ru>
+# License: GPL.
+
+require 'getoptlong'
+require 'curses'
+require 'stringio'
+
+delay = 5
+@imode = :both
+@omode = :table
+
+GetoptLong.new(
+    ["--help",     "-h", GetoptLong::NO_ARGUMENT],
+    ["--batch",    "-b", GetoptLong::NO_ARGUMENT],
+    ["--delay",    "-d", GetoptLong::REQUIRED_ARGUMENT],
+    ["--top",      "-t", GetoptLong::NO_ARGUMENT],
+    ["--table",    "-x", GetoptLong::NO_ARGUMENT],
+    ["--soft",     "-s", GetoptLong::NO_ARGUMENT],
+    ["--softirq",        GetoptLong::NO_ARGUMENT],
+    ["--softirqs",       GetoptLong::NO_ARGUMENT],
+    ["--irq",      "-i", GetoptLong::NO_ARGUMENT],
+    ["--irqs",           GetoptLong::NO_ARGUMENT],
+    ["--reverse",  "-r", GetoptLong::NO_ARGUMENT]
+).each do |opt, arg|
+  case opt
+  when '--help'
+    puts " Shows interrupt rates (per second) per cpu."
+    puts " Usage: #{$0} [-h] [-d #{delay}] [-b] [-t|-x] [-i|-s] [-r]"
+    puts "    -d  --delay=n  refresh interval"
+    puts "    -s  --softirq  select softirqs only"
+    puts "    -i  --irq      select hardware irqs only"
+    puts "    -x  --table    output in table mode (default)"
+    puts "    -t  --top      output in flat top mode"
+    puts "    -b  --batch    output non-interactively"
+    puts "    -r  --reverse  reverse sort order"
+    puts
+    puts " Rates marked as '.' is forbidden by smp_affinity mask."
+    exit 0
+  when '--reverse'
+    @reverse = !@reverse
+  when '--batch'
+    @batch = true
+    @reverse = !@reverse if @omode == :top
+  when '--delay'
+    delay = arg.to_i
+  when '--top'
+    @omode = :top
+  when '--table'
+    @omode = :table
+  when /--irq/
+    @imode = :irq
+  when /--soft/
+    @imode = :soft
+  end
+end
+
+def read_table(tag, file)
+  @cpus = []
+  lines = IO.readlines(file)
+  @cpus = lines[0].scan(/CPU\d+/)
+  lines[2..-1].each do |li|
+    irq, stat, desc = li.match(/^\s*(\S+):((?:\s+\d+)+)(.*)$/).captures
+    stat = stat.scan(/\d+/)
+    @irqs << [tag, irq, desc]
+    stat.each_with_index do |val, i|
+      @stats << [val.to_i, tag, irq, @cpus[i], desc.strip]
+    end
+  end
+end
+
+def read_procstat
+  @cstat = {}
+  lines = IO.readlines("/proc/stat").grep(/^cpu\d+ /)
+  lines.each do |li|
+    c, *d = li.split(" ")
+    d = d.map {|e| e.to_i}
+    @cstat[c] = d
+  end
+end
+
+def read_affinity
+  @aff = {}
+  Dir.glob("/proc/irq/*/smp_affinity").each do |af|
+    irq = af[%r{\d+}].to_i
+    a = IO.read(af).strip.to_i(16)
+    @aff[irq] = a
+  end
+end
+
+def grab_stat
+  @hstats = @stats
+  @hcstat = @cstat
+  @hts = @ts
+
+  @stats = []
+  @irqs = []
+  @ts = Time.now
+
+  read_table 'i', "/proc/interrupts"
+  read_table 's', "/proc/softirqs"
+  read_affinity
+  read_procstat
+end
+
+def calc_speed
+  dt = @ts - @hts
+  s = []
+  # calc speed
+  h = Hash.new(0)
+  @hstats.each do |v, t, i, c, d|
+    h[[t, i, c]] = v
+  end
+  # output
+  @h = {}
+  @t = Hash.new(0)
+  @s = @stats.map do |v, t, i, c, d|
+    rate = (v - h[[t, i, c]]) / dt
+    @t[c] += rate if t == 'i'
+    @h[[t, i, c]] = rate
+    [rate, v, t, i, c, d]
+  end
+end
+
+def calc_cpu
+  dt = @ts - @hts
+  @c = Hash.new(0)
+  @cstat.each do |c, d|
+    d = d.zip(@hcstat[c]).map {|a, b| a - b}
+    sum = d.reduce(:+)
+    @c[c.upcase] = 100 - d[3].to_f / sum * 100
+  end
+end
+
+def show_top
+  @s.sort!.reverse!
+  @s.reverse! if @reverse
+  rej = nil
+  rej = 's' if @imode == :irq
+  rej = 'i' if @imode == :soft
+  @s.each do |s, v, t, i, c, d|
+    next if t == rej
+    puts "%9.1f  %s  %s  %s  %s" % [s, c.downcase, t, i, d] if s > 0
+  end
+end
+
+def show_interrupts
+  maxlen = 7
+  @irqs.reverse! if @reverse
+  print "%s %*s  " % [" ", maxlen, " "]
+  @cpus.each { |c| print " %6s" % c }
+  puts
+
+  # load
+  print "%*s: " % [maxlen + 2, "cpuUtil"]
+  @cpus.each { |c| print " %6.1f" % @c[c] }
+  puts "   total CPU utilization %"
+
+  # total
+  print "%*s: " % [maxlen + 2, "irqTotal"]
+  @cpus.each { |c| print " %6d" % @t[c] }
+  puts "   total hardware IRQs"
+
+  rej = nil
+  rej = 's' if @imode == :irq
+  rej = 'i' if @imode == :soft
+  @irqs.each do |t, i, desc|
+    next if t == rej
+    print "%s %*s: " % [t.to_s, maxlen, i.slice(0, maxlen)]
+    @cpus.each do |c|
+      cpu = c[/\d+/].to_i
+      aff = @aff[i.to_i]
+      off = ((aff & 1 << cpu) ==0)? true : false if aff
+      begin
+	v = @h[[t, i, c]]
+	if v > 0 || !off
+	  print " %6d" % v
+	elsif aff
+	  print " %6s" % "."
+	end
+      rescue
+      end
+    end
+    puts desc
+  end
+end
+
+def select_output
+  if @omode == :top
+    show_top
+  else
+    show_interrupts
+  end
+end
+
+def choplines(text)
+  cols = Curses.cols - 1
+  rows = Curses.lines - 2
+  lines = text.split("\n").map {|e| e.slice(0, cols)}.slice(0, rows)
+  text = lines.join("\n")
+  text << "\n" * (rows - lines.size) if lines.size < rows
+end
+
+def show_help
+  puts "irqtop help:"
+  puts
+  puts "  In table view, cells marked with '.' mean this hw irq is"
+  puts "     disabled via /proc/irq/<irq>/smp_affinity"
+  puts "  Interactive keys:"
+  puts "    i     Toggle (hardware) irqs view"
+  puts "    s     Toggle software irqs (softirqs) view"
+  puts "    t     Flat top display mode"
+  puts "    x     Table display mode"
+  puts "    r     Reverse rows order"
+  puts "    h,?   This help screen"
+  puts "    q     Quit."
+  puts "  Any other key will update display."
+  puts
+  puts "Press any key to continue."
+end
+
+#
+grab_stat
+sleep 0.5
+
+if @batch
+  loop do
+    grab_stat
+    calc_speed
+    calc_cpu
+    select_output
+    $stdout.flush
+    sleep delay
+  end
+  exit 0
+end
+
+Curses.init_screen
+Curses.cbreak
+Curses.noecho
+Curses.nonl
+$stdscr = Curses.stdscr
+$stdscr.keypad(true)
+hostname = `hostname`.strip
+
+def curses_output
+  $stdout = StringIO.new
+  yield
+  $stdout.rewind
+  text = $stdout.read
+  $stdout = STDOUT
+  $stdscr.setpos(0, 0)
+  $stdscr.addstr(choplines(text))
+  $stdscr.setpos(1, 0)
+  Curses.refresh
+end
+
+def curses_enter(text)
+  $stdscr.setpos(1, 0)
+  $stdscr.addstr(text + "\n")
+  $stdscr.setpos(1, 0)
+  Curses.attron(Curses::A_BOLD)
+  $stdscr.addstr(text)
+  Curses.attroff(Curses::A_BOLD)
+  Curses.refresh
+  Curses.echo
+  Curses.timeout = -1
+  line = Curses.getstr
+  Curses.noecho
+  line
+end
+
+loop do
+  grab_stat
+  calc_speed
+  calc_cpu
+
+  curses_output {
+   puts "#{hostname} - irqtop - #{Time.now}"
+   select_output
+  }
+
+  Curses.timeout = delay * 1000
+  ch = Curses.getch.chr rescue nil
+  case ch
+  when "\f"
+    Curses.clear
+  when "q", "Z", "z"
+    break
+  when 'i'
+    @imode = (@imode == :both)? :soft : :both
+  when 's'
+    @imode = (@imode == :both)? :irq : :both
+  when 't'
+    @omode = (@omode == :top)? :table : :top
+  when 'x'
+    @omode = (@omode == :table)? :top : :table
+  when 'r'
+    @reverse = !@reverse
+  when 'd'
+    d = curses_enter("Enter display interval: ")
+    delay = d.to_f if d.to_f > 0
+  when 'h', '?'
+    curses_output { show_help }
+    Curses.timeout = -1
+    ch = Curses.getch.chr rescue nil
+    break if ch == 'q'
+  end
+end
+
