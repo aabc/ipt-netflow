@@ -1,6 +1,6 @@
 /*
  * This is NetFlow exporting module (NETFLOW target) for linux
- * (c) 2008-2013 <abc@telekom.ru>
+ * (c) 2008-2014 <abc@telekom.ru>
  *
  *
  *   This program is free software: you can redistribute it and/or modify
@@ -30,10 +30,14 @@
 #include <linux/icmp.h>
 #include <linux/igmp.h>
 #include <linux/inetdevice.h>
+#include <linux/netdevice.h>
+#include <linux/etherdevice.h>
+#include <linux/ethtool.h>
 #include <linux/hash.h>
 #include <linux/delay.h>
 #include <linux/spinlock_types.h>
 #include <linux/ktime.h>
+#include <linux/if_arp.h>
 #include <net/icmp.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
@@ -329,6 +333,7 @@ static int tpl_count = 0; /* how much active templates */
 #define SYSINFO_INTERVAL (5*60)
 static unsigned long ts_stat_last = 0; /* (jiffies) */
 static unsigned long ts_sysinf_last = 0; /* (jiffies) */
+static unsigned long ts_ifnames_last = 0; /* (jiffies) */
 #ifdef ENABLE_DEBUGFS
 static atomic_t freeze = ATOMIC_INIT(0);
 static struct dentry *flows_dump_d;
@@ -2161,6 +2166,7 @@ struct base_template {
 #define OTPL_SEL_COUNT	OTPL(7)		/* Systematic count-based Flow Selector for IPFIX */
 #define OTPL_SEL_STAT	OTPL(8)		/* rfc7014 */
 #define OTPL_SEL_STATH	OTPL(9)		/* OTPL_SEL_STAT, except selectorIDTotalFlowsObserved */
+#define OTPL_IFNAMES	OTPL(10)
 
 static struct base_template template_base = {
 	.types = {
@@ -2406,6 +2412,16 @@ static struct base_template template_selector_stat_hash = {
 };
 #endif
 
+static struct base_template template_interfaces = {
+	.types = {
+		observationDomainId,
+		INPUT_SNMP,
+		IF_NAME,
+		IF_DESC,
+		0
+	}
+};
+
 struct data_template {
 	struct hlist_node hlist;
 	unsigned int tpl_key;
@@ -2498,6 +2514,9 @@ static struct data_template *get_template(const unsigned int tmask)
 			tlist[tnum++] = &template_selector_stat_hash;
 			break;
 #endif
+		case OTPL_IFNAMES:
+			tlist[tnum++] = &template_interfaces;
+			break;
 		}
 	} else {
 		if (tmask & BTPL_IP4) {
@@ -3248,6 +3267,194 @@ static void export_sampler_parameters(void)
 }
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,2,0)
+int __ethtool_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+{
+	ASSERT_RTNL();
+
+	if (!dev->ethtool_ops->get_settings)
+		return -EOPNOTSUPP;
+
+	memset(cmd, 0, sizeof(struct ethtool_cmd));
+	cmd->cmd = ETHTOOL_GSET;
+	return dev->ethtool_ops->get_settings(dev, cmd);
+}
+#endif
+
+static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *dev)
+{
+	struct ethtool_drvinfo info = { 0 };
+	const struct ethtool_ops *ops = dev->ethtool_ops;
+	struct ethtool_cmd ecmd;
+	int len = size;
+	int n;
+
+	if (len <= 0 || !ops)
+		return 0;
+	if (ops->begin) {
+		/* was not called before __ethtool_get_settings() though */
+		if (ops->begin(dev) < 0);
+		return 0;
+	}
+
+	/* driver name */
+	if (ops->get_drvinfo)
+		ops->get_drvinfo(dev, &info);
+	else if (dev->dev.parent && dev->dev.parent->driver) {
+		strlcpy(info.driver, dev->dev.parent->driver->name, sizeof(info.driver));
+	}
+	n = scnprintf(ptr, len, "%s", info.driver);
+	ptr += n;
+	len -= n;
+	if (!n || len <= 1) /* have room for separator too */
+		goto ret;
+
+	/* append basic parameters: speed and port */
+	if (!__ethtool_get_settings(dev, &ecmd)) {
+		char *s, *p;
+
+		switch (ethtool_cmd_speed(&ecmd)) {
+		case SPEED_10000: s = "10Gb"; break;
+		case SPEED_2500:  s = "2.5Gb"; break;
+		case SPEED_1000:  s = "1Gb"; break;
+		case SPEED_100:   s = "100Mb"; break;
+		case SPEED_10:    s = "10Mb"; break;
+		default:          s = "";
+		}
+		switch (ecmd.port) {
+		case PORT_TP:     p = "tp"; break;
+		case PORT_AUI:    p = "aui"; break;
+		case PORT_MII:    p = "mii"; break;
+		case PORT_FIBRE:  p = "fb"; break;
+		case PORT_BNC:    p = "bnc"; break;
+		case PORT_DA:     p = "da"; break;
+		default:          p = "";
+		}
+		n = scnprintf(ptr, len, ",%s,%s", s, p);
+		len -= n;
+	}
+ret:
+	if (ops->complete)
+		ops->complete(dev);
+	return size - len;
+}
+
+static const unsigned short netdev_type[] =
+{ARPHRD_NETROM, ARPHRD_ETHER, ARPHRD_AX25,
+	ARPHRD_IEEE802, ARPHRD_ARCNET,
+	ARPHRD_DLCI, ARPHRD_ATM, ARPHRD_METRICOM,
+	ARPHRD_IEEE1394, ARPHRD_EUI64, ARPHRD_INFINIBAND,
+	ARPHRD_SLIP, ARPHRD_CSLIP, ARPHRD_SLIP6, ARPHRD_CSLIP6,
+	ARPHRD_ROSE, ARPHRD_X25, ARPHRD_HWX25,
+	ARPHRD_PPP, ARPHRD_CISCO, ARPHRD_LAPB, ARPHRD_DDCMP,
+	ARPHRD_RAWHDLC, ARPHRD_TUNNEL, ARPHRD_TUNNEL6, ARPHRD_FRAD,
+	ARPHRD_LOOPBACK, ARPHRD_LOCALTLK, ARPHRD_FDDI,
+	ARPHRD_SIT, ARPHRD_IPDDP, ARPHRD_IPGRE,
+	ARPHRD_PIMREG, ARPHRD_HIPPI, ARPHRD_IRDA,
+	ARPHRD_IEEE80211, ARPHRD_IEEE80211_PRISM,
+	ARPHRD_IEEE80211_RADIOTAP, ARPHRD_PHONET, ARPHRD_PHONET_PIPE,
+	ARPHRD_IEEE802154, ARPHRD_VOID, ARPHRD_NONE};
+
+static const char *const netdev_type_name[] =
+{"NET/ROM", "Ethernet", "AX.25 Level 2",
+	"IEEE 802.2 Ethernet", "ARCnet",
+	"Frame Relay DLCI", "ATM", "Metricom STRIP",
+	"IEEE 1394 IPv4", "EUI-64", "InfiniBand",
+	"SLIP", "CSLIP", "SLIP6", "CSLIP6",
+	"ROSE", "X.25", "HW X.25",
+	"PPP", "Cisco HDLC", "LAPB", "DDCMP",
+	"Raw HDLC", "IPIP Tunnel", "IP6IP6 Tunnel", "FRAD",
+	"Loopback", "Localtalk", "FDDI",
+	"SIT Tunnel", "IP over DDP", "GRE over IP",
+	"PISM Register", "HIPPI", "IrDA",
+	"IEEE 802.11", "IEEE 802.11 Prism2",
+	"IEEE 802.11 Radiotap", "PhoNet", "PhoNet pipe",
+	"IEEE 802.15.4", "void", "none"};
+
+static const char *dev_type(int dev_type)
+{
+	int i;
+
+	BUG_ON(ARRAY_SIZE(netdev_type) != ARRAY_SIZE(netdev_type_name));
+	for (i = 0; i < ARRAY_SIZE(netdev_type); i++)
+		if (netdev_type[i] == dev_type)
+			return netdev_type_name[i];
+	return "";
+}
+
+static void export_dev(struct net_device *dev)
+{
+	unsigned char *ptr;
+	struct data_template *tpl;
+	int i;
+
+	ptr = alloc_record_key(OTPL_IFNAMES, &tpl);
+	if (unlikely(!ptr))
+		return;
+
+	/* encode all fields */
+	for (i = 0; ; ) {
+		int type = tpl->fields[i++];
+		int size = tpl->fields[i++];
+		int n;
+
+		if (!type)
+			break;
+		switch (type) {
+		case observationDomainId:
+			put_unaligned_be32(engine_id, ptr);
+			break;
+		case IF_NAME:
+			n = scnprintf(ptr, size, "%s", dev->name);
+			memset(ptr + n, 0, size - n);
+			break;
+		case IF_DESC:
+			/* manual dev 'alias' setting is a first priority,
+			 * then ethtool driver name with basic info,
+			 * finally net_device.type is a last resort */
+			if (dev->ifalias)
+				n = scnprintf(ptr, size, "%s", dev->ifalias);
+			else
+				n = ethtool_drvinfo(ptr, size, dev);
+			if (!n)
+				n = scnprintf(ptr, size, "%s", dev_type(dev->type));
+			memset(ptr + n, 0, size - n);
+			break;
+		case INPUT_SNMP:
+#ifdef SNMP_RULES
+			rcu_read_lock();
+			put_unaligned_be16(resolve_snmp(dev), ptr);
+			rcu_read_unlock();
+#else
+			put_unaligned_be16(dev->ifindex, ptr);
+#endif
+			break;
+		}
+		ptr += size;
+	}
+
+	pdu_data_records++;
+	pdu_flowset->length = htons(ntohs(pdu_flowset->length) + tpl->rec_size);
+
+	pdu_ts_mod = jiffies;
+}
+
+static void export_ifnames(void)
+{
+	struct net_device *dev;
+
+	if (likely(ts_ifnames_last) &&
+	    time_is_after_jiffies(ts_ifnames_last + SYSINFO_INTERVAL * HZ))
+		return;
+
+	rtnl_lock();
+	for_each_netdev(&init_net, dev) {
+		export_dev(dev);
+	}
+	rtnl_unlock();
+	ts_ifnames_last = jiffies;
+}
+
 /* under pause_scan_worker() */
 static void netflow_switch_version(const int ver)
 {
@@ -3361,6 +3568,7 @@ static int netflow_scan_and_export(const int flush)
 #ifdef ENABLE_SAMPLER
 		export_sampler_parameters();
 #endif
+		export_ifnames();
 	}
 
 	read_lock_bh(&htable_rwlock);

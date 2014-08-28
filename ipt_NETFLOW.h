@@ -65,6 +65,9 @@ struct netflow5_pdu {
 } __attribute__ ((packed));
 #define NETFLOW5_HEADER_SIZE (sizeof(struct netflow5_pdu) - NETFLOW5_RECORDS_MAX * sizeof(struct netflow5_record))
 
+#define IF_NAME_SZ	IFNAMSIZ
+#define IF_DESC_SZ	32
+
 /* NetFlow v9	http://www.ietf.org/rfc/rfc3954.txt */
 /* IPFIX	http://www.iana.org/assignments/ipfix/ipfix.xhtml */
 /* v9 elements are uppercased, IPFIX camel cased. */
@@ -111,6 +114,8 @@ struct netflow5_pdu {
 	two(62,  IPV6_NEXT_HOP, ipNextHopIPv6Address, 16) \
 	two(64,  IPV6_OPTION_HEADERS, ipv6ExtensionHeaders, 2) \
 	one(80,  destinationMacAddress, 6) \
+	two(82,  IF_NAME, interfaceName, IF_NAME_SZ) \
+	two(83,  IF_DESC, interfaceDescription, IF_DESC_SZ) \
 	one(138, observationPointId, 4) \
 	one(141, LineCardId, 4) \
 	one(142, portId, 4) \
