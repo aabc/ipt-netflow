@@ -413,7 +413,7 @@ static inline unsigned short get_sampler_interval(void)
 }
 static inline const char *sampler_mode_string(void)
 {
-	const int mode = get_sampler_mode();
+	const unsigned char mode = get_sampler_mode();
 	return mode == SAMPLER_DETERMINISTIC? "deterministic" :
 		mode == SAMPLER_RANDOM? "random" : "hash";
 }
@@ -1519,7 +1519,7 @@ static inline int simple_atoi(const char *p)
 #endif
 
 #ifdef ENABLE_SAMPLER
-static void set_sampler(unsigned char mode, unsigned short interval)
+static void set_sampler(const unsigned char mode, const unsigned short interval)
 {
 	struct sampling s;
 
@@ -2842,6 +2842,7 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 			     *ptr = get_sampler_mode(); break;
 #endif
 	default:
+			     WARN_ONCE(1, "NETFLOW: Unknown Element id %d\n", type);
 			     memset(ptr, 0, tpl_element_sizes[type]);
 	}
 }
@@ -2941,45 +2942,10 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 	struct data_template *tpl;
 	unsigned int tpl_mask = BTPL_BASE;
 	int i;
-#ifdef ENABLE_SAMPLER
-	const char mode = get_sampler_mode();
-#endif
 
 	if (unlikely(debug > 2))
 		printk(KERN_INFO "adding flow to export (%d)\n",
 		    pdu_data_records + pdu_tpl_records);
-
-#ifdef ENABLE_SAMPLER
-	/* first check is flow should sampled at all */
-	if (mode
-#ifdef CONFIG_NF_NAT_NEEDED
-	    && !nf->nat
-#endif
-	    ) {
-		const unsigned int interval = get_sampler_interval();
-		unsigned int val; /* [0..interval) */
-
-		atomic64_inc(&flows_observed);
-		NETFLOW_STAT_ADD_ATOMIC(pkts_observed, nf->nr_packets);
-		switch (mode) {
-		case SAMPLER_DETERMINISTIC:
-			val = nf->sampler_count % interval;
-			break;
-		case SAMPLER_RANDOM:
-			val = prandom_u32_max(interval);
-			break;
-		default: /* SAMPLER_HASH */
-			val = 0;
-		}
-		if (val) {
-			ipt_netflow_free(nf);
-			return;
-		}
-		atomic64_inc(&flows_selected);
-		NETFLOW_STAT_ADD_ATOMIC(pkts_selected, nf->nr_packets);
-		tpl_mask |= (protocol == 9)? BTPL_SAMPLERID : BTPL_SELECTORID;
-	}
-#endif
 
 	/* build template key */
 	if (likely(nf->tuple.l3proto == AF_INET)) {
@@ -3036,6 +3002,10 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 #ifdef CONFIG_NF_NAT_NEEDED
 	if (nf->nat)
 		tpl_mask = BTPL_NAT4; /* note '=' */
+#endif
+#ifdef ENABLE_SAMPLER
+	if (get_sampler_mode())
+		tpl_mask |= (protocol == 9)? BTPL_SAMPLERID : BTPL_SELECTORID;
 #endif
 
 	ptr = alloc_record_key(tpl_mask, &tpl);
@@ -3145,6 +3115,8 @@ static void export_stat_st_ts(const unsigned int tpl_mask, struct ipt_netflow_st
 		case selectorIdTotalPktsObserved:  put_unaligned_be64(st->pkts_observed, ptr); break;
 		case selectorIdTotalPktsSelected:  put_unaligned_be64(st->pkts_selected, ptr); break;
 #endif
+		default:
+			WARN_ONCE(1, "NETFLOW: Unknown Element id %d\n", type);
 		}
 		ptr += tpl->fields[i++];
 	}
@@ -3429,6 +3401,8 @@ static void export_dev(struct net_device *dev)
 			put_unaligned_be16(dev->ifindex, ptr);
 #endif
 			break;
+		default:
+			WARN_ONCE(1, "NETFLOW: Unknown Element id %d\n", type);
 		}
 		ptr += size;
 	}
@@ -3559,6 +3533,9 @@ static int netflow_scan_and_export(const int flush)
 	LIST_HEAD(export_list);
 	struct ipt_netflow *nf, *tmp;
 	int i;
+#ifdef ENABLE_SAMPLER
+	unsigned char mode;
+#endif
 
 	if (flush)
 		i_timeout = 0;
@@ -3613,10 +3590,36 @@ static int netflow_scan_and_export(const int flush)
 	}
 #endif
 
+	mode = get_sampler_mode();
 	list_for_each_entry_safe(nf, tmp, &export_list, flows_list) {
 		NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
 		NETFLOW_STAT_ADD(traf_out, nf->nr_bytes);
 		list_del(&nf->flows_list);
+#ifdef ENABLE_SAMPLER
+		if (mode) {
+			const unsigned int interval = get_sampler_interval();
+			unsigned int val; /* [0..interval) */
+
+			atomic64_inc(&flows_observed);
+			NETFLOW_STAT_ADD_ATOMIC(pkts_observed, nf->nr_packets);
+			switch (mode) {
+			case SAMPLER_DETERMINISTIC:
+				val = nf->sampler_count % interval;
+				break;
+			case SAMPLER_RANDOM:
+				val = prandom_u32_max(interval);
+				break;
+			default: /* SAMPLER_HASH */
+				val = 0;
+			}
+			if (val) {
+				ipt_netflow_free(nf);
+				continue;
+			}
+			atomic64_inc(&flows_selected);
+			NETFLOW_STAT_ADD_ATOMIC(pkts_selected, nf->nr_packets);
+		}
+#endif
 		netflow_export_flow(nf);
 	}
 
