@@ -11,7 +11,8 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 
    * High performance and scalability. For highest performance module could be
      run without conntrack being enabled in kernel. Reported to be able to
-     handle up to 10Gbit traffic with more than 1M pps.
+     handle 10Gbit traffic with more than 1500000 pps with negligible server
+     load (on S5500BC).
 
    * NetFlow v5, v9, and IPFIX are fully supported.
 
