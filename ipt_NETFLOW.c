@@ -175,6 +175,10 @@ static int active_timeout = 30 * 60;
 module_param(active_timeout, int, 0644);
 MODULE_PARM_DESC(active_timeout, "active flows timeout in seconds");
 
+static int exportcpu = -1;
+module_param(exportcpu, int, 0644);
+MODULE_PARM_DESC(exportcpu, "lock exporter to this cpu");
+
 static int debug = 0;
 module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "debug verbosity level");
@@ -185,7 +189,7 @@ MODULE_PARM_DESC(sndbuf, "udp socket SNDBUF size");
 
 static int protocol = 5;
 module_param(protocol, int, 0444);
-MODULE_PARM_DESC(protocol, "netflow protocol version (5, 9, 10)");
+MODULE_PARM_DESC(protocol, "netflow protocol version (5, 9, 10=IPFIX)");
 
 static unsigned int refresh_rate = 20;
 module_param(refresh_rate, uint, 0644);
@@ -213,7 +217,7 @@ static DEFINE_SPINLOCK(snmp_lock);
 #ifdef CONFIG_NF_NAT_NEEDED
 static int natevents = 0;
 module_param(natevents, int, 0444);
-MODULE_PARM_DESC(natevents, "send NAT Events");
+MODULE_PARM_DESC(natevents, "enable NAT Events");
 #endif
 
 static int hashsize;
@@ -358,6 +362,8 @@ static DEFINE_MUTEX(worker_lock);
 static int worker_delay = HZ / 10;
 static inline void _schedule_scan_worker(const int status)
 {
+	int cpu = exportcpu;
+
 	/* rudimentary congestion avoidance */
 	if (status > 0)
 		worker_delay -= status;
@@ -370,6 +376,17 @@ static inline void _schedule_scan_worker(const int status)
 		worker_delay = scan_min;
 	else if (worker_delay > scan_max)
 		worker_delay = scan_max;
+
+	if (cpu >= 0) {
+		if (cpu < NR_CPUS &&
+		    cpu_online(cpu)) {
+			schedule_delayed_work_on(cpu, &netflow_work, worker_delay);
+			return;
+		}
+		printk(KERN_WARNING "ipt_NETFLOW: can't schedule exporter on cpu %d. Disabling cpu lock.\n",
+		    cpu);
+		exportcpu = -1;
+	}
 	schedule_delayed_work(&netflow_work, worker_delay);
 }
 
