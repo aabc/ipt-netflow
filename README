@@ -1,12 +1,53 @@
 ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 
    High performance NetFlow v5, v9, IPFIX flow data export module for Linux
-   kernel. Supporting IPv4 and IPv6. Created to be useful for highly loaded
-   linux router. It should be used as iptables target. Also can export NAT
-   translation events using NetFlow Event Logging (NEL) for v9, IPFIX, or
-   specially crafted v5 pseudo-flows. Additional options is SNMP-index
-   translation rules, aggregation rules, ethernet type, VLAN, and MAC
-   addresses exporting, flow sampling.
+   kernel. Created to be useful for highly loaded linux router. It should be
+   used as iptables target.
+
+
+=========================
+= Detailed Feature List =
+=========================
+
+   * High performance and scalability. For highest performance module could be
+     run without conntrack being enabled in kernel. Reported to be able to
+     handle up to 10Gbit traffic with more than 1M pps.
+
+   * NetFlow v5, v9, and IPFIX are fully supported.
+
+     Support of v9/IPFIX is adding flexibility to exporting of flow data
+     plus greater visibility of traffic, letting export many additional fields
+     besides what was possible in v5 era. Such as
+     
+   * IPv6 option headers, IPv4 options, TCP options, ethernet type, dot1q
+     service and customer VLAN ids, MAC addresses, and
+
+   * Full IPv6 support,
+
+   * NAT translations events (from conntrack) using NetFlow Event Logging (NEL).
+     This is standardized way for v9/IPFIXr, but module export such events even
+     for v5 collectors via specially crafted pseudo-records.
+
+   * Deterministic (systematic count-based), random and hash Flow Sampling.
+     With appropriate differences in support of v5, v9, and IPFIX.
+
+   * Options Templates (v9/IPFIX) let export useful statistical,
+     configurational, and informational records to collector.
+     Such as metering, exporting, sampling stat and reliability stat, sampling 
+     configuration, network devices ifName, ifDescr list.
+
+   * Tested to compile and work out of the box on Centos 5, 6, 7, and Debian.
+     Many vanilla Linux kernels since 2.6.18 up to the latest (as of writing
+     is 3.16) are supported and tested.
+
+   * Module load time and run-time (via sysctl) configuration.
+
+   * Flexibility in enabling features via ./configure script. This will let you
+     disable features you don't need, which increase compatibility with custom
+     kernels and performance.
+
+   * SNMP-index translation rules, let convert meaningless and unstable
+     interface indexes (ifIndex) to more meaningful numbering scheme.
 
 
 ============================
