@@ -3607,7 +3607,9 @@ static int netflow_scan_and_export(const int flush)
 	}
 #endif
 
+#ifdef ENABLE_SAMPLER
 	mode = get_sampler_mode();
+#endif
 	list_for_each_entry_safe(nf, tmp, &export_list, flows_list) {
 		NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
 		NETFLOW_STAT_ADD(traf_out, nf->nr_bytes);
