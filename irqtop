@@ -60,6 +60,7 @@ def read_table(tag, file)
   @cpus = []
   lines = IO.readlines(file)
   @cpus = lines[0].scan(/CPU\d+/)
+  @icpus = @cpus if tag == 'i'
   lines[2..-1].each do |li|
     irq, stat, desc = li.match(/^\s*(\S+):((?:\s+\d+)+)(.*)$/).captures
     stat = stat.scan(/\d+/)
@@ -149,17 +150,17 @@ def show_interrupts
   maxlen = 7
   @irqs.reverse! if @reverse
   print "%s %*s  " % [" ", maxlen, " "]
-  @cpus.each { |c| print " %6s" % c }
+  @icpus.each { |c| print " %6s" % c }
   puts
 
   # load
   print "%*s: " % [maxlen + 2, "cpuUtil"]
-  @cpus.each { |c| print " %6.1f" % @c[c] }
+  @icpus.each { |c| print " %6.1f" % @c[c] }
   puts "   total CPU utilization %"
 
   # total
   print "%*s: " % [maxlen + 2, "irqTotal"]
-  @cpus.each { |c| print " %6d" % @t[c] }
+  @icpus.each { |c| print " %6d" % @t[c] }
   puts "   total hardware IRQs"
 
   rej = nil
@@ -168,7 +169,7 @@ def show_interrupts
   @irqs.each do |t, i, desc|
     next if t == rej
     print "%s %*s: " % [t.to_s, maxlen, i.slice(0, maxlen)]
-    @cpus.each do |c|
+    @icpus.each do |c|
       cpu = c[/\d+/].to_i
       aff = @aff[i.to_i]
       off = ((aff & 1 << cpu) ==0)? true : false if aff
@@ -200,6 +201,7 @@ def choplines(text)
   lines = text.split("\n").map {|e| e.slice(0, cols)}.slice(0, rows)
   text = lines.join("\n")
   text << "\n" * (rows - lines.size) if lines.size < rows
+  text
 end
 
 def show_help
