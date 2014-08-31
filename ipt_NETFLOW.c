@@ -25,6 +25,7 @@
 #include <linux/vmalloc.h>
 #include <linux/seq_file.h>
 #include <linux/random.h>
+#include <linux/in6.h>
 #include <linux/ip.h>
 #include <linux/udp.h>
 #include <linux/icmp.h>
@@ -44,6 +45,7 @@
 #include <net/tcp.h>
 #include <net/route.h>
 #include <net/ip6_fib.h>
+#include <net/addrconf.h>
 #include <net/dst.h>
 #include <linux/netfilter_ipv4/ip_tables.h>
 #ifndef ENABLE_NAT
@@ -178,6 +180,13 @@ MODULE_PARM_DESC(active_timeout, "active flows timeout in seconds");
 static int exportcpu = -1;
 module_param(exportcpu, int, 0644);
 MODULE_PARM_DESC(exportcpu, "lock exporter to this cpu");
+
+#ifdef ENABLE_PROMISC
+static int promisc = 0;
+module_param(promisc, int, 0444);
+MODULE_PARM_DESC(promisc, "enable promisc hack (0=default, 1)");
+static DEFINE_MUTEX(promisc_lock);
+#endif
 
 static int debug = 0;
 module_param(debug, int, 0644);
@@ -458,6 +467,9 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	unsigned long long pkt_total = 0, traf_total = 0, exported_traf = 0;
 	unsigned long long pkt_drop = 0, traf_drop = 0;
 	unsigned long long pkt_out = 0, traf_out = 0;
+#ifdef ENABLE_PROMISC
+	unsigned long long pkt_promisc = 0, pkt_promisc_drop = 0;
+#endif
 	unsigned int pkt_rate = 0;
 #ifdef ENABLE_SAMPLER
 	unsigned long long pkts_selected = 0, pkts_observed = 0;
@@ -488,6 +500,9 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 #endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	    " nel"
+#endif
+#ifdef ENABLE_PROMISC
+	    " promisc"
 #endif
 #ifdef ENABLE_SAMPLER
 	    " samp"
@@ -545,6 +560,10 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		traf_drop	+= st->traf_drop + st->traf_lost;
 		pkt_out		+= st->pkt_out;
 		traf_out	+= st->traf_out;
+#ifdef ENABLE_PROMISC
+		pkt_promisc	+= st->pkt_promisc;
+		pkt_promisc_drop += st->pkt_promisc_drop;
+#endif
 #ifdef ENABLE_SAMPLER
 		pkts_selected	+= st->pkts_selected;
 		pkts_observed	+= st->pkts_observed;
@@ -639,6 +658,13 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		    pkts_observed - pkts_selected);
 	} else
 		seq_printf(seq, "Flow sampling is disabled.\n");
+#endif
+
+#ifdef ENABLE_PROMISC
+	seq_printf(seq, "Promisc hack is %s (observed %llu packets, discarded %llu).\n",
+	    promisc? "enabled" : "disabled",
+	    pkt_promisc,
+	    pkt_promisc_drop);
 #endif
 
 #ifdef CONFIG_NF_NAT_NEEDED
@@ -958,6 +984,166 @@ static const struct file_operations flows_dump_fops = {
 };
 #endif /* ENABLE_DEBUGFS */
 
+#ifdef ENABLE_PROMISC
+static int promisc_finish(struct sk_buff *skb)
+{
+	/* don't pass to the routing */
+	kfree_skb(skb);
+	return NET_RX_DROP;
+}
+
+static int promisc4_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, struct net_device *orig_dev)
+{
+	const struct iphdr *iph;
+	u32 len;
+
+	/* what is not PACKET_OTHERHOST will be parsed at ip_rcv() */
+	if (skb->pkt_type != PACKET_OTHERHOST)
+		goto out;
+
+	NETFLOW_STAT_INC(pkt_promisc);
+
+	/* clone skb and do basic IPv4 sanity checking and preparations
+	 * for L3, this is quick and dirty version of ip_rcv() */
+	if ((skb = skb_share_check(skb, GFP_ATOMIC)) == NULL)
+		goto drop;
+	if (!pskb_may_pull(skb, sizeof(struct iphdr)))
+		goto drop;
+	iph = ip_hdr(skb);
+	if (iph->ihl < 5 || iph->version != 4)
+		goto drop;
+	if (!pskb_may_pull(skb, iph->ihl*4))
+		goto drop;
+	iph = ip_hdr(skb);
+	if (unlikely(ip_fast_csum((u8 *)iph, iph->ihl)))
+		goto drop;
+	len = ntohs(iph->tot_len);
+	if (skb->len < len)
+		goto drop;
+	else if (len < (iph->ihl*4))
+		goto drop;
+	if (pskb_trim_rcsum(skb, len))
+		goto drop;
+	skb->transport_header = skb->network_header + iph->ihl*4;
+	memset(IPCB(skb), 0, sizeof(struct inet_skb_parm));
+	skb_orphan(skb);
+
+	return NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING, skb, dev, NULL, promisc_finish);
+drop:
+	NETFLOW_STAT_INC(pkt_promisc_drop);
+out:
+	kfree_skb(skb);
+	return NET_RX_DROP;
+}
+
+static int promisc6_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, struct net_device *orig_dev)
+{
+	const struct ipv6hdr *hdr;
+	u32 pkt_len;
+	struct inet6_dev *idev;
+
+	/* what is not PACKET_OTHERHOST will be parsed at ipv6_rcv() */
+	if (skb->pkt_type != PACKET_OTHERHOST)
+		goto out;
+
+	NETFLOW_STAT_INC(pkt_promisc);
+
+	/* quick and dirty version of ipv6_rcv(), basic sanity checking
+	 * and preparation of skb for later processing */
+	rcu_read_lock();
+	idev = __in6_dev_get(skb->dev);
+	if ((skb = skb_share_check(skb, GFP_ATOMIC)) == NULL ||
+	    !idev || unlikely(idev->cnf.disable_ipv6))
+		goto drop;
+	memset(IP6CB(skb), 0, sizeof(struct inet6_skb_parm));
+	IP6CB(skb)->iif = skb_dst(skb) ? ip6_dst_idev(skb_dst(skb))->dev->ifindex : dev->ifindex;
+	if (unlikely(!pskb_may_pull(skb, sizeof(*hdr))))
+		goto drop;
+	hdr = ipv6_hdr(skb);
+	if (hdr->version != 6)
+		goto drop;
+	if (!(dev->flags & IFF_LOOPBACK) &&
+	    ipv6_addr_loopback(&hdr->daddr))
+		goto drop;
+	if (!(skb->pkt_type == PACKET_LOOPBACK ||
+		    dev->flags & IFF_LOOPBACK) &&
+	    ipv6_addr_is_multicast(&hdr->daddr) &&
+	    IPV6_ADDR_MC_SCOPE(&hdr->daddr) == 1)
+		goto drop;
+	if (ipv6_addr_is_multicast(&hdr->daddr) &&
+	    IPV6_ADDR_MC_SCOPE(&hdr->daddr) == 0)
+		goto drop;
+	if (ipv6_addr_is_multicast(&hdr->saddr))
+		goto drop;
+	skb->transport_header = skb->network_header + sizeof(*hdr);
+	IP6CB(skb)->nhoff = offsetof(struct ipv6hdr, nexthdr);
+	pkt_len = ntohs(hdr->payload_len);
+	if (pkt_len || hdr->nexthdr != NEXTHDR_HOP) {
+		if (pkt_len + sizeof(struct ipv6hdr) > skb->len)
+			goto drop;
+		if (pskb_trim_rcsum(skb, pkt_len + sizeof(struct ipv6hdr)))
+			goto drop;
+		hdr = ipv6_hdr(skb);
+	}
+	if (hdr->nexthdr == NEXTHDR_HOP) {
+		int optlen;
+		/* ipv6_parse_hopopts() is not exported by kernel.
+		 * I dont really need to parse hop options, since packets
+		 * are not routed, nor terminated, but I keep calculations
+		 * in case other code depend on it. */
+		if (!pskb_may_pull(skb, sizeof(struct ipv6hdr) + 8) ||
+		    !pskb_may_pull(skb, (sizeof(struct ipv6hdr) +
+				    ((skb_transport_header(skb)[1] + 1) << 3))))
+			goto drop;
+		optlen = (skb_transport_header(skb)[1] + 1) << 3;
+		if (skb_transport_offset(skb) + optlen > skb_headlen(skb))
+			goto drop;
+		skb->transport_header += optlen;
+		IP6CB(skb)->nhoff = sizeof(struct ipv6hdr);
+	}
+	rcu_read_unlock();
+	skb_orphan(skb);
+
+	return NF_HOOK(NFPROTO_IPV6, NF_INET_PRE_ROUTING, skb, dev, NULL, promisc_finish);
+drop:
+	rcu_read_unlock();
+	NETFLOW_STAT_INC(pkt_promisc_drop);
+out:
+	kfree_skb(skb);
+	return NET_RX_DROP;
+}
+
+static struct packet_type promisc4_packet_type __read_mostly = {
+	.type = htons(ETH_P_IP),
+	.func = promisc4_rcv,
+};
+static struct packet_type promisc6_packet_type __read_mostly = {
+	.type = htons(ETH_P_IPV6),
+	.func = promisc6_rcv,
+};
+
+static int switch_promisc(int newpromisc)
+{
+	newpromisc = !!newpromisc;
+	mutex_lock(&promisc_lock);
+	if (newpromisc == promisc)
+		goto unlock;
+	if (newpromisc) {
+		dev_add_pack(&promisc4_packet_type);
+		dev_add_pack(&promisc6_packet_type);
+	} else {
+		dev_remove_pack(&promisc4_packet_type);
+		dev_remove_pack(&promisc6_packet_type);
+	}
+	printk(KERN_INFO "ipt_NETFLOW: promisc hack is %s\n",
+	    newpromisc? "enabled" : "disabled");
+	promisc = newpromisc;
+unlock:
+	mutex_unlock(&promisc_lock);
+	return 0;
+}
+#endif
+
 #ifdef CONFIG_SYSCTL
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
@@ -1047,6 +1233,21 @@ static int aggregation_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 	if (ret >= 0 && write)
 		add_aggregation(aggregation_buf);
 	return ret;
+}
+#endif
+
+#ifdef ENABLE_PROMISC
+static int promisc_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+			 void __user *buffer, size_t *lenp, loff_t *fpos)
+{
+	int newpromisc = promisc;
+	int ret;
+
+	ctl->data = &newpromisc;
+	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+	if (ret < 0 || !write)
+		return ret;
+	return switch_promisc(newpromisc);
 }
 #endif
 
@@ -1273,6 +1474,15 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.maxlen		= sizeof(int),
 		.proc_handler	= &proc_dointvec,
 	},
+#ifdef ENABLE_PROMISC
+	{
+		.procname	= "promisc",
+		.mode		= 0644,
+		.data		= &promisc,
+		.maxlen		= sizeof(int),
+		.proc_handler	= &promisc_procctl,
+	},
+#endif
 #ifdef ENABLE_SAMPLER
 	{
 		.procname	= "sampler",
@@ -2784,6 +2994,9 @@ static inline void put_unaligned_be24(u32 val, unsigned char *p)
 	put_unaligned_be16(val, p);
 }
 
+#ifndef WARN_ONCE
+#define WARN_ONCE(x,fmt...) ({ if (x) printk(KERN_WARNING fmt); })
+#endif
 typedef struct in6_addr in6_t;
 /* encode one field (data records only) */
 static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_netflow *nf)
@@ -3289,9 +3502,11 @@ static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *d
 	/* driver name */
 	if (ops->get_drvinfo)
 		ops->get_drvinfo(dev, &info);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,37)
 	else if (dev->dev.parent && dev->dev.parent->driver) {
 		strlcpy(info.driver, dev->dev.parent->driver->name, sizeof(info.driver));
 	}
+#endif
 	n = scnprintf(ptr, len, "%s", info.driver);
 	ptr += n;
 	len -= n;
@@ -3302,6 +3517,9 @@ static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *d
 	if (!__ethtool_get_settings(dev, &ecmd)) {
 		char *s, *p;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
+#define ethtool_cmd_speed(x) (x)->speed
+#endif
 		switch (ethtool_cmd_speed(&ecmd)) {
 		case SPEED_10000: s = "10Gb"; break;
 		case SPEED_2500:  s = "2.5Gb"; break;
@@ -3316,7 +3534,9 @@ static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *d
 		case PORT_MII:    p = "mii"; break;
 		case PORT_FIBRE:  p = "fb"; break;
 		case PORT_BNC:    p = "bnc"; break;
+#ifdef PORT_DA
 		case PORT_DA:     p = "da"; break;
+#endif
 		default:          p = "";
 		}
 		n = scnprintf(ptr, len, ",%s,%s", s, p);
@@ -3327,6 +3547,14 @@ ret:
 		ops->complete(dev);
 	return size - len;
 }
+
+#ifndef ARPHRD_PHONET
+#define ARPHRD_PHONET		820
+#define ARPHRD_PHONET_PIPE	821
+#endif
+#ifndef ARPHRD_IEEE802154
+#define ARPHRD_IEEE802154	804
+#endif
 
 static const unsigned short netdev_type[] =
 {ARPHRD_NETROM, ARPHRD_ETHER, ARPHRD_AX25,
@@ -3401,9 +3629,11 @@ static void export_dev(struct net_device *dev)
 			/* manual dev 'alias' setting is a first priority,
 			 * then ethtool driver name with basic info,
 			 * finally net_device.type is a last resort */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,28)
 			if (dev->ifalias)
 				n = scnprintf(ptr, size, "%s", dev->ifalias);
 			else
+#endif
 				n = ethtool_drvinfo(ptr, size, dev);
 			if (!n)
 				n = scnprintf(ptr, size, "%s", dev_type(dev->type));
@@ -3430,6 +3660,13 @@ static void export_dev(struct net_device *dev)
 	pdu_ts_mod = jiffies;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
+#define for_each_netdev_ns(net, dev) for (dev = dev_base; dev; dev = dev->next)
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
+#define for_each_netdev_ns(net, d) for_each_netdev(d)
+#else
+#define for_each_netdev_ns(net, d) for_each_netdev(net, d)
+#endif
 static void export_ifnames(void)
 {
 	struct net_device *dev;
@@ -3439,7 +3676,7 @@ static void export_ifnames(void)
 		return;
 
 	rtnl_lock();
-	for_each_netdev(&init_net, dev) {
+	for_each_netdev_ns(&init_net, dev) {
 		export_dev(dev);
 	}
 	rtnl_unlock();
@@ -4849,6 +5086,10 @@ static int __init ipt_netflow_init(void)
 	add_snmp_rules(snmp_rules);
 #endif
 
+#ifdef ENABLE_PROMISC
+	switch_promisc(promisc);
+#endif
+
 	netflow_switch_version(protocol);
 	_schedule_scan_worker(0);
 	setup_timer(&rate_timer, rate_timer_calc, 0);
@@ -4908,6 +5149,9 @@ static void __exit ipt_netflow_fini(void)
 #endif
 #ifdef CONFIG_PROC_FS
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
+#endif
+#ifdef ENABLE_PROMISC
+	switch_promisc(0);
 #endif
 	xt_unregister_targets(ipt_netflow_reg, ARRAY_SIZE(ipt_netflow_reg));
 #ifdef CONFIG_NF_NAT_NEEDED

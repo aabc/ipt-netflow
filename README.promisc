@@ -1,14 +1,47 @@
 Hello,
 
-If you wish to account with netflow module traffic mirrored on switch you may follow this example:
+If you wish to account with ipt-netflow module traffic mirrored on switch you may follow
+ one of these examples:
 
 
-   Solution 1: General kernel patch.
-   Solution 2: Alternative w/o kernel patch.
+   Solution 1: Promisc-hack module option. [2014]
+   Solution 2: General kernel patch. [2008]
+   Solution 3: Alternative w/o kernel patch, using bridges. [2010]
 
 
     **************
     * Solution 1 *
+    **************
+
+   No kernel patching is need anymore! (As in easy.)
+
+   Compile module with `./configure --enable-promisc' option. This will enable
+  `promisc=' module parameter and sysctl parameter `net.netflow.promisc'.
+  Set any of these to `1' to enable promisc hack, you will see dmesg message
+  that it's enabled, set to `0' to disable (default).
+
+   This option turned on will pass promisc traffic into `PREROUTING' chain
+  of `raw' table (same as with promisc patches). Briefly it's like this:
+
+   # cd ipt-netflow/
+   # ./configure --enable-promisc
+   # make all install
+   # iptables -A PREROUTING -t raw -i eth2 -j NETFLOW
+   # sysctl net.netflow.promisc=1
+   # ifconfig eth2 promisc
+   # grep Promisc /proc/net/stat/ipt_netflow
+
+   Now you should be able to see promisc observed packets count increasing.
+
+   Note, that enabling module's parameter promisc=1 will not enable promiscuous
+  mode on network cards, these are completely different things. This option will
+  let iptables to see promisc traffic. That traffic will not be routed anywhere
+  and discarded just after passing PREROUTING chain.
+
+
+
+    **************
+    * Solution 2 *
     **************
 
 1. Patch your kernel with `raw_promisc.patch' to enable raw table to see promisc traffic.
@@ -56,7 +89,7 @@ ps. For Debian Squeeze instructions look at raw_promisc_debian_squeeze6.patch
 
 
     **************
-    * Solution 2 *
+    * Solution 3 *
     **************
 
 By Anonymous.

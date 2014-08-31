@@ -28,6 +28,7 @@ readarray -t opts <<EOF
   --enable-direction
   --enable-sampler
   --enable-sampler=hash
+  --enable-promisc
 EOF
 
 colorecho() {

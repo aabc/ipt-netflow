@@ -259,6 +259,7 @@ show_help() {
   echo "  --enable-sampler       enables Flow Sampling"
   echo "  --enable-sampler=hash  enables Hash sampler"
   echo "  --disable-aggregation  disables aggregation rules"
+  echo "  --enable-promisc       enables promisc hack"
   exit 0
 }
 
@@ -287,6 +288,7 @@ do
     --enable-sampl*hash) KOPTS="$KOPTS -DENABLE_SAMPLER -DSAMPLING_HASH" ;;
     --enable-sampl*) KOPTS="$KOPTS -DENABLE_SAMPLER" ;;
     --disable-aggr*) KOPTS="$KOPTS -DDISABLE_AGGR" ;;
+    --enable-promisc*) KOPTS="$KOPTS -DENABLE_PROMISC" ;;
     --make) echo called from make ;;
     -Werror) KOPTS="$KOPTS -Werror" ;;
     --help|-h) show_help ;;

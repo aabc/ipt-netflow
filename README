@@ -50,6 +50,8 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
    * SNMP-index translation rules, let convert meaningless and unstable
      interface indexes (ifIndex) to more meaningful numbering scheme.
 
+   * Easy support for catching mirrored traffic with promisc option.
+
 
 ============================
 = OBTAINING LATEST VERSION =

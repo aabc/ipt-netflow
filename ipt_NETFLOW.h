@@ -429,6 +429,10 @@ struct ipt_netflow_stat {
 	u64 notfound;			// hash stat (new flows)
 	u64  pkt_total;			// packets metered
 	u64 traf_total;			// traffic metered
+#ifdef ENABLE_PROMISC
+	u64 pkt_promisc;		// how much packets passed promisc code
+	u64 pkt_promisc_drop;		// how much packets discarded
+#endif
 	/* above is grouped for cache */
 	unsigned int truncated;		// packets stat (drop)
 	unsigned int frags;		// packets stat (drop)
