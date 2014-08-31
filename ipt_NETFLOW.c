@@ -1313,9 +1313,20 @@ static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 		return ret;
 
 	if (val > 0) {
-		printk(KERN_INFO "ipt_NETFLOW: forced flush\n");
+		char *stat = "";
+
 		pause_scan_worker();
 		netflow_scan_and_export(AND_FLUSH);
+		if (val > 1) {
+			int cpu;
+
+			for_each_present_cpu(cpu) {
+				struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+				memset(st, 0, sizeof(*st));
+			}
+			stat = " (reset stat counters)";
+		}
+		printk(KERN_INFO "ipt_NETFLOW: forced flush%s.\n", stat);
 		cont_scan_worker();
 	}
 
