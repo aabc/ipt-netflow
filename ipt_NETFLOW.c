@@ -373,17 +373,15 @@ static inline int mask2bits(__be32 mask) {
 static DEFINE_MUTEX(worker_lock);
 
 static int worker_delay = HZ / 10;
-static inline void _schedule_scan_worker(const int status)
+static inline void _schedule_scan_worker(const int pdus)
 {
 	int cpu = exportcpu;
 
 	/* rudimentary congestion avoidance */
-	if (status > 0)
-		worker_delay -= status;
-	else if (status < 0)
-		worker_delay /= 2;
+	if (pdus > 0)
+		worker_delay /= pdus;
 	else
-		worker_delay++;
+		worker_delay *= 2;
 
 	if (worker_delay < scan_min)
 		worker_delay = scan_min;
@@ -3795,7 +3793,7 @@ static inline int active_needs_export(const struct ipt_netflow *nf, const long a
 
 /* could be called with zero to flush cache and pdu */
 /* this function is guaranteed to be called non-concurrently */
-/* return -1 is trylockfailed, 0 if nothin gexported, >=1 if exported something */
+/* return number of pdus sent */
 static int netflow_scan_and_export(const int flush)
 {
 	long i_timeout = inactive_timeout * HZ;
@@ -3929,15 +3927,15 @@ static void netflow_work_fn(void *dummy)
 static void netflow_work_fn(struct work_struct *dummy)
 #endif
 {
-	int status;
+	int pdus;
 
 	wk_count = 0;
 	wk_trylock = 0;
 	wk_llist = 0;
 	wk_cpu = smp_processor_id();
 	wk_start = jiffies;
-	status = netflow_scan_and_export(DONT_FLUSH);
-	_schedule_scan_worker(status);
+	pdus = netflow_scan_and_export(DONT_FLUSH);
+	_schedule_scan_worker(pdus);
 	wk_busy = jiffies - wk_start;
 }
 
