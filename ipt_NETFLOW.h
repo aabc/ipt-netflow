@@ -361,12 +361,19 @@ static inline int ipt_netflow_tuple_equal(const struct ipt_netflow_tuple *t1,
 struct ipt_netflow_sock {
 	struct list_head list;
 	struct socket *sock;
-	__be32 ipaddr;
+	__be32 ipaddr;			// destination
 	unsigned short port;
-	atomic_t wmem_peak;	// sk_wmem_alloc peak value
-	atomic_t err_full;	// socket filled error
-	atomic_t err_connect;	// connect errors
-	atomic_t err_other;	// other socket errors
+	atomic_t wmem_peak;		// sk_wmem_alloc peak value
+	unsigned int err_full;		// socket filled error
+	unsigned int err_connect;	// connect errors
+	unsigned int err_other;		// other socket errors
+	unsigned int err_cberr;		// async errors, icmp
+	unsigned int pkt_exp;		// pkts expoted to this dest
+	u64 bytes_exp;			// bytes -"-
+	u64 bytes_exp_old;		// for rate calculation
+	unsigned int bytes_rate;	// bytes per second
+	unsigned int pkt_sent;		// pkts sent to this dest
+	unsigned int pkt_fail;		// pkts failed to send to this dest
 };
 
 struct netflow_aggr_n {
@@ -444,11 +451,13 @@ struct ipt_netflow_stat {
 	struct duration drop;
 	unsigned int send_success;	// sendmsg() ok
 	unsigned int send_failed;	// sendmsg() failed
-	unsigned int sock_errors;	// socket error callback called (got icmp refused)
+	unsigned int sock_cberr;	// socket error callback called (got icmp refused)
+	unsigned int exported_rate;	// netflow traffic itself
 	u64 exported_pkt;		// netflow traffic itself
-	u64 exported_traf;		// netflow traffic itself
 	u64 exported_flow;		// netflow traffic itself
-	u64  pkt_total_prev;		// packets metered previos interval
+	u64 exported_traf;		// netflow traffic itself
+	u64 exported_trafo;		// netflow traffic itself
+	u64  pkt_total_prev;		// packets metered previous interval
 	u32  pkt_total_rate;		// packet rate for this cpu
 	u64  pkt_drop;			// packets not metered
 	u64 traf_drop;			// traffic not metered
@@ -456,8 +465,8 @@ struct ipt_netflow_stat {
 	u64  pkt_lost;			// packets not sent to collector
 	u64 traf_lost;			// traffic not sent to collector
 	struct duration lost;
-	u64  pkt_out;			// packets out of the memory
-	u64 traf_out;			// traffic out of the memory
+	u64  pkt_out;			// packets out of the hash
+	u64 traf_out;			// traffic out of the hash
 #ifdef ENABLE_SAMPLER
 	u64 pkts_observed;		// sampler stat
 	u64 pkts_selected;		// sampler stat
@@ -465,7 +474,7 @@ struct ipt_netflow_stat {
 	u64 old_searched;		// previous hash stat
 	u64 old_found;			// for calculation per cpu metric
 	u64 old_notfound;
-	int metric;			// one minute ewma
+	int metric;			// one minute ewma of hash efficiency
 };
 
 #ifndef list_first_entry

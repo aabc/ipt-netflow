@@ -463,19 +463,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 {
 	unsigned int nr_flows = atomic_read(&ipt_netflow_count);
 	int cpu;
-	unsigned long long searched = 0, found = 0, notfound = 0;
-	unsigned int truncated = 0, frags = 0, alloc_err = 0, maxflows_err = 0;
-	unsigned int sock_errors = 0, send_failed = 0, exported_pkt = 0;
-	unsigned long long pkt_total = 0, traf_total = 0, exported_traf = 0;
-	unsigned long long pkt_drop = 0, traf_drop = 0;
-	unsigned long long pkt_out = 0, traf_out = 0;
-#ifdef ENABLE_PROMISC
-	unsigned long long pkt_promisc = 0, pkt_promisc_drop = 0;
-#endif
-	unsigned int pkt_rate = 0;
-#ifdef ENABLE_SAMPLER
-	unsigned long long pkts_selected = 0, pkts_observed = 0;
-#endif
+	struct ipt_netflow_stat t = { 0 };
 	struct ipt_netflow_sock *usock;
 #ifndef DISABLE_AGGR
 	struct netflow_aggr_n *aggr_n;
@@ -520,12 +508,57 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 #endif
 	    "\n",
 	    THIS_MODULE->srcversion);
+
+	seq_printf(seq, "Protocol version %d", protocol);
+	if (protocol == 10)
+		seq_printf(seq, " (ipfix)");
+	else
+		seq_printf(seq, " (netflow)");
+	if (protocol >= 9)
+		seq_printf(seq, ", refresh-rate %u, timeout-rate %u, (templates %d, active %d).\n",
+		    refresh_rate, timeout_rate, template_ids - FLOWSET_DATA_FIRST, tpl_count);
+
+	seq_printf(seq, "Timeouts: active %ds, inactive %ds. Maxflows %u\n",
+	    active_timeout,
+	    inactive_timeout,
+	    maxflows);
+
+#ifdef ENABLE_SAMPLER
+	if (get_sampler_mode()) {
+		seq_printf(seq, "Flow sampling mode %s one-out-of %u.",
+		    sampler_mode_string(),
+		    get_sampler_interval());
+		if (get_sampler_mode() != SAMPLER_HASH)
+			seq_printf(seq, " Flows selected %lu, discarded %lu.",
+			    atomic64_read(&flows_selected),
+			    atomic64_read(&flows_observed) - atomic64_read(&flows_selected));
+		else
+			seq_printf(seq, " Flows selected %lu.", atomic64_read(&flows_selected));
+		seq_printf(seq, " Pkts selected %llu, discarded %llu.\n",
+		    t.pkts_selected,
+		    t.pkts_observed - t.pkts_selected);
+	} else
+		seq_printf(seq, "Flow sampling is disabled.\n");
+#endif
+
+#ifdef ENABLE_PROMISC
+	seq_printf(seq, "Promisc hack is %s (observed %llu packets, discarded %llu).\n",
+	    promisc? "enabled" : "disabled",
+	    t.pkt_promisc,
+	    t.pkt_promisc_drop);
+#endif
+
+#ifdef CONFIG_NF_NAT_NEEDED
+	seq_printf(seq, "Natevents %s, count start %lu, stop %lu.\n", natevents? "enabled" : "disabled",
+	    nat_events_start, nat_events_stop);
+#endif
+
 	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d"
 	    " [%d..%d] (%u ms, %u us, %u:%u"
 #ifdef HAVE_LLIST
 	    " %u"
 #endif
-	    " [%u]).\n",
+	    " [cpu%u]).\n",
 		   nr_flows,
 		   peakflows,
 		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
@@ -544,70 +577,73 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	for_each_present_cpu(cpu) {
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
 
-		searched	+= st->searched;
-		found		+= st->found;
-		notfound	+= st->notfound;
-		truncated	+= st->truncated;
-		frags		+= st->frags;
-		alloc_err	+= st->alloc_err;
-		maxflows_err	+= st->maxflows_err;
-		exported_pkt	+= st->exported_pkt;
-		exported_traf	+= st->exported_traf;
-		send_failed	+= st->send_failed;
-		sock_errors	+= st->sock_errors;
-		pkt_total	+= st->pkt_total;
-		pkt_rate	+= st->pkt_total_rate;
-		traf_total	+= st->traf_total;
-		pkt_drop	+= st->pkt_drop  + st->pkt_lost;
-		traf_drop	+= st->traf_drop + st->traf_lost;
-		pkt_out		+= st->pkt_out;
-		traf_out	+= st->traf_out;
+		t.searched	+= st->searched;
+		t.found		+= st->found;
+		t.notfound	+= st->notfound;
+		t.pkt_total	+= st->pkt_total;
+		t.traf_total	+= st->traf_total;
 #ifdef ENABLE_PROMISC
-		pkt_promisc	+= st->pkt_promisc;
-		pkt_promisc_drop += st->pkt_promisc_drop;
+		t.pkt_promisc	+= st->pkt_promisc;
+		t.pkt_promisc_drop += st->pkt_promisc_drop;
 #endif
+		t.truncated	+= st->truncated;
+		t.frags		+= st->frags;
+		t.maxflows_err	+= st->maxflows_err;
+		t.alloc_err	+= st->alloc_err;
+		t.send_failed	+= st->send_failed;
+		t.sock_cberr	+= st->sock_cberr;
+
+		t.exported_rate	+= st->exported_rate;
+		t.exported_pkt	+= st->exported_pkt;
+		t.exported_flow	+= st->exported_flow;
+		t.exported_traf	+= st->exported_traf;
+
+		t.pkt_total_rate += st->pkt_total_rate;
+		t.pkt_drop	+= st->pkt_drop;
+		t.traf_drop	+= st->traf_drop;
+		t.pkt_lost	+= st->pkt_lost;
+		t.traf_lost	+= st->traf_lost;
+		t.flow_lost	+= st->flow_lost;
+		t.pkt_out	+= st->pkt_out;
+		t.traf_out	+= st->traf_out;
 #ifdef ENABLE_SAMPLER
-		pkts_selected	+= st->pkts_selected;
-		pkts_observed	+= st->pkts_observed;
+		t.pkts_observed	+= st->pkts_observed;
+		t.pkts_selected	+= st->pkts_selected;
 #endif
 	}
 
 #define FFLOAT(x, prec) (int)(x) / prec, (int)(x) % prec
 	seq_printf(seq, "Hash: size %u (mem %uK), metric %d.%02d [%d.%02d, %d.%02d, %d.%02d]."
-	    " MemTraf: %llu pkt, %llu K (pdu %llu, %llu), Out %llu pkt, %llu K.\n",
+	    " InHash: %llu pkt, %llu K, InPDU %llu, %llu.\n",
 	    htable_size,
 	    (unsigned int)((htable_size * sizeof(struct hlist_head)) >> 10),
 	    FFLOAT(metric, 100),
 	    FFLOAT(min_metric, 100),
 	    FFLOAT(min5_metric, 100),
 	    FFLOAT(min15_metric, 100),
-	    pkt_total - pkt_out + pdu_packets,
-	    (traf_total - traf_out + pdu_traf) >> 10,
+	    t.pkt_total - t.pkt_out,
+	    (t.traf_total - t.traf_out) >> 10,
 	    pdu_packets,
-	    pdu_traf,
-	    pkt_out,
-	    traf_out >> 10);
+	    pdu_traf);
 
 	seq_printf(seq, "Rate: %llu bits/sec, %llu packets/sec;"
 	    " Avg 1 min: %llu bps, %llu pps; 5 min: %llu bps, %llu pps\n",
 	    sec_brate, sec_prate, min_brate, min_prate, min5_brate, min5_prate);
 
 	seq_printf(seq, "cpu#     pps; <search found new [metric], trunc frag alloc maxflows>,"
-	    " sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
+	    " traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
 
 #define SAFEDIV(x,y) ((y)? ({ u64 __tmp = x; do_div(__tmp, y); (int)__tmp; }) : 0)
 	seq_printf(seq, "Total %6u; %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
-	    " sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
-	    pkt_rate,
-	    searched,
-	    (unsigned long long)found,
-	    (unsigned long long)notfound,
-	    FFLOAT(SAFEDIV(100LL * (searched + found + notfound), (found + notfound)), 100),
-	    truncated, frags, alloc_err, maxflows_err,
-	    exported_pkt, send_failed, sock_errors,
-	    (unsigned long long)exported_traf >> 10,
-	    (unsigned long long)pkt_total, (unsigned long long)traf_total >> 20,
-	    (unsigned long long)pkt_drop, (unsigned long long)traf_drop >> 10);
+	    " traffic: %llu, %llu MB, drop: %llu, %llu K\n",
+	    t.pkt_total_rate,
+	    t.searched,
+	    t.found,
+	    t.notfound,
+	    FFLOAT(SAFEDIV(100LL * (t.searched + t.found + t.notfound), (t.found + t.notfound)), 100),
+	    t.truncated, t.frags, t.alloc_err, t.maxflows_err,
+	    t.pkt_total, t.traf_total >> 20,
+	    t.pkt_drop, t.traf_drop >> 10);
 
 	if (num_present_cpus() > 1) {
 		for_each_present_cpu(cpu) {
@@ -615,64 +651,29 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 
 			st = &per_cpu(ipt_netflow_stat, cpu);
 			seq_printf(seq, "cpu%-2u %6u; %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
-			    " sock: %6llu %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
+			    " traffic: %llu, %llu MB, drop: %llu, %llu K\n",
 			    cpu,
 			    st->pkt_total_rate,
-			    (unsigned long long)st->searched,
-			    (unsigned long long)st->found,
-			    (unsigned long long)st->notfound,
+			    st->searched,
+			    st->found,
+			    st->notfound,
 			    FFLOAT(st->metric, 100),
 			    st->truncated, st->frags, st->alloc_err, st->maxflows_err,
-			    st->exported_pkt, st->send_failed, st->sock_errors,
-			    (unsigned long long)st->exported_traf >> 10,
-			    (unsigned long long)st->pkt_total, (unsigned long long)st->traf_total >> 20,
-			    (unsigned long long)st->pkt_drop, (unsigned long long)st->traf_drop >> 10);
+			    st->pkt_total, st->traf_total >> 20,
+			    st->pkt_drop, st->traf_drop >> 10);
 		}
 	}
 
-	seq_printf(seq, "Protocol version %d", protocol);
-	if (protocol == 10)
-		seq_printf(seq, " (ipfix)");
-	else
-		seq_printf(seq, " (netflow)");
-	if (protocol >= 9)
-		seq_printf(seq, ", refresh-rate %u, timeout-rate %u, (templates %d, active %d)",
-		    refresh_rate, timeout_rate, template_ids - FLOWSET_DATA_FIRST, tpl_count);
-
-	seq_printf(seq, ". Timeouts: active %ds, inactive %ds. Maxflows %u\n",
-	    active_timeout,
-	    inactive_timeout,
-	    maxflows);
-
-#ifdef ENABLE_SAMPLER
-	if (get_sampler_mode()) {
-		seq_printf(seq, "Flow sampling mode %s one-out-of %u.",
-		    sampler_mode_string(),
-		    get_sampler_interval());
-		if (get_sampler_mode() != SAMPLER_HASH)
-			seq_printf(seq, " Flows selected %lu, discarded %lu.",
-			    atomic64_read(&flows_selected),
-			    atomic64_read(&flows_observed) - atomic64_read(&flows_selected));
-		else
-			seq_printf(seq, " Flows selected %lu.", atomic64_read(&flows_selected));
-		seq_printf(seq, " Pkts selected %llu, discarded %llu.\n",
-		    pkts_selected,
-		    pkts_observed - pkts_selected);
-	} else
-		seq_printf(seq, "Flow sampling is disabled.\n");
-#endif
-
-#ifdef ENABLE_PROMISC
-	seq_printf(seq, "Promisc hack is %s (observed %llu packets, discarded %llu).\n",
-	    promisc? "enabled" : "disabled",
-	    pkt_promisc,
-	    pkt_promisc_drop);
-#endif
-
-#ifdef CONFIG_NF_NAT_NEEDED
-	seq_printf(seq, "Natevents %s, count start %lu, stop %lu.\n", natevents? "enabled" : "disabled",
-	    nat_events_start, nat_events_stop);
-#endif
+	seq_printf(seq, "Export: Rate %u bytes/s; Total %llu pkts, %llu MB, %llu flows;"
+	    " Errors %u pkts; Traffic lost %llu pkts, %llu Kbytes, %llu flows.\n",
+	    t.exported_rate,
+	    t.exported_pkt,
+	    t.exported_traf >> 20,
+	    t.exported_flow,
+	    t.send_failed,
+	    t.pkt_lost,
+	    t.traf_lost >> 10,
+	    t.flow_lost);
 
 	mutex_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
@@ -684,16 +685,17 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 			struct sock *sk = usock->sock->sk;
 
 			seq_printf(seq, ", sndbuf %u, filled %u, peak %u;"
-			    " err: sndbuf reached %u, connect %u, other %u\n",
+			    " err: sndbuf reached %u, connect %u, cberr %u, other %u\n",
 			    sk->sk_sndbuf,
 			    atomic_read(&sk->sk_wmem_alloc),
 			    atomic_read(&usock->wmem_peak),
-			    atomic_read(&usock->err_full),
-			    atomic_read(&usock->err_connect),
-			    atomic_read(&usock->err_other));
+			    usock->err_full,
+			    usock->err_connect,
+			    usock->err_cberr,
+			    usock->err_other);
 		} else
 			seq_printf(seq, " unconnected (%u attempts).\n",
-			    atomic_read(&usock->err_connect));
+			    usock->err_connect);
 		snum++;
 	}
 	mutex_unlock(&sock_lock);
@@ -1577,15 +1579,24 @@ static struct ctl_path netflow_sysctl_path[] = {
 /* socket code */
 static void sk_error_report(struct sock *sk)
 {
+	struct ipt_netflow_sock *usock;
+
 	/* clear connection refused errors if any */
 	if (debug > 1)
 		printk(KERN_INFO "ipt_NETFLOW: socket error <%d>\n", sk->sk_err);
 	sk->sk_err = 0;
-	NETFLOW_STAT_INC(sock_errors);
+	usock = sk->sk_user_data;
+	if (usock)
+		usock->err_cberr++;
+	NETFLOW_STAT_INC(sock_cberr);
+	/* It's theoretically possible to determine to which datagram this reply is,
+	 * because ICMP message frequently includes header of erroneous packet, but
+	 * this is not that reliable - packets could be spoofed, and requires keeping
+	 * book of sent packets. */
 	return;
 }
 
-static struct socket *_usock_alloc(const __be32 ipaddr, const unsigned short port)
+static struct socket *_usock_alloc(const __be32 ipaddr, const unsigned short port, void *u)
 {
 	struct sockaddr_in sin;
 	struct socket *sock;
@@ -1598,6 +1609,7 @@ static struct socket *_usock_alloc(const __be32 ipaddr, const unsigned short por
 	sock->sk->sk_allocation = GFP_ATOMIC;
 	sock->sk->sk_prot->unhash(sock->sk); /* hidden from input */
 	sock->sk->sk_error_report = &sk_error_report; /* clear ECONNREFUSED */
+	sock->sk->sk_user_data = u;
 	if (sndbuf)
 		sock->sk->sk_sndbuf = sndbuf;
 	else
@@ -1619,14 +1631,14 @@ static struct socket *_usock_alloc(const __be32 ipaddr, const unsigned short por
 
 static void usock_connect(struct ipt_netflow_sock *usock, const int sendmsg)
 {
-	usock->sock = _usock_alloc(usock->ipaddr, usock->port);
+	usock->sock = _usock_alloc(usock->ipaddr, usock->port, usock);
 	if (usock->sock) {
 		if (sendmsg || debug)
 			printk(KERN_INFO "ipt_NETFLOW: connected %u.%u.%u.%u:%u\n",
 			    HIPQUAD(usock->ipaddr),
 			    usock->port);
 	} else {
-		atomic_inc(&usock->err_connect);
+		usock->err_connect++;
 		if (debug)
 			printk(KERN_INFO "ipt_NETFLOW: connect to %u.%u.%u.%u:%u failed%s.\n",
 			    HIPQUAD(usock->ipaddr),
@@ -1634,8 +1646,8 @@ static void usock_connect(struct ipt_netflow_sock *usock, const int sendmsg)
 			    (sendmsg)? " (pdu lost)" : "");
 	}
 	atomic_set(&usock->wmem_peak, 0);
-	atomic_set(&usock->err_full, 0);
-	atomic_set(&usock->err_other, 0);
+	usock->err_full = 0;
+	usock->err_other = 0;
 }
 
 ktime_t ktime_get_real(void);
@@ -1652,10 +1664,13 @@ static void netflow_sendmsg(void *buffer, const int len)
 
 	mutex_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
+		usock->pkt_exp++;
+		usock->bytes_exp += len;
 		if (!usock->sock)
 			usock_connect(usock, 1);
 		if (!usock->sock) {
 			NETFLOW_STAT_INC(send_failed);
+			usock->pkt_fail++;
 			continue;
 		}
 		if (debug)
@@ -1669,13 +1684,14 @@ static void netflow_sendmsg(void *buffer, const int len)
 			char *suggestion = "";
 
 			NETFLOW_STAT_INC(send_failed);
+			usock->pkt_fail++;
 			if (ret == -EAGAIN) {
-				atomic_inc(&usock->err_full);
+				usock->err_full++;
 				suggestion = ": increase sndbuf!";
 			} else if (ret == -ENETUNREACH) {
 				suggestion = ": network is unreachable.";
 			} else
-				atomic_inc(&usock->err_other);
+				usock->err_other++;
 			printk(KERN_ERR "ipt_NETFLOW: sendmsg[%d] error %d: data loss %llu pkt, %llu bytes%s\n",
 			       snum, ret, pdu_packets, pdu_traf, suggestion);
 		} else {
@@ -1684,6 +1700,7 @@ static void netflow_sendmsg(void *buffer, const int len)
 				atomic_set(&usock->wmem_peak, wmem);
 			NETFLOW_STAT_INC(exported_pkt);
 			NETFLOW_STAT_ADD(exported_traf, ret);
+			usock->pkt_sent++;
 			retok++;
 		}
 		snum++;
@@ -1940,7 +1957,6 @@ static int add_destinations(char *ptr)
 			}
 
 			memset(usock, 0, sizeof(*usock));
-			atomic_set(&usock->err_connect, 0);
 			usock->ipaddr = ntohl(*(__be32 *)ip);
 			usock->port = port;
 			usock_connect(usock, 0);
@@ -3120,6 +3136,10 @@ static inline unsigned long timeout_rate_j(void)
 #ifndef time_is_before_jiffies
 #define time_is_before_jiffies(a) time_after(jiffies, a)
 #endif
+#ifndef time_is_after_jiffies
+#define time_is_after_jiffies(a) time_before(jiffies, a)
+#endif
+
 
 /* return buffer where to write records data */
 static unsigned char *alloc_record_tpl(struct data_template *tpl)
@@ -3396,12 +3416,6 @@ static inline void export_stat(const unsigned int tpl_mask)
 	typeof(x) __x = (x);			\
 	typeof(y) __y = (y);			\
 	__x == 0 ? __y : ((__y == 0) ? __x : min(__x, __y)); })
-#endif
-#ifndef time_is_before_jiffies
-#define time_is_before_jiffies(a) time_after(jiffies, a)
-#endif
-#ifndef time_is_after_jiffies
-#define time_is_after_jiffies(a) time_before(jiffies, a)
 #endif
 
 static void netflow_export_stats(void)
@@ -3934,7 +3948,9 @@ static void netflow_work_fn(struct work_struct *dummy)
 	wk_llist = 0;
 	wk_cpu = smp_processor_id();
 	wk_start = jiffies;
+
 	pdus = netflow_scan_and_export(DONT_FLUSH);
+
 	_schedule_scan_worker(pdus);
 	wk_busy = jiffies - wk_start;
 }
@@ -3973,6 +3989,8 @@ static void rate_timer_calc(unsigned long dummy)
 		searched += st->searched;
 		found += st->found;
 		notfound += st->notfound;
+		st->exported_rate = (st->exported_traf - st->exported_trafo) >> RATESHIFT;
+		st->exported_trafo = st->exported_traf;
 		/* calculate hash metric per cpu */
 		dsrch = st->searched - st->old_searched;
 		dfnd  = st->found - st->old_found;

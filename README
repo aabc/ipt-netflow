@@ -454,6 +454,27 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
       actual binary loaded;
   aggr mac vlan: tags to identify compile time options that are enabled.
 
+> Protocol version 10 (ipfix), refresh-rate 20, timeout-rate 30, (templates 2, active 2). Timeouts: active 5, inactive 15. Maxflows 2000000
+
+  Protocol version currently in use. Refresh-rate and timeout-rate
+      for v9 and IPFIX. Total templates generated and currently active.
+  Timeout: active X: how much seconds to wait before exporting active flow.
+    - same as sysctl net.netflow.active_timeout variable.
+  inactive X: how much seconds to wait before exporting inactive flow.
+    - same as sysctl net.netflow.inactive_timeout variable.
+  Maxflows 2000000: maxflows limit.
+    - all flows above maxflows limit must be dropped.
+    - you can control maxflows limit by sysctl net.netflow.maxflows variable.
+
+> Promisc hack is disabled (observed 0 packets, discarded 0).
+
+  observed n: To see that promisc hack is really working.
+
+> Natevents disabled, count start 0, stop 0.
+
+    - Natevents mode disabled or enabled, and how much start or stop events
+      are reported.
+
 > Flows: active 5187 (peak 83905 reached 0d0h1m ago), mem 283K, worker delay 100/1000 (37 ms, 0 us, 4:0 0 [3]).
 
   active X: currently active flows in memory cache.
@@ -466,7 +487,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
   worker delay X/HZ: how frequently exporter scan flows table per second.
   Rest is boring debug info.
 
-> Hash: size 8192 (mem 32K), metric 1.00, [1.00, 1.00, 1.00]. MemTraf: 1420 pkt, 364 K (pdu 0, 0).
+> Hash: size 8192 (mem 32K), metric 1.00, [1.00, 1.00, 1.00]. InHash: 1420 pkt, 364 K, InPDU 28, 6716.
 
   Hash: size X: current hash size/limit.
     - you can control this by sysctl net.netflow.hashsize variable.
@@ -482,79 +503,60 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
       15 minutes. Sort of hash table load average. First value is instantaneous.
       You can try to increase hashsize if averages more than 1 (increase
       certainly if >= 2).
-  MemTraf: X pkt, X K: how much traffic accounted for flows that are in memory.
-    - these flows that are residing in internal hash table.
-  pdu X, X: how much traffic in flows preparing to be exported.
-    - it is included already in aforementioned MemTraf total.
-
-> Protocol version 10 (ipfix), refresh-rate 20, timeout-rate 30, (templates 2, active 2). Timeouts: active 5, inactive 15. Maxflows 2000000
-
-  Protocol version currently in use. Refresh-rate and timeout-rate
-      for v9 and IPFIX. Total templates generated and currently active.
-  Timeout: active X: how much seconds to wait before exporting active flow.
-    - same as sysctl net.netflow.active_timeout variable.
-  inactive X: how much seconds to wait before exporting inactive flow.
-    - same as sysctl net.netflow.inactive_timeout variable.
-  Maxflows 2000000: maxflows limit.
-    - all flows above maxflows limit must be dropped.
-    - you can control maxflows limit by sysctl net.netflow.maxflows variable.
+  InHash: X pkt, X K: how much traffic accounted for flows in the hash table.
+  InPDU X, X: how much traffic in flows preparing to be exported.
 
 > Rate: 202448 bits/sec, 83 packets/sec; 1 min: 668463 bps, 930 pps; 5 min: 329039 bps, 483 pps
 
   - Module throughput values for 1 second, 1 minute, and 5 minutes.
 
-> cpu#  stat: <search found new [metric], trunc frag alloc maxflows>, sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>
-> cpu0  stat: 980540  10473 180600 [1.03],    0    0    0    0, sock:   4983 928 0, 7124 K, traffic: 188765, 14 MB, drop: 27863, 1142 K
+> cpu#  pps; <search found new [metric], trunc frag alloc maxflows>, traffic: <pkt, bytes>, drop: <pkt, bytes>
+> cpu0  123; 980540  10473 180600 [1.03],    0    0    0    0, traffic: 188765, 14 MB, drop: 27863, 1142 K
 
   cpu#: this is Total and per CPU statistics for:
-  stat: <search found new, trunc frag alloc maxflows>: internal stat for:
+  pps: packets per second on this CPU. It's useful to debug load imbalance.
+  <search found new, trunc frag alloc maxflows>: internal stat for:
   search found new: hash table searched, found, and not found counters.
   [metric]: one minute (ewma) average hash metric per cpu.
   trunc: how much truncated packets are ignored
-    - these are that possible don't have valid IP header.
-    - accounted in drop packets counter but not in drop bytes.
+    - for example if packets don't have valid IP header.
+    - it's also accounted in drop packets counter, but not in drop bytes.
   frag: how much fragmented packets have seen.
-    - kernel always defragments INPUT/OUTPUT chains for us.
+    - kernel defragments INPUT/OUTPUT chains for us if nf_defrag_ipv[46]
+      module is loaded.
     - these packets are not ignored but not reassembled either, so:
     - if there is no enough data in fragment (ex. tcp ports) it is considered
-      zero.
+      to be zero.
   alloc: how much cache memory allocations are failed.
-    - packets ignored and accounted in drop stat.
+    - packets ignored and accounted in traffic drop stat.
     - probably increase system memory if this ever happen.
   maxflows: how much packets ignored on maxflows (maximum active flows reached).
-    - packets ignored and accounted in drop stat.
+    - packets ignored and accounted in traffic drop stat.
     - you can control maxflows limit by sysctl net.netflow.maxflows variable.
-
-  sock: <ok fail cberr, bytes>: table of exporting stats for:
-  ok: how much Netflow PDUs are exported (i.e. UDP packets sent by module).
-  fail: how much socket errors (i.e. packets failed to be sent).
-    - packets dropped and their internal statistics cumulatively accounted in
-      drop stat.
-  cberr: how much connection refused ICMP errors we got from export target.
-    - probably you not launched collector software on destination,
-    - or specified wrong destination address.
-    - flows lost in this fashion is not possible to account in drop stat.
-    - these are ICMP errors, and would look like this in tcpdump:
-      05:04:09.281247 IP alice.19440 > bob.2055: UDP, length 120
-      05:04:09.281405 IP bob > alice: ICMP bob udp port 2055 unreachable, length 156
-  bytes: how much kilobytes of exporting data successfully sent by the module.
 
   traffic: <pkt, bytes>: how much traffic is accounted.
   pkt, bytes: sum of packets/megabytes accounted by module.
     - flows that failed to be exported (on socket error) is accounted here too.
 
   drop: <pkt, bytes>: how much of traffic is not accounted.
-  pkt, bytes: sum of packets/kilobytes we are lost/dropped.
-    - reasons they are dropped and accounted here:
+  pkt, bytes: sum of packets/kilobytes that are dropped by metering process.
+    - reasons these drops are accounted here:
       truncated/fragmented packets,
       packet is for new flow but failed to allocate memory for it,
-      packet is for new flow but maxflows is already reached,
-      all flows in export packets that got socket error.
+      packet is for new flow but maxflows is already reached.
+    Traffic lost due to socket errors is not accounted here. Look below
+      about export and socket errors.
 
-> Natevents disabled, count start 0, stop 0.
+> Export: Rate 0 bytes/s; Total 2 pkts, 0 MB, 18 flows; Errors 0 pkts; Traffic lost 0 pkts, 0 Kbytes, 0 flows.
 
-    - Natevents mode disabled or enabled, and how much start or stop events
-      are reported.
+  Rate X bytes/s: traffic rate generated by exporter itself.
+  Total X pkts, X MB: total amount of traffic generated by exporter.
+  X flows: how much data flows are exported.
+  Errors X pkts: how much packets not sent due to socket errors.
+  Traffic lost 0 pkts, 0 Kbytes, 0 flows: how much metered traffic is lost
+    due to socket errors.
+  Note that `cberr' errors are not accounted here due to their asynchronous
+    nature. Read below about `cberr' errors.
 
 > sock0: 10.0.0.2:2055 unconnected (1 attempts).
 
@@ -562,7 +564,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
   up) it shows now much connection attempts was failed. It will try to connect
   until success.
 
-> sock0: 10.0.0.2:2055, sndbuf 106496, filled 0, peak 106848; err: sndbuf reached 928, connect 0, other 0
+> sock0: 10.0.0.2:2055, sndbuf 106496, filled 0, peak 106848; err: sndbuf reached 928, connect 0, cberr 0, other 0
 
   sockX: per destination stats for:
   X.X.X.X:Y: destination ip address and port.
@@ -579,6 +581,13 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
   sndbuf reached X: how much packets dropped due to sndbuf being too small
       (error -11).
   connect X: how much connection attempts was failed.
+  cberr X: how much connection refused ICMP errors we got from export target.
+    - probably you are not launched collector software on destination,
+    - or specified wrong destination address.
+    - flows lost in this fashion is not possible to account in drop stat.
+    - these are ICMP errors, and would look like this in tcpdump:
+      05:04:09.281247 IP alice.19440 > bob.2055: UDP, length 120
+      05:04:09.281405 IP bob > alice: ICMP bob udp port 2055 unreachable, length 156
   other X: dropped due to other possible errors.
 
 > aggr0: ...
