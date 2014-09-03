@@ -509,7 +509,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
   cpu#: this is Total and per CPU statistics for:
   stat: <search found new, trunc frag alloc maxflows>: internal stat for:
   search found new: hash table searched, found, and not found counters.
-  [metric]: average hash metric since module load.
+  [metric]: one minute (ewma) average hash metric per cpu.
   trunc: how much truncated packets are ignored
     - these are that possible don't have valid IP header.
     - accounted in drop packets counter but not in drop bytes.

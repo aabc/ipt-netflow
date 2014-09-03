@@ -462,6 +462,10 @@ struct ipt_netflow_stat {
 	u64 pkts_observed;		// sampler stat
 	u64 pkts_selected;		// sampler stat
 #endif
+	u64 old_searched;		// previous hash stat
+	u64 old_found;			// for calculation per cpu metric
+	u64 old_notfound;
+	int metric;			// one minute ewma
 };
 
 #ifndef list_first_entry

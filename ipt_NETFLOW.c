@@ -331,7 +331,11 @@ static struct timer_list rate_timer;
 static long long sec_prate = 0, sec_brate = 0;
 static long long min_prate = 0, min_brate = 0;
 static long long min5_prate = 0, min5_brate = 0;
-static unsigned int metric = 100, min15_metric = 100, min5_metric = 100, min_metric = 100; /* hash metrics */
+#define METRIC_DFL 100
+static unsigned int metric = METRIC_DFL,
+		    min15_metric = METRIC_DFL,
+		    min5_metric = METRIC_DFL,
+		    min_metric = METRIC_DFL; /* hash metrics */
 
 static int set_hashsize(int new_size);
 static void destination_removeall(void);
@@ -619,7 +623,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 			    (unsigned long long)st->searched,
 			    (unsigned long long)st->found,
 			    (unsigned long long)st->notfound,
-			    FFLOAT(SAFEDIV(100LL * (st->searched + st->found + st->notfound), (st->found + st->notfound)), 100),
+			    FFLOAT(st->metric, 100),
 			    st->truncated, st->frags, st->alloc_err, st->maxflows_err,
 			    st->exported_pkt, st->send_failed, st->sock_errors,
 			    (unsigned long long)st->exported_traf >> 10,
@@ -1300,6 +1304,17 @@ static int snmp_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,
 }
 #endif
 
+static void clear_ipt_netflow_stat(void)
+{
+	int cpu;
+
+	for_each_present_cpu(cpu) {
+		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+		memset(st, 0, sizeof(*st));
+		st->metric = METRIC_DFL;
+	}
+}
+
 static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
@@ -1318,12 +1333,7 @@ static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 		pause_scan_worker();
 		netflow_scan_and_export(AND_FLUSH);
 		if (val > 1) {
-			int cpu;
-
-			for_each_present_cpu(cpu) {
-				struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
-				memset(st, 0, sizeof(*st));
-			}
+			clear_ipt_netflow_stat();
 			stat = " (reset stat counters)";
 		}
 		printk(KERN_INFO "ipt_NETFLOW: forced flush%s.\n", stat);
@@ -3948,12 +3958,13 @@ static void rate_timer_calc(unsigned long dummy)
 	u64 searched = 0;
 	u64 found = 0;
 	u64 notfound = 0;
-	unsigned int dsrch, dfnd, dnfnd;
+	int dsrch, dfnd, dnfnd;
 	u64 pkt_total = 0;
 	u64 traf_total = 0;
 	int cpu;
 
 	for_each_present_cpu(cpu) {
+		int metrt;
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
 		u64 pkt_t = st->pkt_total;
 
@@ -3964,6 +3975,16 @@ static void rate_timer_calc(unsigned long dummy)
 		searched += st->searched;
 		found += st->found;
 		notfound += st->notfound;
+		/* calculate hash metric per cpu */
+		dsrch = st->searched - st->old_searched;
+		dfnd  = st->found - st->old_found;
+		dnfnd = st->notfound - st->old_notfound;
+		/* zero values are not accounted, becasue only usage is interesting, not nonusage */
+		metrt = (dfnd + dnfnd)? 100 * (dsrch + dfnd + dnfnd) / (dfnd + dnfnd) : st->metric;
+		CALC_RATE(st->metric, metrt, 1);
+		st->old_searched = st->searched;
+		st->old_found    = st->found;
+		st->old_notfound = st->notfound;
 	}
 
 	sec_prate = (pkt_total - old_pkt_total) >> RATESHIFT;
@@ -3976,17 +3997,18 @@ static void rate_timer_calc(unsigned long dummy)
 	CALC_RATE(min_brate, sec_brate, 1);
 	old_traf_total = traf_total;
 
+	/* hash stat */
 	dsrch = searched - old_searched;
-	dfnd = found - old_found;
+	dfnd  = found - old_found;
 	dnfnd = notfound - old_notfound;
 	old_searched = searched;
-	old_found = found;
+	old_found    = found;
 	old_notfound = notfound;
 	/* if there is no access to hash keep rate steady */
 	metric = (dfnd + dnfnd)? 100 * (dsrch + dfnd + dnfnd) / (dfnd + dnfnd) : metric;
-	CALC_RATE(min15_metric, (unsigned long long)metric, 15);
-	CALC_RATE(min5_metric, (unsigned long long)metric, 5);
-	CALC_RATE(min_metric, (unsigned long long)metric, 1);
+	CALC_RATE(min15_metric, metric, 15);
+	CALC_RATE(min5_metric, metric, 5);
+	CALC_RATE(min_metric, metric, 1);
 
 	/* yes, timer delay is not accounted, but this stat is just estimational */
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
@@ -4975,6 +4997,7 @@ static int __init ipt_netflow_init(void)
 	tpl_element_sizes[observationDomainName] = version_string_size + 1;
 
 	start_ts.first = ktime_get_real();
+	clear_ipt_netflow_stat();
 
 	/* determine hash size (idea from nf_conntrack_core.c) */
 	if (!hashsize) {
