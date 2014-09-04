@@ -1,6 +1,6 @@
 /*
  * This is NetFlow exporting module (NETFLOW target) for linux
- * (c) 2008-2013 <abc@telekom.ru>
+ * (c) 2008-2014 <abc@telekom.ru>
  *
  *
  *   This program is free software: you can redistribute it and/or modify
@@ -111,7 +111,7 @@
 #define ipt_target xt_target
 #endif
 
-#define IPT_NETFLOW_VERSION "2.0"   /* Note that if you are using git, you
+#define IPT_NETFLOW_VERSION "2.0.1" /* Note that if you are using git, you
 				       will see version in other format. */
 #include "version.h"
 #ifdef GITVERSION
@@ -382,6 +382,9 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 #endif
 #ifdef ENABLE_DEBUGFS
 	    " debugfs"
+#endif
+#ifdef ENABLE_DIRECTION
+	    " dir"
 #endif
 #ifdef HAVE_LLIST
 	    " llist"
@@ -1917,8 +1920,6 @@ static u_int8_t tpl_element_sizes[] = {
 	[dot1qCustomerVlanId]		   = 2,
 	[dot1qCustomerPriority]		   = 1,
 	[ethernetType]			   = 2,
-	[postNATSourceIPv6Address]	   = 16,
-	[postNATDestinationIPv6Address]	   = 16,
 	[IPSecSPI]			   = 4,
 	[observationTimeMilliseconds]	   = 8,
 	[observationTimeMicroseconds]	   = 8,
@@ -2077,9 +2078,11 @@ static struct base_template template_nat4 = {
 		0
 	}
 };
+#ifdef CONFIG_NF_CONNTRACK_MARK
 static struct base_template template_mark = {
 	.types = { commonPropertiesId, 0 }
 };
+#endif
 
 struct data_template {
 	struct hlist_node hlist;
@@ -2159,8 +2162,10 @@ static struct data_template *get_template(const int tmask)
 		tlist[tnum++] = &template_igmp;
 	if (tmask & BTPL_IPSEC)
 		tlist[tnum++] = &template_ipsec;
+#ifdef CONFIG_NF_CONNTRACK_MARK
 	if (tmask & BTPL_MARK)
 		tlist[tnum++] = &template_mark;
+#endif
 #ifdef ENABLE_MAC
 	if (tmask & BTPL_MAC)
 		tlist[tnum++] = &template_mac_ipfix;
@@ -2340,7 +2345,7 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 		case IPV6_DST_ADDR:   *(in6_t *)ptr = nf->tuple.dst.in6; break;
 		case IPV6_NEXT_HOP:   *(in6_t *)ptr = nf->nh.in6; break;
 		case IPV6_FLOW_LABEL:        *ptr++ = nf->flow_label >> 16;
-				     *(__be16 *)ptr = nf->flow_label;
+				     *(__be16 *)ptr = htons((__u16)nf->flow_label);
 				      break;
 		case tcpOptions:     *(__be32 *)ptr = htonl(nf->tcpoptions); break;
 		case ipv4Options:    *(__be32 *)ptr = htonl(nf->options); break;
@@ -2360,7 +2365,7 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 		case postNAPTDestinationTransportPort: *(__be16 *)ptr = nf->nat->post.d_port; break;
 		case natEvent:				         *ptr = nf->nat->nat_event; break;
 #endif
-		case IPSecSPI:        *(__u32 *)ptr = (nf->tuple.s_port << 16) | nf->tuple.d_port; break;
+		case IPSecSPI:        *(__be32 *)ptr = (nf->tuple.s_port << 16) | nf->tuple.d_port; break;
 		case observationTimeMilliseconds:
 				      *(__be64 *)ptr = cpu_to_be64(ktime_to_ms(nf->ts_obs)); break;
 		case observationTimeMicroseconds:
@@ -2432,6 +2437,9 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 		tpl_mask |= BTPL_ICMP;
 	else if (nf->tuple.protocol == IPPROTO_IGMP)
 		tpl_mask |= BTPL_IGMP;
+	else if (nf->tuple.protocol == IPPROTO_AH ||
+	    nf->tuple.protocol == IPPROTO_ESP)
+		tpl_mask |= BTPL_IPSEC;
 #ifdef CONFIG_NF_CONNTRACK_MARK
 	if (nf->mark)
 		tpl_mask |= BTPL_MARK;
@@ -3165,6 +3173,15 @@ static unsigned int netflow_target(
 		return IPT_CONTINUE;
 	}
 
+#ifdef ENABLE_DEBUGFS
+	if (atomic_read(&freeze)) {
+		NETFLOW_STAT_INC(freeze_err);
+		NETFLOW_STAT_INC(pkt_drop);
+		NETFLOW_STAT_ADD(traf_drop, pkt_len);
+		return IPT_CONTINUE;
+	}
+#endif
+
 	tuple.l3proto	= family;
 	tuple.s_port	= 0;
 	tuple.d_port	= 0;
@@ -3258,15 +3275,19 @@ static unsigned int netflow_target(
 				break;
 			}
 			case IPPROTO_AH: {
-				struct ip_auth_hdr _hdr, *hp;
+				struct ip_auth_hdr _ahdr, *ap;
 
-				if (likely(hp = skb_header_pointer(skb, ptr, 8, &_hdr))) {
-					tuple.s_port = hp->spi >> 16;
-					tuple.d_port = hp->spi;
+				if (likely(ap = skb_header_pointer(skb, ptr, 8, &_ahdr))) {
+					tuple.s_port = ap->spi >> 16;
+					tuple.d_port = ap->spi;
 				}
-				hdrlen = (hp->hdrlen + 2) << 2;
+				hdrlen = (ap->hdrlen + 2) << 2;
 				break;
 			}
+			case IPPROTO_ESP:
+				/* After this header everything is encrypted. */
+				tuple.protocol = currenthdr;
+				goto do_protocols;
 			default:
 				hdrlen = ipv6_optlen(hp);
 			}
@@ -3276,15 +3297,6 @@ static unsigned int netflow_target(
 		tuple.protocol	= currenthdr;
 		options |= observed_hdrs(currenthdr);
 	}
-
-#ifdef ENABLE_DEBUGFS
-	if (atomic_read(&freeze)) {
-		NETFLOW_STAT_INC(freeze_err);
-		NETFLOW_STAT_INC(pkt_drop);
-		NETFLOW_STAT_ADD(traf_drop, pkt_len);
-		return IPT_CONTINUE;
-	}
-#endif
 
 do_protocols:
 	if (fragment) {
@@ -3325,24 +3337,25 @@ do_protocols:
 			break;
 		    }
 		    case IPPROTO_ICMPV6: {
-			    struct icmp6hdr _icmp6h, *ic;
+			 struct icmp6hdr _icmp6h, *ic;
 
-			    if (likely(family == AF_INET6 &&
-					(ic = skb_header_pointer(skb, ptr, 2, &_icmp6h))))
-				    tuple.d_port = htons((ic->icmp6_type << 8) | ic->icmp6_code);
-			    break;
+			 if (likely(family == AF_INET6 &&
+				     (ic = skb_header_pointer(skb, ptr, 2, &_icmp6h))))
+				 tuple.d_port = htons((ic->icmp6_type << 8) | ic->icmp6_code);
+			 break;
 		    }
 		    case IPPROTO_IGMP: {
 			struct igmphdr _hdr, *hp;
 
-			if (likely(hp = skb_header_pointer(skb, ptr, 1, &_hdr)))
-				tuple.d_port = hp->type;
-			}
+				if (likely(hp = skb_header_pointer(skb, ptr, 1, &_hdr)))
+					tuple.d_port = hp->type;
 			break;
+		    }
 		    case IPPROTO_AH: { /* IPSEC */
 			struct ip_auth_hdr _hdr, *hp;
 
-			if (likely(family == AF_INET && /* For IPv6 it's parsed above. */
+			/* This is for IPv4 only. IPv6 it's parsed above. */
+			if (likely(family == AF_INET &&
 				    (hp = skb_header_pointer(skb, ptr, 8, &_hdr)))) {
 				tuple.s_port = hp->spi >> 16;
 				tuple.d_port = hp->spi;
@@ -3352,12 +3365,14 @@ do_protocols:
 		    case IPPROTO_ESP: {
 			struct ip_esp_hdr _hdr, *hp;
 
-			if (likely(hp = skb_header_pointer(skb, ptr, 4, &_hdr)))
+			/* This is for both IPv4 and IPv6. */
+			if (likely(hp = skb_header_pointer(skb, ptr, 4, &_hdr))) {
 				tuple.s_port = hp->spi >> 16;
 				tuple.d_port = hp->spi;
 			}
 			break;
-	       	}
+		    }
+		}
 	} /* not fragmented */
 
 #ifndef DISABLE_AGGR

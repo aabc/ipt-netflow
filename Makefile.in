@@ -42,7 +42,9 @@ clean: mclean lclean
 
 version.h: ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	@if [ -d .git ] && type git >/dev/null 2>&1; then \
-		 echo "#define GITVERSION \"`git describe --dirty`\""; \
+		echo "#define GITVERSION \"`git describe --dirty`\""; \
+	else \
+		echo "/* kernel doesn't like empty files */"; \
 	fi > version.h
 
 linstall: | libipt_NETFLOW.so libip6t_NETFLOW.so

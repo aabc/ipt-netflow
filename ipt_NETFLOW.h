@@ -118,8 +118,6 @@ enum {
 	dot1qCustomerVlanId = 245,
 	dot1qCustomerPriority = 246,
 	ethernetType = 256,
-	postNATSourceIPv6Address = 281,
-	postNATDestinationIPv6Address = 282,
 	IPSecSPI = 295,
 	observationTimeMilliseconds = 323,
 	observationTimeMicroseconds = 324,
@@ -322,18 +320,18 @@ struct netflow_aggr_p {
 		preempt_disable();				\
 		(__get_cpu_var(ipt_netflow_stat).count++);	\
 		preempt_enable();				\
-	} while(0);
+	} while (0);
 
 #define NETFLOW_STAT_ADD_ATOMIC(count, val)			\
 	do {							\
 		preempt_disable();				\
 		(__get_cpu_var(ipt_netflow_stat).count += (unsigned long long)val); \
 		preempt_enable();				\
-	} while(0);
+	} while (0);
 #define NETFLOW_STAT_READ(count) ({					\
 		unsigned int _tmp = 0, _cpu;				\
 		for_each_present_cpu(_cpu)				\
-   			 _tmp += per_cpu(ipt_netflow_stat, _cpu).count;	\
+			 _tmp += per_cpu(ipt_netflow_stat, _cpu).count;	\
 		_tmp;							\
 	})
 
@@ -342,6 +340,8 @@ struct ipt_netflow_stat {
 	u64 searched;			// hash stat
 	u64 found;			// hash stat
 	u64 notfound;			// hash stat
+	u64 pkt_total;			// packets accounted total
+	u64 traf_total;			// traffic accounted total
 	unsigned int truncated;		// packets stat
 	unsigned int frags;		// packets stat
 	unsigned int alloc_err;		// failed to allocate flow mem
@@ -351,8 +351,6 @@ struct ipt_netflow_stat {
 	unsigned int send_failed;	// sendmsg() failed
 	unsigned int sock_errors;	// socket error callback called (got icmp refused)
 	u64 exported_size;		// netflow traffic itself
-	u64 pkt_total;			// packets accounted total
-	u64 traf_total;			// traffic accounted total
 	u64 pkt_drop;			// packets not accounted total
 	u64 traf_drop;			// traffic not accounted total
 	u64 pkt_out;			// packets out of the memory
