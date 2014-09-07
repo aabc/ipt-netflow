@@ -1156,18 +1156,20 @@ unlock:
 #define BEFORE2632(x,y)
 #endif
 
+#ifndef CONFIG_GRKERNSEC
+#define ctl_table_no_const struct ctl_table
+#endif
 /* sysctl /proc/sys/net/netflow */
 static int hsize_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
-	void *orig = ctl->data;
 	int ret, hsize;
+	ctl_table_no_const lctl = *ctl;
 
 	if (write)
-		ctl->data = &hsize;
-	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+		lctl.data = &hsize;
+	ret = proc_dointvec(&lctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (write) {
-		ctl->data = orig;
 		if (hsize < LOCK_COUNT)
 			return -EPERM;
 		return set_hashsize(hsize)?:ret;
@@ -1180,6 +1182,7 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 {
 	int ret;
 	struct ipt_netflow_sock *usock;
+	ctl_table_no_const lctl = *ctl;
 
 	mutex_lock(&sock_lock);
 	if (list_empty(&usock_list)) {
@@ -1191,8 +1194,8 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 		sndbuf = usock->sock->sk->sk_sndbuf;
 	mutex_unlock(&sock_lock);
 
-	ctl->data = &sndbuf;
-	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+	lctl.data = &sndbuf;
+	ret = proc_dointvec(&lctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (!write)
 		return ret;
 	if (sndbuf < SOCK_MIN_SNDBUF)
@@ -1246,9 +1249,10 @@ static int promisc_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fi
 {
 	int newpromisc = promisc;
 	int ret;
+	ctl_table_no_const lctl = *ctl;
 
-	ctl->data = &newpromisc;
-	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+	lctl.data = &newpromisc;
+	ret = proc_dointvec(&lctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (ret < 0 || !write)
 		return ret;
 	return switch_promisc(newpromisc);
@@ -1320,9 +1324,10 @@ static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 {
 	int ret;
 	int val = 0;
+	ctl_table_no_const lctl = *ctl;
 
-	ctl->data = &val;
-	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+	lctl.data = &val;
+	ret = proc_dointvec(&lctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 
 	if (!write)
 		return ret;
@@ -1348,9 +1353,10 @@ static int protocol_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *f
 {
 	int ret;
 	int ver = protocol;
+	ctl_table_no_const lctl = *ctl;
 
-	ctl->data = &ver;
-	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+	lctl.data = &ver;
+	ret = proc_dointvec(&lctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 
 	if (!write)
 		return ret;
@@ -1380,9 +1386,10 @@ static int natevents_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *
 {
 	int ret;
 	int val = natevents;
+	ctl_table_no_const lctl = *ctl;
 
-	ctl->data = &val;
-	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+	lctl.data = &val;
+	ret = proc_dointvec(&lctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 
 	if (!write)
 		return ret;
