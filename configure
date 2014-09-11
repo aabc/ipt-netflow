@@ -260,6 +260,7 @@ show_help() {
   echo "  --enable-sampler=hash  enables Hash sampler"
   echo "  --disable-aggregation  disables aggregation rules"
   echo "  --enable-promisc       enables promisc hack"
+  echo "  --disable-snmp-agent   disables net-snmp agent"
   exit 0
 }
 
@@ -281,15 +282,17 @@ do
     --kdir=*)      KDIR="$ac_optarg" ;;
     --enable-nat*)   KOPTS="$KOPTS -DENABLE_NAT" ;;
     --enable-debug*) KOPTS="$KOPTS -DENABLE_DEBUGFS" ;;
-    --enable-snmp*)  KOPTS="$KOPTS -DSNMP_RULES" ;;
     --enable-mac*)   KOPTS="$KOPTS -DENABLE_MAC" ;;
     --enable-vlan*)  KOPTS="$KOPTS -DENABLE_VLAN" ;;
     --enable-direc*) KOPTS="$KOPTS -DENABLE_DIRECTION" ;;
     --enable-sampl*hash) KOPTS="$KOPTS -DENABLE_SAMPLER -DSAMPLING_HASH" ;;
     --enable-sampl*) KOPTS="$KOPTS -DENABLE_SAMPLER" ;;
     --disable-aggr*) KOPTS="$KOPTS -DDISABLE_AGGR" ;;
-    --enable-promisc*) KOPTS="$KOPTS -DENABLE_PROMISC" ;;
-    --make) echo called from make ;;
+    --enable-promi*) KOPTS="$KOPTS -DENABLE_PROMISC" ;;
+    --enable-snmp-r*)  KOPTS="$KOPTS -DENABLE_SNMP" ;;
+    --disable-snmp-a*)   SKIPSNMP=1 ;;
+    --disable-net-snmp*) SKIPSNMP=1 ;;
+    --make) echo called from make; CARGS=`echo $CARGS | sed s/--make//g` ;;
     -Werror) KOPTS="$KOPTS -Werror" ;;
     --help|-h) show_help ;;
     -*) echo Invalid option: $ac_option; exit 1 ;;
@@ -410,6 +413,67 @@ kernel_check_features() {
   kernel_check_include include/linux/llist.h -DHAVE_LLIST
 }
 
+snmp_check() {
+  test "$SKIPSNMP" && return
+
+  echo -n "Searching for net-snmp-config... "
+  if type -p net-snmp-config > /dev/null; then
+    echo Yes `type -p net-snmp-config`
+  else
+    echo No.
+    SNMPCONFIG=no
+  fi
+
+  echo -n "Searching for net-snmp agent... "
+  if [ -s /etc/redhat-release ]; then
+    if ! rpm --quiet -q net-snmp; then
+      echo No.
+      SNMPADD="do:  yum install net-snmp"
+      if [ "$SNMPCONFIG" ]; then
+	SNMPADD="$SNMPADD net-snmp-devel"
+      fi
+    else
+      echo Yes.
+    fi
+    if [ "$SNMPCONFIG" ]; then
+      SNMPCONFIG="run:  yum install net-snmp-devel"
+    fi
+  elif [ -s /etc/debian_version ]; then
+    if ! dpkg -s snmpd >/dev/null 2>&1; then
+      echo No.
+      SNMPADD="do:  apt-get install snmpd"
+      if [ "$SNMPCONFIG" ]; then
+	SNMPADD="$SNMPADD libsnmp-dev"
+      fi
+    else
+      echo Yes.
+    fi
+    if [ "$SNMPCONFIG" ]; then
+      SNMPCONFIG="run:  apt-get install libsnmp-dev"
+    fi
+  elif [ -s /etc/snmp/snmpd.conf ]; then
+    echo Yes.
+  else
+    echo No.
+    SNMPADD="install net-snmp (www.net-snmp.org)"
+    SNMPCONFIG="reinstall net-snmp with agent support."
+  fi
+
+  if [ "$SNMPADD" ]; then
+    echo " Assuming you don't want net-snmp agent support".
+    echo " Otherwise $SNMPADD"
+    return
+  elif [ "$SNMPCONFIG" ]; then
+    echo "! You have net-snmp agent but not development package."
+    echo "! net-snmp agent will not be built, to fix:"
+    echo "!   $SNMPCONFIG"
+    return
+  fi
+
+  SNMPTARGET=snmp_NETFLOW.so
+  SNMPINSTALL=sinstall
+}
+
 kernel_find_version	#KVERSION
 test "$KLIBMOD" || KLIBMOD=$KVERSION
 echo "Kernel version: $KVERSION ($KHOW)"
@@ -428,11 +492,15 @@ iptables_src_version	#check that IPTSRC match to IPTVER
 iptables_inc		#IPTINC
 iptables_modules	#IPTLIB
 
+snmp_check
+
 REPLACE="\
 s!@CARGS@!$CARGS!;\
 s!@KVERSION@!$KVERSION!;\
 s!@KDIR@!$KDIR!;\
 s!@KOPTS@!$KOPTS!;\
+s!@SNMPTARGET@!$SNMPTARGET!;\
+s!@SNMPINSTALL@!$SNMPINSTALL!;\
 s!@IPTABLES_VERSION@!$IPTVER!;\
 s!@IPTABLES_CFLAGS@!$IPTCFLAGS $IPTINC!;\
 s!@IPTABLES_MODULES@!$IPTLIB!"

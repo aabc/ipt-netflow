@@ -458,6 +458,135 @@ static inline unsigned short sampler_nf_v5(void)
 #endif
 
 #ifdef CONFIG_PROC_FS
+#define SAFEDIV(x,y) ((y)? ({ u64 __tmp = x; do_div(__tmp, y); (int)__tmp; }) : 0)
+#define FFLOAT(x, prec) (int)(x) / prec, (int)(x) % prec
+static int snmp_seq_show(struct seq_file *seq, void *v)
+{
+	int cpu;
+	unsigned int nr_flows = atomic_read(&ipt_netflow_count);
+	struct ipt_netflow_stat t = { 0 };
+	struct ipt_netflow_sock *usock;
+	unsigned int sndbuf_peak = 0;
+	int snum = 0;
+
+	for_each_present_cpu(cpu) {
+		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+
+		t.notfound	+= st->notfound;
+		t.pkt_total	+= st->pkt_total;
+		t.traf_total	+= st->traf_total;
+
+		t.send_failed	+= st->send_failed;
+		t.sock_cberr	+= st->sock_cberr;
+
+		t.exported_rate	+= st->exported_rate;
+		t.exported_pkt	+= st->exported_pkt;
+		t.exported_flow	+= st->exported_flow;
+		t.exported_traf	+= st->exported_traf;
+
+		t.pkt_drop	+= st->pkt_drop;
+		t.traf_drop	+= st->traf_drop;
+		t.pkt_lost	+= st->pkt_lost;
+		t.traf_lost	+= st->traf_lost;
+		t.flow_lost	+= st->flow_lost;
+	}
+
+
+	seq_printf(seq,
+	    "inBitRate    %llu\n"
+	    "inPacketRate %llu\n"
+	    "inFlows      %llu\n"
+	    "inPackets    %llu\n"
+	    "inBytes      %llu\n"
+	    "hashMetric   %d.%02d\n"
+	    "hashMemory   %lu\n"
+	    "hashFlows    %u\n"
+	    "hashPackets  %llu\n"
+	    "hashBytes    %llu\n"
+	    "dropPackets  %llu\n"
+	    "dropBytes    %llu\n"
+	    "outByteRate  %u\n"
+	    "outFlows     %llu\n"
+	    "outPackets   %llu\n"
+	    "outBytes     %llu\n"
+	    "lostFlows    %llu\n"
+	    "lostPackets  %llu\n"
+	    "lostBytes    %llu\n"
+	    "errTotal     %u\n",
+	    sec_brate,
+	    sec_prate,
+	    t.notfound,
+	    t.pkt_total,
+	    t.traf_total,
+	    FFLOAT(SAFEDIV(100LL * (t.searched + t.found + t.notfound), (t.found + t.notfound)), 100),
+	    (unsigned long)nr_flows * sizeof(struct ipt_netflow) +
+		   (unsigned long)htable_size * sizeof(struct hlist_head),
+	    nr_flows,
+	    t.pkt_total - t.pkt_out,
+	    t.traf_total - t.traf_out,
+	    t.pkt_drop,
+	    t.traf_drop,
+	    t.exported_rate,
+	    t.exported_flow,
+	    t.exported_pkt,
+	    t.exported_traf,
+	    t.flow_lost,
+	    t.pkt_lost,
+	    t.traf_lost,
+	    t.send_failed + t.sock_cberr);
+
+	for_each_present_cpu(cpu) {
+		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+
+		seq_printf(seq,
+		    "cpu%u %u %llu %llu %llu %d.%02d %llu %llu %u %u %u %u\n",
+		    cpu,
+		    st->pkt_total_rate,
+		    st->notfound,
+		    st->pkt_total,
+		    st->traf_total,
+		    FFLOAT(st->metric, 100),
+		    st->pkt_drop,
+		    st->traf_drop,
+		    st->truncated,
+		    st->frags,
+		    st->alloc_err,
+		    st->maxflows_err);
+	}
+
+	mutex_lock(&sock_lock);
+	list_for_each_entry(usock, &usock_list, list) {
+		int wmem_peak = atomic_read(&usock->wmem_peak);
+
+		if (sndbuf_peak < wmem_peak)
+			sndbuf_peak = wmem_peak;
+		seq_printf(seq, "sock%d %u.%u.%u.%u:%u %d %u %u %u %u",
+		    snum,
+		    HIPQUAD(usock->ipaddr),
+		    usock->port,
+		    !!usock->sock,
+		    usock->err_connect,
+		    usock->err_full,
+		    usock->err_cberr,
+		    usock->err_other);
+		if (usock->sock) {
+			struct sock *sk = usock->sock->sk;
+
+			seq_printf(seq, " %u %u %u\n",
+			    sk->sk_sndbuf,
+			    atomic_read(&sk->sk_wmem_alloc),
+			    wmem_peak);
+		} else
+			seq_printf(seq, " 0 0 %u\n", wmem_peak);
+
+		snum++;
+	}
+	mutex_unlock(&sock_lock);
+	seq_printf(seq, "sndbufPeak   %u\n", sndbuf_peak);
+
+	return 0;
+}
+
 /* procfs statistics /proc/net/stat/ipt_netflow */
 static int nf_seq_show(struct seq_file *seq, void *v)
 {
@@ -562,7 +691,8 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		   nr_flows,
 		   peakflows,
 		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
-		   (unsigned int)((nr_flows * sizeof(struct ipt_netflow)) >> 10),
+		   (unsigned int)(((unsigned long)nr_flows * sizeof(struct ipt_netflow) +
+				   (unsigned long)htable_size * sizeof(struct hlist_head)) >> 10),
 		   worker_delay, HZ,
 		   scan_min, scan_max,
 		   jiffies_to_msecs(jiffies - wk_start),
@@ -612,7 +742,6 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 #endif
 	}
 
-#define FFLOAT(x, prec) (int)(x) / prec, (int)(x) % prec
 	seq_printf(seq, "Hash: size %u (mem %uK), metric %d.%02d [%d.%02d, %d.%02d, %d.%02d]."
 	    " InHash: %llu pkt, %llu K, InPDU %llu, %llu.\n",
 	    htable_size,
@@ -633,7 +762,6 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "cpu#     pps; <search found new [metric], trunc frag alloc maxflows>,"
 	    " traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
 
-#define SAFEDIV(x,y) ((y)? ({ u64 __tmp = x; do_div(__tmp, y); (int)__tmp; }) : 0)
 	seq_printf(seq, "Total %6u; %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
 	    " traffic: %llu, %llu MB, drop: %llu, %llu K\n",
 	    t.pkt_total_rate,
@@ -751,9 +879,22 @@ static int nf_seq_open(struct inode *inode, struct file *file)
 	return single_open(file, nf_seq_show, NULL);
 }
 
+static int snmp_seq_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, snmp_seq_show, NULL);
+}
+
 static struct file_operations nf_seq_fops = {
 	.owner	 = THIS_MODULE,
 	.open	 = nf_seq_open,
+	.read	 = seq_read,
+	.llseek	 = seq_lseek,
+	.release = single_release,
+};
+
+static struct file_operations snmp_seq_fops = {
+	.owner	 = THIS_MODULE,
+	.open	 = snmp_seq_open,
 	.read	 = seq_read,
 	.llseek	 = seq_lseek,
 	.release = single_release,
@@ -5006,12 +5147,39 @@ static struct ipt_target ipt_netflow_reg[] __read_mostly = {
 	},
 };
 
+#ifdef CONFIG_PROC_FS
+static int register_stat(const char *name, struct file_operations *fops)
+{
+	struct proc_dir_entry *proc_stat;
+
+	printk(KERN_INFO "netflow: registering: /proc/net/stat/%s\n", name);
+
+# if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
+	proc_stat = create_proc_entry(name, S_IRUGO, INIT_NET(proc_net_stat));
+# else
+	proc_stat = proc_create(name, S_IRUGO, INIT_NET(proc_net_stat), fops);
+# endif
+	if (!proc_stat) {
+		printk(KERN_ERR "Unable to create /proc/net/stat/%s entry\n", name);
+		return 0;
+	}
+# if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
+	proc_stat->proc_fops = fops;
+# endif
+# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30)
+	proc_stat->owner = THIS_MODULE;
+# endif
+	printk(KERN_INFO "netflow: registered: /proc/net/stat/%s\n", name);
+	return 1;
+}
+#else
+# define register_stat(x, y) 1
+#endif
+
 static int __init ipt_netflow_init(void)
 {
 	int i;
-#ifdef CONFIG_PROC_FS
-	struct proc_dir_entry *proc_stat;
-#endif
+
 	printk(KERN_INFO "ipt_NETFLOW version %s, srcversion %s\n",
 		IPT_NETFLOW_VERSION, THIS_MODULE->srcversion);
 
@@ -5060,24 +5228,10 @@ static int __init ipt_netflow_init(void)
 		goto err_free_hash;
 	}
 
-#ifdef CONFIG_PROC_FS
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
-	proc_stat = create_proc_entry("ipt_netflow", S_IRUGO, INIT_NET(proc_net_stat));
-#else
-	proc_stat = proc_create("ipt_netflow", S_IRUGO, INIT_NET(proc_net_stat), &nf_seq_fops);
-#endif
-	if (!proc_stat) {
-		printk(KERN_ERR "Unable to create /proc/net/stat/ipt_netflow entry\n");
+	if (!register_stat("ipt_netflow", &nf_seq_fops))
 		goto err_free_netflow_slab;
-	}
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
-	proc_stat->proc_fops = &nf_seq_fops;
-#endif
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30)
-	proc_stat->owner = THIS_MODULE;
-#endif
-	printk(KERN_INFO "netflow: registered: /proc/net/stat/ipt_netflow\n");
-#endif
+	if (!register_stat("ipt_netflow_snmp", &snmp_seq_fops))
+		goto err_free_proc_stat1;
 
 #ifdef ENABLE_DEBUGFS
 	flows_dump_d = debugfs_create_file("netflow_dump", S_IRUGO, NULL, NULL, &flows_dump_fops);
@@ -5096,7 +5250,7 @@ static int __init ipt_netflow_init(void)
 #endif
 	if (!netflow_sysctl_header) {
 		printk(KERN_ERR "netflow: can't register to sysctl\n");
-		goto err_free_proc_stat;
+		goto err_free_proc_stat2;
 	} else
 		printk(KERN_INFO "netflow: registered: sysctl net.netflow\n");
 #endif
@@ -5177,12 +5331,14 @@ err_stop_timer:
 err_free_sysctl:
 #ifdef CONFIG_SYSCTL
 	unregister_sysctl_table(netflow_sysctl_header);
-err_free_proc_stat:
+err_free_proc_stat2:
 #endif
 #ifdef ENABLE_DEBUGFS
 	debugfs_remove(flows_dump_d);
 #endif
 #ifdef CONFIG_PROC_FS
+	remove_proc_entry("ipt_netflow_snmp", INIT_NET(proc_net_stat));
+err_free_proc_stat1:
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
 err_free_netflow_slab:
 #endif
@@ -5205,6 +5361,7 @@ static void __exit ipt_netflow_fini(void)
 	debugfs_remove(flows_dump_d);
 #endif
 #ifdef CONFIG_PROC_FS
+	remove_proc_entry("ipt_netflow_snmp", INIT_NET(proc_net_stat));
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
 #endif
 #ifdef ENABLE_PROMISC

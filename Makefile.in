@@ -8,13 +8,18 @@ IPTABLES_CFLAGS = @IPTABLES_CFLAGS@
 IPTABLES_MODULES = @IPTABLES_MODULES@
 DEPMOD = depmod -a
 CARGS = @CARGS@
+SNMPTGSO = /usr/lib/snmp/dlmod/@SNMPTARGET@
+SNMPCONF = /etc/snmp/snmpd.conf
+SNMPLINE = dlmod netflow $(SNMPTGSO)
+CC = gcc
 
 # https://www.kernel.org/doc/Documentation/kbuild/modules.txt
 # https://www.kernel.org/doc/Documentation/kbuild/makefiles.txt
 obj-m = ipt_NETFLOW.o
 ccflags-y = @KOPTS@
 
-all: ipt_NETFLOW.ko libipt_NETFLOW.so libip6t_NETFLOW.so
+all: ipt_NETFLOW.ko libipt_NETFLOW.so libip6t_NETFLOW.so @SNMPTARGET@
+
 ipt_NETFLOW.ko: version.h ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	@echo Compiling for kernel $(KVERSION)
 	make -C $(KDIR) M=$(CURDIR) modules
@@ -25,6 +30,7 @@ sparse: | version.h ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	make -C $(KDIR) M=$(CURDIR) modules C=1
 	@touch ipt_NETFLOW.ko
 minstall: | ipt_NETFLOW.ko
+	@echo " *"
 	make -C $(KDIR) M=$(CURDIR) modules_install INSTALL_MOD_PATH=$(DESTDIR)
 	$(DEPMOD)
 mclean:
@@ -33,6 +39,26 @@ lclean:
 	-rm -f *.so *_sh.o
 clean: mclean lclean
 	-rm -f *.so *.o modules.order version.h
+
+snmp_NETFLOW.so: snmp_NETFLOW.c
+	$(CC) `net-snmp-config --cflags` -fPIC -shared -g -O0 -o $@ $< `net-snmp-config --libs`
+
+sinstall: | snmp_NETFLOW.so IPT-NETFLOW-MIB.my
+	@echo " *"
+	install -D IPT-NETFLOW-MIB.my $(DESTDIR)/usr/share/snmp/mibs/IPT-NETFLOW-MIB.my
+	install -D snmp_NETFLOW.so $(DESTDIR)$(SNMPTGSO)
+	@if ! egrep -qs "^ *$(SNMPLINE)" $(SNMPCONF); then \
+	echo " *"; \
+	echo " *  Add this line to $(SNMPCONF) to enable IPT-NETFLOW-MIB:"; \
+	echo " *"; \
+	echo " *     $(SNMPLINE)"; \
+	echo " *"; \
+	fi
+	@if killall -0 snmpd >/dev/null 2>&1; then \
+	  echo " *  (snmpd needs restart for changes to take effect.)"; \
+	else \
+	  echo " *  (snmpd is not started.)"; \
+	fi
 
 %_sh.o: libipt_NETFLOW.c
 	gcc -O2 -Wall -Wunused $(IPTABLES_CFLAGS) -fPIC -o $@ -c libipt_NETFLOW.c
@@ -48,10 +74,11 @@ version.h: ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	fi > version.h
 
 linstall: | libipt_NETFLOW.so libip6t_NETFLOW.so
+	@echo " *"
 	install -D libipt_NETFLOW.so $(DESTDIR)$(IPTABLES_MODULES)/libipt_NETFLOW.so
 	install -D libip6t_NETFLOW.so $(DESTDIR)$(IPTABLES_MODULES)/libip6t_NETFLOW.so
 
-install: minstall linstall
+install: minstall linstall @SNMPINSTALL@
 
 uninstall:
 	-rm -f $(DESTDIR)$(IPTABLES_MODULES)/libipt_NETFLOW.so

@@ -364,8 +364,8 @@ struct ipt_netflow_sock {
 	__be32 ipaddr;			// destination
 	unsigned short port;
 	atomic_t wmem_peak;		// sk_wmem_alloc peak value
-	unsigned int err_full;		// socket filled error
 	unsigned int err_connect;	// connect errors
+	unsigned int err_full;		// socket filled error
 	unsigned int err_other;		// other socket errors
 	unsigned int err_cberr;		// async errors, icmp
 	unsigned int pkt_exp;		// pkts expoted to this dest

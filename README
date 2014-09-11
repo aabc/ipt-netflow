@@ -32,6 +32,8 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
    * Deterministic (systematic count-based), random and hash Flow Sampling.
      With appropriate differences in support of v5, v9, and IPFIX.
 
+   * SNMP agent (for net-snmp) for remote management and monitoring.
+
    * Options Templates (v9/IPFIX) let export useful statistical,
      configurational, and informational records to collector.
      Such as metering, exporting, sampling stat and reliability stat, sampling 
@@ -65,7 +67,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 = INSTALLATION =
 ================
 
-   Four easy steps.
+   Five easy steps.
 
 ** 1. Prepare Kernel source
 
@@ -122,7 +124,23 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 
    c) Otherwise, for raw iptables source build it and make install.
 
-** 3. Now, to actually build the module run:
+** 3. Prepare net-snmp (optional)
+
+  In case you want to manage or monitor module performance via SNMP you
+  may install net-snmp. If you want to skip this step run configure
+  with --disable-snmp-agent option.
+
+  a) For Centos:
+
+      # yum install net-snmp net-snmp-devel
+
+  b) For Debian:
+
+      # apt-get install snmpd libsnmp-dev
+
+  c) Otherwise install net-snmp from www.net-snmp.org
+
+** 4. Now, to actually build the module run:
 
       ~/ipt-netflow# ./configure
       ~/ipt-netflow# make all install
@@ -143,7 +161,13 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
      c) If you have sources in non-standard places or configure isn't able to
      find something run ./configure --help to see how to specify paths manually.
 
-** 4. After this point you should be able to load module and
+     d) On Debian:
+       `gcc: error: unrecognized command line option `-fstack-protector-strong''
+       `Makefile:43: recipe for target 'snmp_NETFLOW.so' failed'
+     Solution is to install gcc-4.9: apt-get install gcc-4.9
+       then compile with: make CC=gcc-4.9
+
+** 5. After this point you should be able to load module and
      use -j NETFLOW target in your iptables. See next section.
 
 
@@ -160,6 +184,16 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
          done automatically because of `depmod', but if you don't do `make
          install' you'll need to load nf_conntrack manually.
          Read below for explanation of natevents.
+
+     --enable-sampler
+         enables flow sampler. Read below for explanation of its configuration
+	 option.
+
+     --enable-sampler=hash
+         additionally enables 'hash' sampler.
+
+     --disable-snmp-agent
+         disables building net-snmp agent module, which is enabled by default.
 
      --enable-snmp-rules
          enables SNMP-index conversion rules. Read below for explanation
@@ -183,13 +217,6 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
          Packets captured in PREROUTING and INPUT chains will be accounted as
          ingress flows(0), in OUTPUT and POSTROUTING as egress flows(1), and
          in FORWARD will have flowDirection set to undefined value 255.
-
-     --enable-sampler
-         enables flow sampler. Read below for explanation of its configuration
-	 option.
-
-     --enable-sampler=hash
-         additionally enables 'hash' sampler.
 
      --disable-aggregation
          disables aggregation rules (they are enabled by default).
@@ -220,6 +247,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
      options ipt_NETFLOW destination=127.0.0.1:2055 protocol=9 natevents=1
 
 2. Statistics is in /proc/net/stat/ipt_netflow
+   Machine readable statistics is in /proc/net/stat/ipt_netflow_snmp
    To view boring slab statistics: grep ipt_netflow /proc/slabinfo
 
 3. You can view parameters and control them via sysctl, example:
@@ -267,13 +295,81 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
    For details on how they are exported for different protocol versions see
    below.
 
+7. For SNMP support you will need to add this command into snmpd.conf to
+   enable IPT-NETFLOW-MIB in SNMP agent:
+
+      dlmod netflow /usr/lib/snmp/dlmod/snmp_NETFLOW.so
+
+   Restart snmpd for changes to take effect. Don't forget to properly configure
+   access control. Example simplest configuration may looks like (note that this
+   is whole /etc/snmp/snmpd.conf):
+
+      rocommunity public 127.0.0.1
+      dlmod netflow /usr/lib/snmp/dlmod/snmp_NETFLOW.so
+
+   Note, that this config will also allow _full_ read-only access to the whole
+   linux MIB. To install IPT-NETFLOW-MIB locally, copy file IPT-NETFLOW-MIB.my
+   into ~/.snmp/mibs/
+   To check that MIB is installed well you may issue:
+
+     $ snmptranslate -m IPT-NETFLOW-MIB -IR -Tp iptNetflowMIB
+
+   This should output IPT-NETFLOW-MIB in tree form.
+
+   To check that snmp agent is working well issue:
+
+     $ snmpwalk -v 1 -c public 127.0.0.1 -m IPT-NETFLOW-MIB iptNetflowMIB
+
+   Should output full MIB. If MIB is not installed try:
+
+     $ snmpget -v 1 -c public 127.0.0.1 .1.3.6.1.4.1.37476.9000.10.1.1.1.1.0
+
+   Which should output STRING: "ipt_NETFLOW".
+
+   MIB profides access to very similar statistics that you have in
+   /proc/net/stat/ipt_netflow, you can read description of objects in
+   text file IPT-NETFLOW-MIB.my
+
+   If you want to access to SNMP stat in machine readable form for your
+   scripts there is file /proc/net/stat/ipt_netflow_snmp
+
+   Note: Using of SNMP v2c or v3 is mandatory for most tables, because
+   this MIB uses 64-bit counters (Counter64) which is not supported in old
+   SNMP v1. You shoudl understand that 32-bit counter will wrap on 10Gbit
+   traffic in just 3.4 seconds! So, always pass option `-v2c' or `-v3'
+   to net-snmp utils. Or, for example, configure option `defVersion 2c'
+   in ~/.snmp/snmp.conf  You can also have `defCommunity public' ov v3
+   auth parameters (defSecurityName, defSecurityLevel, defPassphrase)
+   set there (man snmp.conf).
+
+   Examples for dumping typical IPT-NETFLOW-MIB objects:
+
+   - Module info (similar to modinfo, SNMPv1 is ok for following two objects):
+
+     $ snmpwalk -v 1 -c public 127.0.0.1 -m IPT-NETFLOW-MIB iptNetflowModule
+
+   - Read-write sysctl-like parameters (yes, they are writable via snmpset, you
+     may need to configure write access to snmpd, though):
+
+     $ snmpwalk -v 1 -c public 127.0.0.1 -m IPT-NETFLOW-MIB iptNetflowSysctl
+
+   - Global performance stat of the module (note -v2c, because rest of the
+     objects require SNMP v2c or SNMP v3):
+
+     $ snmpwalk -v2c -c public 127.0.0.1 -m IPT-NETFLOW-MIB iptNetflowTotals
+
+   - Per-CPU (metering) and per-socket (exporting) statistics in table format:
+
+     $ snmptable -v2c -c public 127.0.0.1 -m IPT-NETFLOW-MIB iptNetflowCpuTable
+     $ snmptable -v2c -c public 127.0.0.1 -m IPT-NETFLOW-MIB iptNetflowSockTable
+
 
 ===========
 = OPTIONS =
 ===========
 
    Options can be passed as parameters to module or changed dynamically
-   via  sysctl net.netflow
+   via  sysctl net.netflow  or  IPT-NETFLOW-MIB::iptNetflowSysctl
 
    protocol=5
      - what version of NetFlow protocol to use. Default is 5.
@@ -435,8 +531,8 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
   Statistics is your friend to fine tune and understand netflow module
   performance.
 
-  To see stat:
-  # cat /proc/net/stat/ipt_netflow
+  To see stat in human readable form:
+    # cat /proc/net/stat/ipt_netflow
 
   How to interpret the data:
 

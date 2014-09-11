@@ -10,6 +10,8 @@ elif [ "$1" = all ]; then
   exit 1
 fi
 
+smilint IPT-NETFLOW-MIB.my
+
 cfg=()
 echo -n Testing for:
 for k in "$@"; do
@@ -21,6 +23,7 @@ echo
 
 readarray -t opts <<EOF
   --disable-aggregation
+  --disable-snmp-agent
   --enable-natevents
   --enable-snmp-rules
   --enable-macaddress
