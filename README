@@ -389,9 +389,11 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
    sampler=deterministic:123
    sampler=random:123
    sampler=hash:123
-     - enables Flow Sampling. To disable set to the empty value. Note, that
-       this is flow sampling (as of RFC 7014), not packet sampling (PSAMP).
-       There is two standard sampling modes:
+     - enables Flow Sampling. To disable set to the empty value or to `0'.
+       Note, that this is flow sampling (as of RFC 7014), not packet
+       sampling (PSAMP).
+
+       There is three sampling modes:
 
          deterministic:  select each N-th observed flow; in IPFIX this mode
                          is called Systematic count-based Sampling;
@@ -522,6 +524,9 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
      - Minimal interval between flow export scans. Sometimes could be useful
        to reduce load on exporting CPU by increasing this interval. Value are
        in kernel jiffies units (which is x/HZ seconds).
+
+   promisc = 1
+     - Enable promisc hack. See README.promisc Solution.1 for details.
 
 
 ====================

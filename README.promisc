@@ -38,6 +38,13 @@ If you wish to account with ipt-netflow module traffic mirrored on switch you ma
   let iptables to see promisc traffic. That traffic will not be routed anywhere
   and discarded just after passing PREROUTING chain.
 
+   Do not enable this option if you have kernel already patched with promisc
+  patch, as this may cause double accounting. Just keep it disabled or remove
+  the patch. Promisc patching is completely custom and non-standard, so if you
+  did not apply it - you are most probably safe to use promisc option. But, if
+  in doubt - measure if module seeing traffic in raw/PREROUTING, if it isn't - you
+  don't have the patch applied and certainly safe to use the option.
+
 
 
     **************
@@ -86,6 +93,7 @@ If you wish to account with ipt-netflow module traffic mirrored on switch you ma
 Voila.
 
 ps. For Debian Squeeze instructions look at raw_promisc_debian_squeeze6.patch
+
 
 
     **************
