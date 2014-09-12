@@ -65,7 +65,7 @@ struct snmp_vars sysctls[] = {
 };
 
 struct snmp_vars totals[] = {
-	{1,  ASN_GAUGE,     "inBitRate"},
+	{1,  ASN_COUNTER64, "inBitRate"},
 	{2,  ASN_GAUGE,     "inPacketRate"},
 	{3,  ASN_COUNTER64, "inFlows"},
 	{4,  ASN_COUNTER64, "inPackets"},
@@ -74,7 +74,7 @@ struct snmp_vars totals[] = {
 	{7,  ASN_GAUGE,     "hashMemory"},
 	{8,  ASN_GAUGE,     "hashFlows"},
 	{9,  ASN_GAUGE,     "hashPackets"},
-	{10, ASN_GAUGE,     "hashBytes"},
+	{10, ASN_COUNTER64, "hashBytes"},
 	{11, ASN_COUNTER64, "dropPackets"},
 	{12, ASN_COUNTER64, "dropBytes"},
 	{13, ASN_GAUGE,     "outByteRate"},

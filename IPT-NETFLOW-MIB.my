@@ -8,11 +8,13 @@ IMPORTS
 	FROM SNMPv2-SMI
     OBJECT-GROUP, MODULE-COMPLIANCE
 	FROM SNMPv2-CONF
+    CounterBasedGauge64
+	FROM HCNUM-TC
     TEXTUAL-CONVENTION, DisplayString, DateAndTime
 	FROM SNMPv2-TC;
 
 iptNetflowMIB MODULE-IDENTITY
-    LAST-UPDATED "201409110000Z"
+    LAST-UPDATED "201409120000Z"
     ORGANIZATION "ABC"
     CONTACT-INFO
 	"Author's email: abc at telekom.ru
@@ -29,8 +31,8 @@ iptNetflowMIB MODULE-IDENTITY
 
 	License: GPL"
 
-       REVISION	"201409110000Z"
-       DESCRIPTION "Initial revision."
+    REVISION	"201409110000Z"
+    DESCRIPTION "Initial revision."
 
     ::= { enterprises 37476 9000 10 1 }
 
@@ -215,7 +217,7 @@ scan-min OBJECT-TYPE
 iptNetflowTotals	OBJECT IDENTIFIER ::= { iptNetflowStatistics 1 }
 
 inBitRate OBJECT-TYPE
-    SYNTAX      Gauge32
+    SYNTAX      CounterBasedGauge64
     UNITS       "bits/second"
     MAX-ACCESS  read-only
     STATUS      current
@@ -299,16 +301,16 @@ hashPackets OBJECT-TYPE
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-	"Packets currently residing in the hash table."
+	"Packets in flows currently residing in the hash table."
 ::= { iptNetflowTotals 9 }
 
 hashBytes OBJECT-TYPE
-    SYNTAX      Gauge32
+    SYNTAX      CounterBasedGauge64
     UNITS       "bytes"
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
-	"Bytes accounted residing in the hash table."
+	"Bytes in flows currently residing in the hash table."
 ::= { iptNetflowTotals 10 }
 
 dropPackets OBJECT-TYPE
