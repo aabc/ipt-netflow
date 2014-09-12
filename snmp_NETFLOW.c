@@ -296,7 +296,7 @@ static int iptNetflowModule_handler(
 	struct snmp_vars *sys;
 	oid obj;
 	char buf[225];
-	char *p;
+	char *p = NULL;
 	long value;
 
 	obj = request->requestvb->name[request->requestvb->name_length - 2];

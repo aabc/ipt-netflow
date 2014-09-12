@@ -41,7 +41,7 @@ clean: mclean lclean
 	-rm -f *.so *.o modules.order version.h
 
 snmp_NETFLOW.so: snmp_NETFLOW.c
-	$(CC) `net-snmp-config --cflags` -fPIC -shared -g -O0 -o $@ $< `net-snmp-config --libs`
+	$(CC) `net-snmp-config --cflags` -fPIC -shared -o $@ $< `net-snmp-config --libs`
 
 sinstall: | snmp_NETFLOW.so IPT-NETFLOW-MIB.my
 	@echo " *"
