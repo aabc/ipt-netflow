@@ -310,6 +310,10 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
    Note, that this config will also allow _full_ read-only access to the whole
    linux MIB. To install IPT-NETFLOW-MIB locally, copy file IPT-NETFLOW-MIB.my
    into ~/.snmp/mibs/
+
+   * Detailed example of SNMP configuration is there:
+   * https://github.com/aabc/ipt-netflow/wiki/Configuring-SNMP-access
+
    To check that MIB is installed well you may issue:
 
      $ snmptranslate -m IPT-NETFLOW-MIB -IR -Tp iptNetflowMIB
@@ -326,7 +330,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 
    Which should output STRING: "ipt_NETFLOW".
 
-   MIB profides access to very similar statistics that you have in
+   MIB provides access to very similar statistics that you have in
    /proc/net/stat/ipt_netflow, you can read description of objects in
    text file IPT-NETFLOW-MIB.my
 
@@ -335,7 +339,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 
    Note: Using of SNMP v2c or v3 is mandatory for most tables, because
    this MIB uses 64-bit counters (Counter64) which is not supported in old
-   SNMP v1. You shoudl understand that 32-bit counter will wrap on 10Gbit
+   SNMP v1. You should understand that 32-bit counter will wrap on 10Gbit
    traffic in just 3.4 seconds! So, always pass option `-v2c' or `-v3'
    to net-snmp utils. Or, for example, configure option `defVersion 2c'
    in ~/.snmp/snmp.conf  You can also have `defCommunity public' ov v3
