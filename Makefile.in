@@ -22,7 +22,7 @@ all: ipt_NETFLOW.ko libipt_NETFLOW.so libip6t_NETFLOW.so @SNMPTARGET@
 
 ipt_NETFLOW.ko: version.h ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	@echo Compiling for kernel $(KVERSION)
-	make -C $(KDIR) M=$(CURDIR) modules
+	make -C $(KDIR) M=$(CURDIR) modules CONFIG_DEBUG_INFO=y
 	@touch $@
 sparse: | version.h ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	@rm -f ipt_NETFLOW.ko ipt_NETFLOW.o
