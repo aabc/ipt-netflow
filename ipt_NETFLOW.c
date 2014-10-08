@@ -1297,9 +1297,14 @@ unlock:
 #define BEFORE2632(x,y)
 #endif
 
-#ifndef CONFIG_GRKERNSEC
-#define ctl_table_no_const struct ctl_table
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
+#define ctl_table struct ctl_table
 #endif
+
+#ifndef CONFIG_GRKERNSEC
+#define ctl_table_no_const ctl_table
+#endif
+
 /* sysctl /proc/sys/net/netflow */
 static int hsize_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
@@ -1548,7 +1553,7 @@ static struct ctl_table_header *netflow_sysctl_header;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
 #define _CTL_NAME(x) .ctl_name = x,
-static void ctl_table_renumber(struct ctl_table *table)
+static void ctl_table_renumber(ctl_table *table)
 {
 	int c;
 
@@ -1559,7 +1564,7 @@ static void ctl_table_renumber(struct ctl_table *table)
 #define _CTL_NAME(x)
 #define ctl_table_renumber(x)
 #endif
-static struct ctl_table netflow_sysctl_table[] = {
+static ctl_table netflow_sysctl_table[] = {
 	{
 		.procname	= "active_timeout",
 		.mode		= 0644,
@@ -1691,7 +1696,7 @@ static struct ctl_table netflow_sysctl_table[] = {
 };
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
-static struct ctl_table netflow_sysctl_root[] = {
+static ctl_table netflow_sysctl_root[] = {
 	{
 		_CTL_NAME(33)
 		.procname	= "netflow",
@@ -1701,7 +1706,7 @@ static struct ctl_table netflow_sysctl_root[] = {
 	{ }
 };
 
-static struct ctl_table netflow_net_table[] = {
+static ctl_table netflow_net_table[] = {
 	{
 		.ctl_name	= CTL_NET,
 		.procname	= "net",

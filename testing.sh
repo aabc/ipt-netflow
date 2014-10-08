@@ -6,7 +6,7 @@ if [ "$1" = "" ]; then
   echo Maintainer only tool.
   exit 1
 elif [ "$1" = all ]; then
-  exec bash $0 linux-2.6.18 centos5 linux-3.11.2 centos6 linux-3.4.66 linux-3.9.11 centos7 linux-3.14 linux-3.16
+  exec bash $0 linux-2.6.18 centos5 linux-3.11.2 centos6 linux-3.4.66 linux-3.9.11 centos7 linux-3.14 linux-3.17
   exit 1
 fi
 
