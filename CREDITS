@@ -1,0 +1,85 @@
+License is GPL:
+
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+Sign-off rule is that of the Linux kernel:
+
+  Developer's Certificate of Origin 1.1
+
+  By making a contribution to this project, I certify that:
+
+  (a) The contribution was created in whole or in part by me and I
+      have the right to submit it under the open source license
+      indicated in the file; or
+
+  (b) The contribution is based upon previous work that, to the best
+      of my knowledge, is covered under an appropriate open source
+      license and I have the right under that license to submit that
+      work with modifications, whether created in whole or in part
+      by me, under the same open source license (unless I am
+      permitted to submit under a different license), as indicated
+      in the file; or
+
+  (c) The contribution was provided directly to me by some other
+      person who certified (a), (b) or (c) and I have not modified
+      it.
+
+  (d) I understand and agree that this project and the contribution
+      are public and that a record of the contribution (including all
+      personal information I submit with it, including my sign-off) is
+      maintained indefinitely and may be redistributed consistent with
+      this project or the open source license(s) involved.
+
+
+Principal author and project maintainer:
+
+   ABC <abc@telekom.ru> [2008-2014]
+
+
+Patch authors and submitters:
+
+   Ilya Evseev [2010]
+   spizer [2010]
+   Eric W. Biederman [2010]
+   Giedrius Liubavičius [2010]
+   Igor Alov [2010]
+   Alexey Osipov [2011]
+   Pavel Boldin [2012]
+   Alexander Demenshin [2013]
+   uropek [2013]
+   shaman [2013]
+   Jeremy Drake [2013]
+
+
+Reference or prototype code authors:
+
+   Valentin V. Yankin [2011]
+
+
+Project supporters:
+
+   Summa Telecom [2014]
+
+
+Extensive testing and other help:
+
+   Alexander (shulik) [2013]
+   Igor Diakonov @ Summa Telecom [2014]
+   Yuriy Dolgoruk @ Summa Telecom [2014]
+   Andrew Savin @ Starlink [2014]
+
+
+(Send your names, emails, or nicks to add to the list.)
+
