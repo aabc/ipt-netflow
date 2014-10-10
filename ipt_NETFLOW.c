@@ -646,6 +646,8 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	if (protocol >= 9)
 		seq_printf(seq, ", refresh-rate %u, timeout-rate %u, (templates %d, active %d).\n",
 		    refresh_rate, timeout_rate, template_ids - FLOWSET_DATA_FIRST, tpl_count);
+	else
+		seq_printf(seq, "\n");
 
 	seq_printf(seq, "Timeouts: active %ds, inactive %ds. Maxflows %u\n",
 	    active_timeout,
