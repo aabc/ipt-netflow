@@ -2549,27 +2549,28 @@ struct base_template {
 };
 
 /* Data Templates */
-#define BTPL_BASE	0x00000001	/* base stat */
-#define BTPL_IP4	0x00000002	/* IPv4 */
-#define BTPL_MASK4	0x00000004	/* Aggregated */
-#define BTPL_PORTS	0x00000008	/* UDP&TCP */
-#define BTPL_IP6	0x00000010	/* IPv6 */
-#define BTPL_ICMP	0x00000020	/* ICMP */
-#define BTPL_IGMP	0x00000040	/* IGMP */
-#define BTPL_IPSEC	0x00000080	/* AH&ESP */
-#define BTPL_NAT4	0x00000100	/* NAT IPv4 */
-#define BTPL_LABEL6	0x00000200	/* IPv6 flow label */
-#define BTPL_IP4OPTIONS	0x00000400	/* IPv4 Options */
-#define BTPL_IP6OPTIONS	0x00000800	/* IPv6 Options */
-#define BTPL_TCPOPTIONS	0x00001000	/* TCP Options */
-#define BTPL_MAC	0x00002000	/* MAC addresses */
-#define BTPL_VLAN9	0x00004000	/* outer VLAN for v9 */
-#define BTPL_VLANX	0x00008000	/* outer VLAN for IPFIX */
-#define BTPL_VLANI	0x00010000	/* inner VLAN (IPFIX) */
-#define BTPL_ETHERTYPE	0x00020000	/* ethernetType */
-#define BTPL_DIRECTION	0x00040000	/* flowDirection */
-#define BTPL_SAMPLERID	0x00080000	/* samplerId (v9) */
-#define BTPL_SELECTORID	0x00100000	/* selectorId (IPFIX) */
+#define BTPL_BASE9	0x00000001	/* netflow base stat */
+#define BTPL_BASEIPFIX	0x00000002	/* ipfix base stat */
+#define BTPL_IP4	0x00000004	/* IPv4 */
+#define BTPL_MASK4	0x00000008	/* Aggregated */
+#define BTPL_PORTS	0x00000010	/* UDP&TCP */
+#define BTPL_IP6	0x00000020	/* IPv6 */
+#define BTPL_ICMP	0x00000040	/* ICMP */
+#define BTPL_IGMP	0x00000080	/* IGMP */
+#define BTPL_IPSEC	0x00000100	/* AH&ESP */
+#define BTPL_NAT4	0x00000200	/* NAT IPv4 */
+#define BTPL_LABEL6	0x00000400	/* IPv6 flow label */
+#define BTPL_IP4OPTIONS	0x00000800	/* IPv4 Options */
+#define BTPL_IP6OPTIONS	0x00001000	/* IPv6 Options */
+#define BTPL_TCPOPTIONS	0x00002000	/* TCP Options */
+#define BTPL_MAC	0x00004000	/* MAC addresses */
+#define BTPL_VLAN9	0x00008000	/* outer VLAN for v9 */
+#define BTPL_VLANX	0x00010000	/* outer VLAN for IPFIX */
+#define BTPL_VLANI	0x00020000	/* inner VLAN (IPFIX) */
+#define BTPL_ETHERTYPE	0x00040000	/* ethernetType */
+#define BTPL_DIRECTION	0x00080000	/* flowDirection */
+#define BTPL_SAMPLERID	0x00100000	/* samplerId (v9) */
+#define BTPL_SELECTORID	0x00200000	/* selectorId (IPFIX) */
 #define BTPL_OPTION	0x80000000	/* Options Template */
 #define BTPL_MAX	32
 /* Options Templates */
@@ -2585,7 +2586,7 @@ struct base_template {
 #define OTPL_SEL_STATH	OTPL(9)		/* OTPL_SEL_STAT, except selectorIDTotalFlowsObserved */
 #define OTPL_IFNAMES	OTPL(10)
 
-static struct base_template template_base = {
+static struct base_template template_base_9 = {
 	.types = {
 		INPUT_SNMP,
 		OUTPUT_SNMP,
@@ -2595,6 +2596,19 @@ static struct base_template template_base = {
 		LAST_SWITCHED,
 		PROTOCOL,
 		TOS,
+		0
+	}
+};
+static struct base_template template_base_ipfix = {
+	.types = {
+		ingressInterface,
+		egressInterface,
+		packetDeltaCount,
+		octetDeltaCount,
+		flowStartMilliseconds,
+		flowEndMilliseconds,
+		protocolIdentifier,
+		ipClassOfService,
 		0
 	}
 };
@@ -2952,8 +2966,10 @@ static struct data_template *get_template(const unsigned int tmask)
 			tlist[tnum++] = &template_nat4;
 		if (tmask & BTPL_PORTS)
 			tlist[tnum++] = &template_ports;
-		if (tmask & BTPL_BASE)
-			tlist[tnum++] = &template_base;
+		if (tmask & BTPL_BASE9)
+			tlist[tnum++] = &template_base_9;
+		else if (tmask & BTPL_BASEIPFIX)
+			tlist[tnum++] = &template_base_ipfix;
 		if (tmask & BTPL_TCPOPTIONS)
 			tlist[tnum++] = &template_tcpoptions;
 		if (tmask & BTPL_ICMP)
@@ -3184,6 +3200,36 @@ static inline void put_unaligned_be24(u32 val, unsigned char *p)
 	put_unaligned_be16(val, p);
 }
 
+static struct {
+	s64		ms;	 /* this much abs milliseconds */
+	unsigned long	jiffies; /* is that much jiffies */
+} jiffies_base;
+
+/* prepare for jiffies_to_ms_abs() batch */
+static void set_jiffies_base(void)
+{
+	ktime_t ktime;
+
+	/* try to get them atomically */
+	local_bh_disable();
+	jiffies_base.jiffies = jiffies;
+	ktime = ktime_get_real();
+	local_bh_enable();
+
+	jiffies_base.ms = ktime_to_ms(ktime);
+}
+
+/* convert jiffies to ktime and rebase to unix epoch */
+static inline s64 jiffies_to_ms_abs(unsigned long j)
+{
+	long jdiff = jiffies_base.jiffies - j;
+
+	if (likely(jdiff >= 0))
+		return jiffies_base.ms - (s64)jiffies_to_msecs(jdiff);
+	else
+		return jiffies_base.ms + (s64)jiffies_to_msecs(-jdiff);
+}
+
 #ifndef WARN_ONCE
 #define WARN_ONCE(x,fmt...) ({ if (x) printk(KERN_WARNING fmt); })
 #endif
@@ -3196,6 +3242,8 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 	case IN_PKTS:	     put_unaligned_be32(nf->nr_packets, ptr); break;
 	case FIRST_SWITCHED: put_unaligned_be32(jiffies_to_msecs(nf->nf_ts_first), ptr); break;
 	case LAST_SWITCHED:  put_unaligned_be32(jiffies_to_msecs(nf->nf_ts_last), ptr); break;
+	case flowStartMilliseconds: put_unaligned_be64(jiffies_to_ms_abs(nf->nf_ts_first), ptr); break;
+	case flowEndMilliseconds:   put_unaligned_be64(jiffies_to_ms_abs(nf->nf_ts_last), ptr); break;
 	case IPV4_SRC_ADDR:  put_unaligned(nf->tuple.src.ip, (__be32 *)ptr); break;
 	case IPV4_DST_ADDR:  put_unaligned(nf->tuple.dst.ip, (__be32 *)ptr); break;
 	case IPV4_NEXT_HOP:  put_unaligned(nf->nh.ip, (__be32 *)ptr); break;
@@ -3364,14 +3412,21 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 {
 	unsigned char *ptr;
 	struct data_template *tpl;
-	unsigned int tpl_mask = BTPL_BASE;
+	unsigned int tpl_mask;
 	int i;
 
 	if (unlikely(debug > 2))
 		printk(KERN_INFO "adding flow to export (%d)\n",
 		    pdu_data_records + pdu_tpl_records);
 
-	/* build template key */
+	/* build the template key */
+#ifdef CONFIG_NF_NAT_NEEDED
+	if (nf->nat) {
+		tpl_mask = BTPL_NAT4;
+		goto ready;
+	}
+#endif
+	tpl_mask = (protocol == 9)? BTPL_BASE9 : BTPL_BASEIPFIX;
 	if (likely(nf->tuple.l3proto == AF_INET)) {
 		tpl_mask |= BTPL_IP4;
 		if (unlikely(nf->options))
@@ -3423,15 +3478,14 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 	if (nf->hooknumx)
 		tpl_mask |= BTPL_DIRECTION;
 #endif
-#ifdef CONFIG_NF_NAT_NEEDED
-	if (nf->nat)
-		tpl_mask = BTPL_NAT4; /* note '=' */
-#endif
 #ifdef ENABLE_SAMPLER
 	if (get_sampler_mode())
 		tpl_mask |= (protocol == 9)? BTPL_SAMPLERID : BTPL_SELECTORID;
 #endif
 
+#ifdef CONFIG_NF_NAT_NEEDED
+ready:
+#endif
 	ptr = alloc_record_key(tpl_mask, &tpl);
 	if (unlikely(!ptr)) {
 		NETFLOW_STAT_ADD(pkt_lost, nf->nr_packets);
@@ -4035,6 +4089,7 @@ static int netflow_scan_and_export(const int flush)
 #ifdef ENABLE_SAMPLER
 	mode = get_sampler_mode();
 #endif
+	set_jiffies_base();
 	list_for_each_entry_safe(nf, tmp, &export_list, flows_list) {
 		NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
 		NETFLOW_STAT_ADD(traf_out, nf->nr_bytes);
