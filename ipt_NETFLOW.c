@@ -332,10 +332,10 @@ static long long sec_prate = 0, sec_brate = 0;
 static long long min_prate = 0, min_brate = 0;
 static long long min5_prate = 0, min5_brate = 0;
 #define METRIC_DFL 100
-static unsigned int metric = METRIC_DFL,
-		    min15_metric = METRIC_DFL,
-		    min5_metric = METRIC_DFL,
-		    min_metric = METRIC_DFL; /* hash metrics */
+static int metric = METRIC_DFL,
+	   min15_metric = METRIC_DFL,
+	   min5_metric = METRIC_DFL,
+	   min_metric = METRIC_DFL; /* hash metrics */
 
 static int set_hashsize(int new_size);
 static void destination_removeall(void);
@@ -458,8 +458,9 @@ static inline unsigned short sampler_nf_v5(void)
 #endif
 
 #ifdef CONFIG_PROC_FS
+static inline int ABS(int x) { return x >= 0 ? x : -x; }
 #define SAFEDIV(x,y) ((y)? ({ u64 __tmp = x; do_div(__tmp, y); (int)__tmp; }) : 0)
-#define FFLOAT(x, prec) (int)(x) / prec, (int)(x) % prec
+#define FFLOAT(x, prec) (int)(x) / prec, ABS((int)(x) % prec)
 static int snmp_seq_show(struct seq_file *seq, void *v)
 {
 	int cpu;
@@ -4170,7 +4171,10 @@ static void netflow_work_fn(struct work_struct *dummy)
 #define NUMSAMPLES(minutes) (minutes * 60 / SAMPLERATE)
 #define _A(v, m) (v) * (1024 * 2 / (NUMSAMPLES(m) + 1)) >> 10
 // x * (1024 / y) >> 10 is because I can not just divide long long integer
+
+// Note that CALC_RATE arguments should never be unsigned.
 #define CALC_RATE(ewma, cur, minutes) ewma += _A(cur - ewma, minutes)
+
 // calculate EWMA throughput rate for whole module
 static void rate_timer_calc(unsigned long dummy)
 {
