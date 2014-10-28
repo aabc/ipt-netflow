@@ -239,7 +239,7 @@ MODULE_PARM_DESC(maxflows, "maximum number of flows");
 static int peakflows = 0;
 static unsigned long peakflows_at; /* jfffies */
 
-#ifndef DISABLE_AGGR
+#ifdef ENABLE_AGGR
 #define AGGR_SIZE 1024
 static char aggregation_buf[AGGR_SIZE] = "";
 static char *aggregation = aggregation_buf;
@@ -595,7 +595,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	int cpu;
 	struct ipt_netflow_stat t = { 0 };
 	struct ipt_netflow_sock *usock;
-#ifndef DISABLE_AGGR
+#ifdef ENABLE_AGGR
 	struct netflow_aggr_n *aggr_n;
 	struct netflow_aggr_p *aggr_p;
 #endif
@@ -603,7 +603,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	int peak = (jiffies - peakflows_at) / HZ;
 
 	seq_printf(seq, "ipt_NETFLOW " IPT_NETFLOW_VERSION ", srcversion %s;"
-#ifndef DISABLE_AGGR
+#ifdef ENABLE_AGGR
 	    " aggr"
 #endif
 #ifdef ENABLE_DEBUGFS
@@ -831,7 +831,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	}
 	mutex_unlock(&sock_lock);
 
-#ifndef DISABLE_AGGR
+#ifdef ENABLE_AGGR
 	read_lock_bh(&aggr_lock);
 	snum = 0;
 	list_for_each_entry(aggr_n, &aggr_n_list, list) {
@@ -1377,7 +1377,7 @@ static int destination_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 	return ret;
 }
 
-#ifndef DISABLE_AGGR
+#ifdef ENABLE_AGGR
 static int aggregation_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
@@ -1609,7 +1609,7 @@ static ctl_table netflow_sysctl_table[] = {
 		.maxlen		= sizeof(destination_buf),
 		.proc_handler	= &destination_procctl,
 	},
-#ifndef DISABLE_AGGR
+#ifdef ENABLE_AGGR
 	{
 		.procname	= "aggregation",
 		.mode		= 0644,
@@ -2125,7 +2125,7 @@ static int add_destinations(char *ptr)
 	return 0;
 }
 
-#ifndef DISABLE_AGGR
+#ifdef ENABLE_AGGR
 static void aggregation_remove(struct list_head *list)
 {
 	write_lock_bh(&aggr_lock);
@@ -4613,7 +4613,7 @@ static unsigned int netflow_target(
 	struct ipt_netflow_tuple tuple;
 	struct ipt_netflow *nf;
 	__u8 tcp_flags;
-#ifndef DISABLE_AGGR
+#ifdef ENABLE_AGGR
 	struct netflow_aggr_n *aggr_n;
 	struct netflow_aggr_p *aggr_p;
 #endif
@@ -4833,7 +4833,7 @@ do_protocols:
 	       	}
 	} /* not fragmented */
 
-#ifndef DISABLE_AGGR
+#ifdef ENABLE_AGGR
 	/* aggregate networks */
 	read_lock(&aggr_lock);
 	if (family == AF_INET) {
@@ -5330,7 +5330,7 @@ static int __init ipt_netflow_init(void)
 	if (add_destinations(destination) < 0)
 		goto err_free_sysctl;
 
-#ifndef DISABLE_AGGR
+#ifdef ENABLE_AGGR
 	if (!aggregation)
 		aggregation = aggregation_buf;
 	if (aggregation != aggregation_buf) {
@@ -5390,7 +5390,7 @@ err_stop_timer:
 	del_timer_sync(&rate_timer);
 	free_templates();
 	destination_removeall();
-#ifndef DISABLE_AGGR
+#ifdef ENABLE_AGGR
 	aggregation_remove(&aggr_n_list);
 	aggregation_remove(&aggr_p_list);
 #endif
@@ -5446,7 +5446,7 @@ static void __exit ipt_netflow_fini(void)
 
 	free_templates();
 	destination_removeall();
-#ifndef DISABLE_AGGR
+#ifdef ENABLE_AGGR
 	aggregation_remove(&aggr_n_list);
 	aggregation_remove(&aggr_p_list);
 #endif

@@ -22,8 +22,8 @@ done
 echo
 
 readarray -t opts <<EOF
-  --disable-aggregation
   --disable-snmp-agent
+  --enable-aggregation
   --enable-natevents
   --enable-snmp-rules
   --enable-macaddress

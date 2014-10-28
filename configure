@@ -258,7 +258,7 @@ show_help() {
   echo "  --enable-direction     enables flowDirection(61) Element"
   echo "  --enable-sampler       enables Flow Sampling"
   echo "  --enable-sampler=hash  enables Hash sampler"
-  echo "  --disable-aggregation  disables aggregation rules"
+  echo "  --enable-aggregation   enables aggregation rules"
   echo "  --enable-promisc       enables promisc hack"
   echo "  --disable-snmp-agent   disables net-snmp agent"
   exit 0
@@ -287,7 +287,7 @@ do
     --enable-direc*) KOPTS="$KOPTS -DENABLE_DIRECTION" ;;
     --enable-sampl*hash) KOPTS="$KOPTS -DENABLE_SAMPLER -DSAMPLING_HASH" ;;
     --enable-sampl*) KOPTS="$KOPTS -DENABLE_SAMPLER" ;;
-    --disable-aggr*) KOPTS="$KOPTS -DDISABLE_AGGR" ;;
+    --enable-aggr*)  KOPTS="$KOPTS -DENABLE_AGGR" ;;
     --enable-promi*) KOPTS="$KOPTS -DENABLE_PROMISC" ;;
     --enable-snmp-r*)  KOPTS="$KOPTS -DENABLE_SNMP" ;;
     --disable-snmp-a*)   SKIPSNMP=1 ;;

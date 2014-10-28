@@ -218,9 +218,8 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
          ingress flows(0), in OUTPUT and POSTROUTING as egress flows(1), and
          in FORWARD will have flowDirection set to undefined value 255.
 
-     --disable-aggregation
-         disables aggregation rules (they are enabled by default).
-         Read below for explanation of aggregation.
+     --enable-aggregation
+         enables aggregation rules. Read below for explanation of aggregation.
 
      --enable-debugfs
          enabled debugfs interface to active flows list. NB! This is for debug
