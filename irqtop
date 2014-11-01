@@ -10,6 +10,7 @@ require 'stringio'
 delay = 5
 @imode = :both
 @omode = :table
+@color = true
 
 GetoptLong.new(
     ["--help",     "-h", GetoptLong::NO_ARGUMENT],
@@ -66,6 +67,7 @@ def read_table(tag, file)
     stat = stat.scan(/\d+/)
     @irqs << [tag, irq, desc]
     stat.each_with_index do |val, i|
+      # interruptsN, 's|i', irq'N', 'cpuX', 'descr...'
       @stats << [val.to_i, tag, irq, @cpus[i], desc.strip]
     end
   end
@@ -91,6 +93,7 @@ def read_affinity
 end
 
 def grab_stat
+  # @h[istorical]
   @hstats = @stats
   @hcstat = @cstat
   @hts = @ts
@@ -115,10 +118,12 @@ def calc_speed
   end
   # output
   @h = {}
-  @t = Hash.new(0)
+  @t = Hash.new(0) # rate per cpu
+  @w = Hash.new(0) # irqs per irqN
   @s = @stats.map do |v, t, i, c, d|
     rate = (v - h[[t, i, c]]) / dt
     @t[c] += rate if t == 'i'
+    @w[[t, i]] += (v - h[[t, i, c]])
     @h[[t, i, c]] = rate
     [rate, v, t, i, c, d]
   end
@@ -146,6 +151,7 @@ def show_top
   end
 end
 
+@ifilter = {}
 def show_interrupts
   maxlen = 7
   @irqs.reverse! if @reverse
@@ -168,6 +174,13 @@ def show_interrupts
   rej = 'i' if @imode == :soft
   @irqs.each do |t, i, desc|
     next if t == rej
+
+    # include incrementally and all eth
+    unless @ifilter[[t, i]] || @showall
+      next unless @w[[t, i]] > 0 || desc =~ /eth/
+      @ifilter[[t, i]] = true
+    end
+
     print "%s %*s: " % [t.to_s, maxlen, i.slice(0, maxlen)]
     @icpus.each do |c|
       cpu = c[/\d+/].to_i
@@ -215,6 +228,8 @@ def show_help
   puts "    t     Flat top display mode"
   puts "    x     Table display mode"
   puts "    r     Reverse rows order"
+  puts "    c     Toggle colors (for eth)"
+  puts "    a     Show lines with zero rate (all)"
   puts "    h,?   This help screen"
   puts "    q     Quit."
   puts "  Any other key will update display."
@@ -239,9 +254,14 @@ if @batch
 end
 
 Curses.init_screen
+Curses.start_color
 Curses.cbreak
 Curses.noecho
 Curses.nonl
+Curses.init_pair(1, Curses::COLOR_GREEN,  Curses::COLOR_BLACK);
+Curses.init_pair(2, Curses::COLOR_YELLOW, Curses::COLOR_BLACK);
+Curses.init_pair(3, Curses::COLOR_CYAN,   Curses::COLOR_BLACK);
+Curses.init_pair(4, Curses::COLOR_RED,    Curses::COLOR_BLACK);
 $stdscr = Curses.stdscr
 $stdscr.keypad(true)
 hostname = `hostname`.strip
@@ -252,8 +272,26 @@ def curses_output
   $stdout.rewind
   text = $stdout.read
   $stdout = STDOUT
-  $stdscr.setpos(0, 0)
-  $stdscr.addstr(choplines(text))
+  txt = choplines(text)
+  if @color
+    txt.split("\n", -1).each_with_index do |li, i|
+      $stdscr.setpos(i, 0)
+      atr = nil
+      if li =~ /-rx-/
+	atr = Curses.color_pair(1)
+      elsif li =~ /-tx-/
+	atr = Curses.color_pair(2)
+      elsif li =~ /\beth/
+	atr = Curses.color_pair(3)
+      end
+      $stdscr.attron(atr) if atr
+      $stdscr.addstr("#{li}\n")
+      $stdscr.attroff(atr) if atr
+    end
+  else
+    $stdscr.setpos(0, 0)
+    $stdscr.addstr(txt)
+  end
   $stdscr.setpos(1, 0)
   Curses.refresh
 end
@@ -300,6 +338,10 @@ loop do
     @omode = (@omode == :table)? :top : :table
   when 'r'
     @reverse = !@reverse
+  when 'c'
+    @color = !@color
+  when 'a'
+    @showall = !@showall
   when 'd'
     d = curses_enter("Enter display interval: ")
     delay = d.to_f if d.to_f > 0
