@@ -226,6 +226,12 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
          purposes only. cat /sys/kernel/debug/netflow_dump to see all currently
          accouned flows.
 
+     --disable-dkms
+         disable creating dkms.conf and auto-install module into DKMS tree.
+
+     --disable-dkms-install
+         only disable auto-install into DKMS, but still create dkms.conf, in
+         case you will want to install it manually.
 
 ===========
 = RUNNING =

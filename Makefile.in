@@ -8,7 +8,7 @@ IPTABLES_CFLAGS = @IPTABLES_CFLAGS@
 IPTABLES_MODULES = @IPTABLES_MODULES@
 DEPMOD = depmod -a
 CARGS = @CARGS@
-SNMPTGSO = /usr/lib/snmp/dlmod/@SNMPTARGET@
+SNMPTGSO = /usr/lib/snmp/dlmod/snmp_NETFLOW.so
 SNMPCONF = /etc/snmp/snmpd.conf
 SNMPLINE = dlmod netflow $(SNMPTGSO)
 CC = gcc
@@ -67,22 +67,32 @@ sinstall: | snmp_NETFLOW.so IPT-NETFLOW-MIB.my
 	gcc -shared -o $@ $<
 
 version.h: ipt_NETFLOW.c ipt_NETFLOW.h Makefile
-	@if [ -d .git ] && type git >/dev/null 2>&1; then \
-		echo "#define GITVERSION \"`git describe --dirty`\""; \
-	else \
-		echo "/* kernel doesn't like empty files */"; \
-	fi > version.h
+	@./version.sh --define > version.h
 
 linstall: | libipt_NETFLOW.so libip6t_NETFLOW.so
 	@echo " *"
 	install -D libipt_NETFLOW.so $(DESTDIR)$(IPTABLES_MODULES)/libipt_NETFLOW.so
 	install -D libip6t_NETFLOW.so $(DESTDIR)$(IPTABLES_MODULES)/libip6t_NETFLOW.so
 
-install: minstall linstall @SNMPINSTALL@
+dinstall:
+	@echo " *"
+	@./install-dkms.sh --install
+
+install: minstall linstall @DKMSINSTALL@ @SNMPINSTALL@
 
 uninstall:
 	-rm -f $(DESTDIR)$(IPTABLES_MODULES)/libipt_NETFLOW.so
 	-rm -f $(DESTDIR)$(IPTABLES_MODULES)/libip6t_NETFLOW.so
+	-rm -f $(DESTDIR)/usr/share/snmp/mibs/IPT-NETFLOW-MIB.my
+	-rm -f $(DESTDIR)$(SNMPTGSO)
+	@if egrep -qs "^ *$(SNMPLINE)" $(SNMPCONF); then \
+	echo " *"; \
+	echo " *  Remove this line from $(SNMPCONF):"; \
+	echo " *"; \
+	echo " *     "`egrep "^ *$(SNMPLINE)" $(SNMPCONF)`; \
+	echo " *"; \
+	fi
+	@if [ "@DKMSINSTALL@" = dinstall ]; then ./install-dkms.sh --uninstall; fi
 	-rm -f $(DESTDIR)$(KINSTDIR)/extra/ipt_NETFLOW.ko
 
 Makefile: Makefile.in configure

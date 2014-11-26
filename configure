@@ -261,6 +261,8 @@ show_help() {
   echo "  --enable-aggregation   enables aggregation rules"
   echo "  --enable-promisc       enables promisc hack"
   echo "  --disable-snmp-agent   disables net-snmp agent"
+  echo "  --disable-dkms         disables DKMS support completely"
+  echo "  --disable-dkms-install  no DKMS install but still create dkms.conf"
   exit 0
 }
 
@@ -292,6 +294,8 @@ do
     --enable-snmp-r*)  KOPTS="$KOPTS -DENABLE_SNMP" ;;
     --disable-snmp-a*)   SKIPSNMP=1 ;;
     --disable-net-snmp*) SKIPSNMP=1 ;;
+    --disable-dkms-install) SKIPDKMS=install ;;
+    --disable-dkms)         SKIPDKMS=full ;;
     --make) echo called from make; CARGS=`echo $CARGS | sed s/--make//g` ;;
     -Werror) KOPTS="$KOPTS -Werror" ;;
     --help|-h) show_help ;;
@@ -414,6 +418,8 @@ kernel_check_features() {
 }
 
 snmp_check() {
+  SNMPTARGET=
+  SNMPINSTALL=
   test "$SKIPSNMP" && return
 
   echo -n "Searching for net-snmp-config... "
@@ -474,6 +480,41 @@ snmp_check() {
   SNMPINSTALL=sinstall
 }
 
+dkms_check() {
+  DKMSINSTALL=
+  MVERSION=`./version.sh`
+  test "$SKIPDKMS" && return
+
+  echo -n "Checking for DKMS... "
+  if ! which dkms >/dev/null 2>&1; then
+    echo "No. (It may be useful to install it.)"
+    echo "! "
+    echo "! DKMS is method of installing kernel modules, that will"
+    echo "! automatically recompile module after kernel upgrade."
+    if [ -s /etc/debian_version ]; then
+      echo "! "
+      echo "! To install it under Debian simply run this:"
+      echo "!   root# apt-get install dkms"
+      echo "! "
+    elif [ -s /etc/redhat-release ]; then
+      echo "! "
+      echo "! To install it under Centos enable EPEL or RPMforge repository,"
+      echo "! then run this:"
+      echo "!   root# yum install dkms"
+      echo "! "
+    fi
+    return
+  fi
+  echo Yes.
+  if dkms status | grep ^ipt-netflow, >/dev/null; then
+    echo "! You are already have module installed via DKMS"
+    echo "!   it will be uninstalled on 'make install' and"
+    echo "!   current version of module installed afterwards."
+    echo "! Use --disable-dkms option if don't want this."
+  fi
+  DKMSINSTALL=dinstall
+}
+
 kernel_find_version	#KVERSION
 test "$KLIBMOD" || KLIBMOD=$KVERSION
 echo "Kernel version: $KVERSION ($KHOW)"
@@ -493,21 +534,29 @@ iptables_inc		#IPTINC
 iptables_modules	#IPTLIB
 
 snmp_check
+dkms_check
 
 REPLACE="\
 s!@CARGS@!$CARGS!;\
 s!@KVERSION@!$KVERSION!;\
+s!@MVERSION@!$MVERSION!;\
 s!@KDIR@!$KDIR!;\
 s!@KOPTS@!$KOPTS!;\
 s!@SNMPTARGET@!$SNMPTARGET!;\
 s!@SNMPINSTALL@!$SNMPINSTALL!;\
+s!@DKMSINSTALL@!$DKMSINSTALL!;\
 s!@IPTABLES_VERSION@!$IPTVER!;\
 s!@IPTABLES_CFLAGS@!$IPTCFLAGS $IPTINC!;\
 s!@IPTABLES_MODULES@!$IPTLIB!"
 
 echo -n "Creating Makefile.. "
-sed "$REPLACE" Makefile.in > Makefile
-echo done.
+ sed "$REPLACE" Makefile.in > Makefile
+ echo done.
+ if [ "$SKIPDKMS" != full ]; then
+   echo -n "Creating dkms.conf.. "
+   sed "$REPLACE" dkms.conf.in > dkms.conf
+   echo done.
+ fi
 echo
 echo "  If you need some options enabled run ./configure --help"
 echo "  Now run: make all install"
