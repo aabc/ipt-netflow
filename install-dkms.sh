@@ -56,8 +56,12 @@ if [ ${#D[@]} -eq 1 ]; then
     echo "! That version was manually installed by you."
   fi
 
+  nodepmod=
+  if grep -qs no-depmod `which dkms`; then
+    nodepmod=--no-depmod
+  fi
   echo "! Removing from dkms..."
-  dkms --no-depmod remove ipt-netflow/$D --all
+  dkms $nodepmod remove ipt-netflow/$D --all
 
   if [ -d "/usr/src/ipt-netflow-$D" ]; then
     echo "! Removing source tree from /usr/src/ipt-netflow-$D"
