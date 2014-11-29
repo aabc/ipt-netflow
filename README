@@ -1,10 +1,58 @@
-ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
+ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
 
    High performance NetFlow v5, v9, IPFIX flow data export module for Linux
-   kernel. Supporting IPv4 and IPv6. Created to be useful for highly loaded
-   linux router. It should be used as iptables target. Also can export NAT
-   translation events using NetFlow Event Logging (NEL) for v9, IPFIX, or
-   specially crafted v5 flows.
+   kernel. Created to be useful for highly loaded linux router. It should be
+   used as iptables target.
+
+
+=========================
+= Detailed Feature List =
+=========================
+
+   * High performance and scalability. For highest performance module could be
+     run without conntrack being enabled in kernel. Reported to be able to
+     handle 10Gbit traffic with more than 1500000 pps with negligible server
+     load (on S5500BC).
+
+   * NetFlow v5, v9, and IPFIX are fully supported.
+
+     Support of v9/IPFIX is adding flexibility to exporting of flow data
+     plus greater visibility of traffic, letting export many additional fields
+     besides what was possible in v5 era. Such as
+     
+   * IPv6 option headers, IPv4 options, TCP options, ethernet type, dot1q
+     service and customer VLAN ids, MAC addresses, and
+
+   * Full IPv6 support,
+
+   * NAT translations events (from conntrack) using NetFlow Event Logging (NEL).
+     This is standardized way for v9/IPFIXr, but module export such events even
+     for v5 collectors via specially crafted pseudo-records.
+
+   * Deterministic (systematic count-based), random and hash Flow Sampling.
+     With appropriate differences in support of v5, v9, and IPFIX.
+
+   * SNMP agent (for net-snmp) for remote management and monitoring.
+
+   * Options Templates (v9/IPFIX) let export useful statistical,
+     configurational, and informational records to collector.
+     Such as metering, exporting, sampling stat and reliability stat, sampling 
+     configuration, network devices ifName, ifDescr list.
+
+   * Tested to compile and work out of the box on Centos 5, 6, 7, and Debian.
+     Many vanilla Linux kernels since 2.6.18 up to the latest (as of writing
+     is 3.16) are supported and tested.
+
+   * Module load time and run-time (via sysctl) configuration.
+
+   * Flexibility in enabling features via ./configure script. This will let you
+     disable features you don't need, which increase compatibility with custom
+     kernels and performance.
+
+   * SNMP-index translation rules, let convert meaningless and unstable
+     interface indexes (ifIndex) to more meaningful numbering scheme.
+
+   * Easy support for catching mirrored traffic with promisc option.
 
 
 ============================
@@ -19,7 +67,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
 = INSTALLATION =
 ================
 
-   Four easy steps.
+   Five easy steps.
 
 ** 1. Prepare Kernel source
 
@@ -76,7 +124,23 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
 
    c) Otherwise, for raw iptables source build it and make install.
 
-** 3. Now, to actually build the module run:
+** 3. Prepare net-snmp (optional)
+
+  In case you want to manage or monitor module performance via SNMP you
+  may install net-snmp. If you want to skip this step run configure
+  with --disable-snmp-agent option.
+
+  a) For Centos:
+
+      # yum install net-snmp net-snmp-devel
+
+  b) For Debian:
+
+      # apt-get install snmpd libsnmp-dev
+
+  c) Otherwise install net-snmp from www.net-snmp.org
+
+** 4. Now, to actually build the module run:
 
       ~/ipt-netflow# ./configure
       ~/ipt-netflow# make all install
@@ -97,9 +161,77 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
      c) If you have sources in non-standard places or configure isn't able to
      find something run ./configure --help to see how to specify paths manually.
 
-** 4. After this point you should be able to load module and
+     d) On Debian:
+       `gcc: error: unrecognized command line option `-fstack-protector-strong''
+       `Makefile:43: recipe for target 'snmp_NETFLOW.so' failed'
+     Solution is to install gcc-4.9: apt-get install gcc-4.9
+       then compile with: make CC=gcc-4.9
+
+** 5. After this point you should be able to load module and
      use -j NETFLOW target in your iptables. See next section.
 
+
+=====================
+= Configure Options =
+=====================
+
+   Configure script allows to enable or disable optional features:
+
+     --enable-natevents
+         enables natevents (NEL) support, (this and option will require
+	 conntrack support to be enabled into kernel and conntack
+         module (nf_conntrack) loaded before ipt_NETFLOW. Usually this is
+         done automatically because of `depmod', but if you don't do `make
+         install' you'll need to load nf_conntrack manually.
+         Read below for explanation of natevents.
+
+     --enable-sampler
+         enables flow sampler. Read below for explanation of its configuration
+	 option.
+
+     --enable-sampler=hash
+         additionally enables 'hash' sampler.
+
+     --disable-snmp-agent
+         disables building net-snmp agent module, which is enabled by default.
+
+     --enable-snmp-rules
+         enables SNMP-index conversion rules. Read below for explanation
+         of snmp-rules.
+
+     --enable-macaddress
+         enables exporting of src and dst MAC addresses for every flow
+         in v9/IPFIX. Difference in any of MAC address will be accounted
+         as differnt flow. I.e. MAC addresses will be part of flow key.
+
+     --enable-vlan
+         enables exporting of dot1q VLAN Ids and Priorities for every flow
+         in v9/IPFIX. It supports outer and second dot1q tags if present.
+
+         Any of two previous options will enable exporting of Ethernet Packet
+         Type, ethernetType(256).
+
+     --enable-direction
+         enables exporting of flowDirection(61) Element for v9/IPFIX.
+
+         Packets captured in PREROUTING and INPUT chains will be accounted as
+         ingress flows(0), in OUTPUT and POSTROUTING as egress flows(1), and
+         in FORWARD will have flowDirection set to undefined value 255.
+
+     --enable-aggregation
+         enables aggregation rules. Read below for explanation of aggregation.
+
+     --enable-debugfs
+         enabled debugfs interface to active flows list. NB! This is for debug
+         purposes only. cat /sys/kernel/debug/netflow_dump to see all currently
+         accouned flows.
+
+     --disable-dkms
+         disable creating dkms.conf and auto-install module into DKMS tree.
+
+     --disable-dkms-install
+         only disable auto-install into DKMS, but still create dkms.conf, in
+         case you will want to install it manually.
 
 ===========
 = RUNNING =
@@ -120,6 +252,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
      options ipt_NETFLOW destination=127.0.0.1:2055 protocol=9 natevents=1
 
 2. Statistics is in /proc/net/stat/ipt_netflow
+   Machine readable statistics is in /proc/net/stat/ipt_netflow_snmp
    To view boring slab statistics: grep ipt_netflow /proc/slabinfo
 
 3. You can view parameters and control them via sysctl, example:
@@ -167,9 +300,85 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
    For details on how they are exported for different protocol versions see
    below.
 
+7. For SNMP support you will need to add this command into snmpd.conf to
+   enable IPT-NETFLOW-MIB in SNMP agent:
+
+      dlmod netflow /usr/lib/snmp/dlmod/snmp_NETFLOW.so
+
+   Restart snmpd for changes to take effect. Don't forget to properly configure
+   access control. Example simplest configuration may looks like (note that this
+   is whole /etc/snmp/snmpd.conf):
+
+      rocommunity public 127.0.0.1
+      dlmod netflow /usr/lib/snmp/dlmod/snmp_NETFLOW.so
+
+   Note, that this config will also allow _full_ read-only access to the whole
+   linux MIB. To install IPT-NETFLOW-MIB locally, copy file IPT-NETFLOW-MIB.my
+   into ~/.snmp/mibs/
+
+   * Detailed example of SNMP configuration is there:
+   * https://github.com/aabc/ipt-netflow/wiki/Configuring-SNMP-access
+
+   To check that MIB is installed well you may issue:
+
+     $ snmptranslate -m IPT-NETFLOW-MIB -IR -Tp iptNetflowMIB
+
+   This should output IPT-NETFLOW-MIB in tree form.
+
+   To check that snmp agent is working well issue:
+
+     $ snmpwalk -v 1 -c public 127.0.0.1 -m IPT-NETFLOW-MIB iptNetflowMIB
+
+   Should output full MIB. If MIB is not installed try:
+
+     $ snmpget -v 1 -c public 127.0.0.1 .1.3.6.1.4.1.37476.9000.10.1.1.1.1.0
+
+   Which should output STRING: "ipt_NETFLOW".
+
+   MIB provides access to very similar statistics that you have in
+   /proc/net/stat/ipt_netflow, you can read description of objects in
+   text file IPT-NETFLOW-MIB.my
+
+   If you want to access to SNMP stat in machine readable form for your
+   scripts there is file /proc/net/stat/ipt_netflow_snmp
+
+   Note: Using of SNMP v2c or v3 is mandatory for most tables, because
+   this MIB uses 64-bit counters (Counter64) which is not supported in old
+   SNMP v1. You should understand that 32-bit counter will wrap on 10Gbit
+   traffic in just 3.4 seconds! So, always pass option `-v2c' or `-v3'
+   to net-snmp utils. Or, for example, configure option `defVersion 2c'
+   in ~/.snmp/snmp.conf  You can also have `defCommunity public' ov v3
+   auth parameters (defSecurityName, defSecurityLevel, defPassphrase)
+   set there (man snmp.conf).
+
+   Examples for dumping typical IPT-NETFLOW-MIB objects:
+
+   - Module info (similar to modinfo, SNMPv1 is ok for following two objects):
+
+     $ snmpwalk -v 1 -c public 127.0.0.1 -m IPT-NETFLOW-MIB iptNetflowModule
+
+   - Read-write sysctl-like parameters (yes, they are writable via snmpset, you
+     may need to configure write access to snmpd, though):
+
+     $ snmpwalk -v 1 -c public 127.0.0.1 -m IPT-NETFLOW-MIB iptNetflowSysctl
+
+   - Global performance stat of the module (note -v2c, because rest of the
+     objects require SNMP v2c or SNMP v3):
+
+     $ snmpwalk -v2c -c public 127.0.0.1 -m IPT-NETFLOW-MIB iptNetflowTotals
+
+   - Per-CPU (metering) and per-socket (exporting) statistics in table format:
+
+     $ snmptable -v2c -c public 127.0.0.1 -m IPT-NETFLOW-MIB iptNetflowCpuTable
+     $ snmptable -v2c -c public 127.0.0.1 -m IPT-NETFLOW-MIB iptNetflowSockTable
+
+
 ===========
 = OPTIONS =
 ===========
+
+   Options can be passed as parameters to module or changed dynamically
+   via  sysctl net.netflow  or  IPT-NETFLOW-MIB::iptNetflowSysctl
 
    protocol=5
      - what version of NetFlow protocol to use. Default is 5.
@@ -186,6 +395,36 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
      - mirror flows to two (can be more) addresses, separate addresses
        with comma.
 
+   sampler=deterministic:123
+   sampler=random:123
+   sampler=hash:123
+     - enables Flow Sampling. To disable set to the empty value or to `0'.
+       Note, that this is flow sampling (as of RFC 7014), not packet
+       sampling (PSAMP).
+
+       There is three sampling modes:
+
+         deterministic:  select each N-th observed flow; in IPFIX this mode
+                         is called Systematic count-based Sampling;
+         random:         select randomly one out of N flows.
+         hash:           select hash-randomly one out of N flows.
+
+       Number after colon is population size N, with valid values 2-16383.
+       (This 16383 limit is for compatibility with NetFlow v5.)
+         Using 'deterministic' and 'random' sampling will not reduce resource
+       usage caused by the module, because flows are sampled late in exporting
+       process. This will reduces amount of flows which go to the collector,
+       thus, reducing load on the collector.
+         On the other hand, using 'hash' sampling will reduce CPU and memory
+       load caused by the module, because flows are discarded early in the
+       processing chain. They are discarded almost like in random sampler,
+       except that pseudo-random value is depend on the Flow Key hash for each
+       packet.
+         All required NetFlow/IPFIX information to signal use of sampling is
+       also sent to the collector. 'Hash' sampling will be presented as 'random'
+       sampling to the collector, because of their similarity.
+       Note, that Flow Sampling is compatible with NetFlow v5, v9, and IPFIX.
+
    natevents=1
      - Collect and send NAT translation events as NetFlow Event Logging (NEL)
        for NetFlow v9/IPFIX, or as dummy flows compatible with NetFlow v5.
@@ -195,17 +434,23 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
          Src IP, Src Port  is Pre-nat source address.
          Dst IP, Dst Port  is Post-nat destination address.
            - These two fields made equal to data flows catched in FORWARD chain.
-	 Nexthop, Src AS  is Post-nat source address for SNAT. Or,
-	 Nexthop, Dst AS  is Pre-nat destination address for DNAT.
-	 TCP Flags is SYN+SCK for start event, RST+FIN for stop event.
-	 Pkt/Traffic size is 0 (zero), so it won't interfere with accounting.
+         Nexthop, Src AS  is Post-nat source address for SNAT. Or,
+         Nexthop, Dst AS  is Pre-nat destination address for DNAT.
+         TCP Flags is SYN+SCK for start event, RST+FIN for stop event.
+         Pkt/Traffic size is 0 (zero), so it won't interfere with accounting.
+
+       Natevents are compilation disabled by default, to enable you will need to
+       add --enable-natevents option to ./configure script.
+
+       For techical description of NAT Events see:
+         http://tools.ietf.org/html/draft-ietf-behave-ipfix-nat-logging-04
 
    inactive_timeout=15
-     - export flow after it's inactive 15 seconds. Default value is 15.
+     - export flow after it's inactive for 15 seconds. Default value is 15.
 
    active_timeout=1800
-     - export flow after it's active 1800 seconds (30 minutes). Default valuae
-       is 1800.
+     - export flow after it's active for 1800 seconds (30 minutes). Default
+       value is 1800.
 
    refresh-rate=20
      - for NetFlow v9 and IPFIX it's rate how frequently to re-send templates
@@ -219,9 +464,9 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
      - debug level (none).
 
    sndbuf=number
-     - size of output socket buffer in bytes. I recommend you to put
-       higher value if you experience netflow packet drops (can be
-       seen in statistics as 'sock: fail' number.)
+     - size of output socket buffer in bytes. I recommend you to put higher
+       value if you experience netflow packet drops (can be seen in statistics
+       as 'sock: fail' number.)
        Default value is system default.
 
    hashsize=number
@@ -232,33 +477,67 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
 
    maxflows=2000000
      - Maximum number of flows to account. It's here to prevent DOS attacks.
-       After this limit reached new flows will not be accounted. Default is
+       After this limit is reached new flows will not be accounted. Default is
        2000000, zero is unlimited.
 
    aggregation=string..
      - Few aggregation rules (or some say they are rule.)
 
-     Buffer for aggregation string 1024 bytes, and sysctl limit it
-       to ~700 bytes, so don't write there a lot.
-     Rules worked in definition order for each packet, so don't
-       write them a lot again.
-     Rules applied to both directions (dst and src).
-     Rules tried until first match, but for netmask and port
-        aggregations separately.
-     Delimit them with commas.
+       Buffer for aggregation string 1024 bytes, and sysctl limit it
+         to ~700 bytes, so don't write there a lot.
+       Rules worked in definition order for each packet, so don't
+         write them a lot again.
+       Rules applied to both directions (dst and src).
+       Rules tried until first match, but for netmask and port
+          aggregations separately.
+       Delimit them with commas.
 
-     Rules are of two kinds: for netmask aggregation
-        and port aggregation:
+       Rules are of two kinds: for netmask aggregation
+          and port aggregation:
 
-     a) Netmask aggregation example: 192.0.0.0/8=16
-     Which mean to strip addresses matching subnet 192.0.0.0/8 to /16.
+       a) Netmask aggregation example: 192.0.0.0/8=16
+       Which mean to strip addresses matching subnet 192.0.0.0/8 to /16.
 
-     b) Port aggregation example: 80-89=80
-     Which mean to replace ports from 80 to 89 with 80.
+       b) Port aggregation example: 80-89=80
+       Which mean to replace ports from 80 to 89 with 80.
 
-     Full example:
-        aggregation=192.0.0.0/8=16,10.0.0.0/8=16,80-89=80,3128=80
-        
+       Full example:
+          aggregation=192.0.0.0/8=16,10.0.0.0/8=16,80-89=80,3128=80
+
+       Aggregation rules are enabled by default, if you feel you don't need them
+       you may add --disable-aggregation to ./configure script.
+
+   snmp-rules=string...
+     - Few SNMP-index conversion rules similar to fproble-ulog.
+
+       Quoting man fprobe-ulog:
+
+         "Comma separated list of interface name to SNMP-index conversion
+         rules.  Each rule consists of interface base name and SNMP-index
+         base separated by colon (e.g. ppp:200). Final SNMP-index is  sum
+         of corresponding SNMP-index base and interface number.
+         In the above example SNMP-index of interface ppp11 is 211.
+
+         If interface  name  did not fit to any of conversion rules then
+         SNMP-index will be taken from kernel."
+
+       This implementation isn't optimized for performance (no rule caching
+       or hashing), but should be fast if rules list are short.
+
+       Rules are parsed in order from first to last until first match.
+
+       snmp-rules are compilation disabled by default, to enable you will need
+       to add --enable-snmp option to ./configure script.
+
+   scan-min = 1
+     - Minimal interval between flow export scans. Sometimes could be useful
+       to reduce load on exporting CPU by increasing this interval. Value are
+       in kernel jiffies units (which is x/HZ seconds).
+
+   promisc = 1
+     - Enable promisc hack. See README.promisc Solution.1 for details.
+
+
 ====================
 = HOW TO READ STAT =
 ====================
@@ -266,23 +545,59 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
   Statistics is your friend to fine tune and understand netflow module
   performance.
 
-  To see stat:
-  # cat /proc/net/stat/ipt_netflow
+  To see stat in human readable form:
+    # cat /proc/net/stat/ipt_netflow
 
   How to interpret the data:
 
-> Flows: active 5187 (peak 83905 reached 0d0h1m ago, maxflows 2000000), mem 283K, worker delay 100/1000.
+> ipt_NETFLOW version v1.8-122-gfae9d59-dirty, srcversion 6141961152BE0DFA6A21EF4; aggr mac vlan
+
+  This line helps to identify actual source that your module is build on.
+  Please always supply it in all bug reports.
+
+  v1.8-122: 1.8 is release, 122 is commit number after release;
+  -gfae9d59: fae9d59 is short git commit id;
+  -dirty: if present, meaning that git detected that sources are changed since
+      last git commit, you may wish to do `git diff' to view changes;
+  srcversion 6141961152BE0DFA6A21EF4: binary version of module, you can
+      compare this with data from `modinfo ./ipt_NETFLOW.ko' to identify
+      actual binary loaded;
+  aggr mac vlan: tags to identify compile time options that are enabled.
+
+> Protocol version 10 (ipfix), refresh-rate 20, timeout-rate 30, (templates 2, active 2). Timeouts: active 5, inactive 15. Maxflows 2000000
+
+  Protocol version currently in use. Refresh-rate and timeout-rate
+      for v9 and IPFIX. Total templates generated and currently active.
+  Timeout: active X: how much seconds to wait before exporting active flow.
+    - same as sysctl net.netflow.active_timeout variable.
+  inactive X: how much seconds to wait before exporting inactive flow.
+    - same as sysctl net.netflow.inactive_timeout variable.
+  Maxflows 2000000: maxflows limit.
+    - all flows above maxflows limit must be dropped.
+    - you can control maxflows limit by sysctl net.netflow.maxflows variable.
+
+> Promisc hack is disabled (observed 0 packets, discarded 0).
+
+  observed n: To see that promisc hack is really working.
+
+> Natevents disabled, count start 0, stop 0.
+
+    - Natevents mode disabled or enabled, and how much start or stop events
+      are reported.
+
+> Flows: active 5187 (peak 83905 reached 0d0h1m ago), mem 283K, worker delay 100/1000 (37 ms, 0 us, 4:0 0 [3]).
 
   active X: currently active flows in memory cache.
     - for optimum CPU performance it is recommended to set hash table size to
-      twice of average of this value, or higher.
+      at least twice of average of this value, or higher.
   peak X reached Y ago: peak value of active flows.
   mem XK: how much kilobytes of memory currently taken by active flows.
     - one active flow taking 56 bytes of memory.
     - there is system limit on cache size too.
   worker delay X/HZ: how frequently exporter scan flows table per second.
+  Rest is boring debug info.
 
-> Hash: size 8192 (mem 32K), metric 1.00, [1.00, 1.00, 1.00]. MemTraf: 1420 pkt, 364 K (pdu 0, 0).
+> Hash: size 8192 (mem 32K), metric 1.00, [1.00, 1.00, 1.00]. InHash: 1420 pkt, 364 K, InPDU 28, 6716.
 
   Hash: size X: current hash size/limit.
     - you can control this by sysctl net.netflow.hashsize variable.
@@ -298,79 +613,60 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
       15 minutes. Sort of hash table load average. First value is instantaneous.
       You can try to increase hashsize if averages more than 1 (increase
       certainly if >= 2).
-  MemTraf: X pkt, X K: how much traffic accounted for flows that are in memory.
-    - these flows that are residing in internal hash table.
-  pdu X, X: how much traffic in flows preparing to be exported.
-    - it is included already in aforementioned MemTraf total.
-
-> Protocol version 10 (ipfix), refresh-rate 20, timeout-rate 30, (templates 2, active 2). Timeouts: active 5, inactive 15. Maxflows 2000000
-
-  Protocol version currently in use. Refresh-rate and timeout-rate
-      for v9 and IPFIX. Total templates generated and currently active.
-  Timeout: active X: how much seconds to wait before exporting active flow.
-    - same as sysctl net.netflow.active_timeout variable.
-  inactive X: how much seconds to wait before exporting inactive flow.
-    - same as sysctl net.netflow.inactive_timeout variable.
-  Maxflows 2000000: maxflows limit.
-    - all flows above maxflows limit must be dropped.
-    - you can control maxflows limit by sysctl net.netflow.maxflows variable.
+  InHash: X pkt, X K: how much traffic accounted for flows in the hash table.
+  InPDU X, X: how much traffic in flows preparing to be exported.
 
 > Rate: 202448 bits/sec, 83 packets/sec; 1 min: 668463 bps, 930 pps; 5 min: 329039 bps, 483 pps
 
   - Module throughput values for 1 second, 1 minute, and 5 minutes.
 
-> cpu#  stat: <search found new [metric], trunc frag alloc maxflows>, sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>
-> cpu0  stat: 980540  10473 180600 [1.03],    0    0    0    0, sock:   4983 928 0, 7124 K, traffic: 188765, 14 MB, drop: 27863, 1142 K
+> cpu#  pps; <search found new [metric], trunc frag alloc maxflows>, traffic: <pkt, bytes>, drop: <pkt, bytes>
+> cpu0  123; 980540  10473 180600 [1.03],    0    0    0    0, traffic: 188765, 14 MB, drop: 27863, 1142 K
 
   cpu#: this is Total and per CPU statistics for:
-  stat: <search found new, trunc frag alloc maxflows>: internal stat for:
+  pps: packets per second on this CPU. It's useful to debug load imbalance.
+  <search found new, trunc frag alloc maxflows>: internal stat for:
   search found new: hash table searched, found, and not found counters.
-  [metric]: average hash metric since module load.
+  [metric]: one minute (ewma) average hash metric per cpu.
   trunc: how much truncated packets are ignored
-    - these are that possible don't have valid IP header.
-    - accounted in drop packets counter but not in drop bytes.
+    - for example if packets don't have valid IP header.
+    - it's also accounted in drop packets counter, but not in drop bytes.
   frag: how much fragmented packets have seen.
-    - kernel always defragments INPUT/OUTPUT chains for us.
+    - kernel defragments INPUT/OUTPUT chains for us if nf_defrag_ipv[46]
+      module is loaded.
     - these packets are not ignored but not reassembled either, so:
     - if there is no enough data in fragment (ex. tcp ports) it is considered
-      zero.
+      to be zero.
   alloc: how much cache memory allocations are failed.
-    - packets ignored and accounted in drop stat.
+    - packets ignored and accounted in traffic drop stat.
     - probably increase system memory if this ever happen.
   maxflows: how much packets ignored on maxflows (maximum active flows reached).
-    - packets ignored and accounted in drop stat.
+    - packets ignored and accounted in traffic drop stat.
     - you can control maxflows limit by sysctl net.netflow.maxflows variable.
-
-  sock: <ok fail cberr, bytes>: table of exporting stats for:
-  ok: how much Netflow PDUs are exported (i.e. UDP packets sent by module).
-  fail: how much socket errors (i.e. packets failed to be sent).
-    - packets dropped and their internal statistics cumulatively accounted in
-      drop stat.
-  cberr: how much connection refused ICMP errors we got from export target.
-    - probably you not launched collector software on destination,
-    - or specified wrong destination address.
-    - flows lost in this fashion is not possible to account in drop stat.
-    - these are ICMP errors, and would look like this in tcpdump:
-      05:04:09.281247 IP alice.19440 > bob.2055: UDP, length 120
-      05:04:09.281405 IP bob > alice: ICMP bob udp port 2055 unreachable, length 156
-  bytes: how much kilobytes of exporting data successfully sent by the module.
 
   traffic: <pkt, bytes>: how much traffic is accounted.
   pkt, bytes: sum of packets/megabytes accounted by module.
     - flows that failed to be exported (on socket error) is accounted here too.
 
   drop: <pkt, bytes>: how much of traffic is not accounted.
-  pkt, bytes: sum of packets/kilobytes we are lost/dropped.
-    - reasons they are dropped and accounted here:
+  pkt, bytes: sum of packets/kilobytes that are dropped by metering process.
+    - reasons these drops are accounted here:
       truncated/fragmented packets,
       packet is for new flow but failed to allocate memory for it,
-      packet is for new flow but maxflows is already reached,
-      all flows in export packets that got socket error.
+      packet is for new flow but maxflows is already reached.
+    Traffic lost due to socket errors is not accounted here. Look below
+      about export and socket errors.
 
-> Natevents disabled, count start 0, stop 0.
+> Export: Rate 0 bytes/s; Total 2 pkts, 0 MB, 18 flows; Errors 0 pkts; Traffic lost 0 pkts, 0 Kbytes, 0 flows.
 
-    - Natevents mode disabled or enabled, and how much start or stop events
-      are reported.
+  Rate X bytes/s: traffic rate generated by exporter itself.
+  Total X pkts, X MB: total amount of traffic generated by exporter.
+  X flows: how much data flows are exported.
+  Errors X pkts: how much packets not sent due to socket errors.
+  Traffic lost 0 pkts, 0 Kbytes, 0 flows: how much metered traffic is lost
+    due to socket errors.
+  Note that `cberr' errors are not accounted here due to their asynchronous
+    nature. Read below about `cberr' errors.
 
 > sock0: 10.0.0.2:2055 unconnected (1 attempts).
 
@@ -378,7 +674,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
   up) it shows now much connection attempts was failed. It will try to connect
   until success.
 
-> sock0: 10.0.0.2:2055, sndbuf 106496, filled 0, peak 106848; err: sndbuf reached 928, connect 0, other 0
+> sock0: 10.0.0.2:2055, sndbuf 106496, filled 0, peak 106848; err: sndbuf reached 928, connect 0, cberr 0, other 0
 
   sockX: per destination stats for:
   X.X.X.X:Y: destination ip address and port.
@@ -395,13 +691,64 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2013.
   sndbuf reached X: how much packets dropped due to sndbuf being too small
       (error -11).
   connect X: how much connection attempts was failed.
+  cberr X: how much connection refused ICMP errors we got from export target.
+    - probably you are not launched collector software on destination,
+    - or specified wrong destination address.
+    - flows lost in this fashion is not possible to account in drop stat.
+    - these are ICMP errors, and would look like this in tcpdump:
+      05:04:09.281247 IP alice.19440 > bob.2055: UDP, length 120
+      05:04:09.281405 IP bob > alice: ICMP bob udp port 2055 unreachable, length 156
   other X: dropped due to other possible errors.
 
 > aggr0: ...
   aggrX: aggregation rulesets.
     - controlled by sysctl net.netflow.aggregation variable.
 
+
+==========================
+= NetFlow considerations =
+==========================
+
+  List of all IPFIX Elements http://www.iana.org/assignments/ipfix/ipfix.xhtml
+
+  Flow Keys are Elements that distinguish flows. Quoting RFC: "If a Flow
+  Record for a specific Flow Key value already exists, the Flow Record is
+  updated; otherwise, a new Flow Record is created."
+
+  In this implementation following Elements are treated as Flow Keys:
+
+     IPv4 source address:        sourceIPv4Address(8),
+     IPv6 source address:        sourceIPv6Address(27),
+     IPv4 destination address:   destinationIPv4Address(12),
+     IPv6 destination address:   destinationIPv6Address(28),
+     TCP/UDP source port:        sourceTransportPort(7),
+     TCP/UDP destination port:   destinationTransportPort(11),
+     input interface:            ingressInterface(10),
+     IP protocol:                protocolIdentifier(4),
+     IP TOS:                     ipClassOfService(5),
+     and address family (IP or IPv6).
+
+  If VLAN exporting is enabled:
+     First (outer) dot1q VLAN tag: dot1qVlanId(243) and
+                                 dot1qPriority(244) for IPFIX,
+                                 or vlanId(243) for NetFlow v9.
+     Second (customer) dot1q VLAN tag: dot1qCustomerVlanId(245)
+                                 and dot1qCustomerPriority(246).
+
+  If MAC address exporting is enabled:
+     Destination MAC address:    destinationMacAddress(80),
+     Source MAC address:         sourceMacAddress(56).
+
+  Other Elements are not Flow Keys. Note that outer interface, which is
+  egressInterface(14), is not regarded as Flow Key. Quoting RFC 7012: "For
+  Information Elements ... for which the value may change from packet to packet
+  within a single Flow, the exported value of an Information Element is by
+  default determined by the first packet observed for the corresponding Flow".
+
+  Note that NetFlow and IPFIX modes of operation may have slightly different
+  Elements being used and different statistics sent via Options Templates.
+
+
 =========
 = VOILA =
 =========
-

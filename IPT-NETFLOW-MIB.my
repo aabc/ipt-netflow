@@ -1,0 +1,797 @@
+-- IPT-NETFLOW-MIB.my
+
+IPT-NETFLOW-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Counter64,
+    Gauge32, Integer32, Counter32, enterprises
+	FROM SNMPv2-SMI
+    OBJECT-GROUP, MODULE-COMPLIANCE
+	FROM SNMPv2-CONF
+    CounterBasedGauge64
+	FROM HCNUM-TC
+    TEXTUAL-CONVENTION, DisplayString, DateAndTime
+	FROM SNMPv2-TC;
+
+iptNetflowMIB MODULE-IDENTITY
+    LAST-UPDATED "201409120000Z"
+    ORGANIZATION "ABC"
+    CONTACT-INFO
+	"Author's email: abc at telekom.ru
+
+	Latest version should be obtained from
+	https://raw.githubusercontent.com/aabc/ipt-netflow/master/IPT-NETFLOW-MIB.my"
+
+    DESCRIPTION
+	"The IPT-NETFLOW-MIB defines managed objects
+	for ipt_NETFLOW kernel module, which is high
+	performance NetFlow/IPFIX probe for Linux.
+
+	Copyright (c) 2014 <abc at telekom.ru>.
+
+	License: GPL"
+
+    REVISION	"201409110000Z"
+    DESCRIPTION "Initial revision."
+
+    ::= { enterprises 37476 9000 10 1 }
+
+-- Top Level --
+iptNetflowObjects	OBJECT IDENTIFIER ::= { iptNetflowMIB 1 }
+iptNetflowStatistics	OBJECT IDENTIFIER ::= { iptNetflowMIB 2 }
+iptNetflowConformance	OBJECT IDENTIFIER ::= { iptNetflowMIB 3 }
+
+-- Objects --
+
+-- modinfo
+iptNetflowModule	OBJECT IDENTIFIER ::= { iptNetflowObjects 1 }
+-- sysctl net.netflow
+iptNetflowSysctl	OBJECT IDENTIFIER ::= { iptNetflowObjects 2 }
+
+-- Modinfo Objects --
+
+name OBJECT-TYPE
+    SYNTAX	DisplayString
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Module name."
+    ::= { iptNetflowModule 1 }
+
+version OBJECT-TYPE
+    SYNTAX	DisplayString
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Software version of the module."
+    ::= { iptNetflowModule 2 }
+
+srcversion OBJECT-TYPE
+    SYNTAX	DisplayString
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	 "Binary version of the module."
+    ::= { iptNetflowModule 3 }
+
+loadTime OBJECT-TYPE
+    SYNTAX	DateAndTime
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	 "Module load date-time."
+    ::= { iptNetflowModule 4 }
+
+refcnt OBJECT-TYPE
+    SYNTAX	Integer32
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	 "Module usage by other kernel objects."
+    ::= { iptNetflowModule 5 }
+
+-- RW Sysctl objects --
+
+protocol OBJECT-TYPE
+    SYNTAX	INTEGER {
+	netflow5(5),
+	netflow9(9),
+	ipfix(10)
+    }
+    MAX-ACCESS	read-write
+    STATUS	current
+    DESCRIPTION
+	"Protocol version (5, 9, 10=IPFIX)."
+    ::= { iptNetflowSysctl 1 }
+
+hashsize OBJECT-TYPE
+    SYNTAX	Integer32
+    UNITS	"buckets"
+    MAX-ACCESS	read-write
+    STATUS	current
+    DESCRIPTION
+	"Hash table size of flows cache."
+    ::= { iptNetflowSysctl 2 }
+
+maxflows OBJECT-TYPE
+    SYNTAX	Integer32
+    UNITS	"flows"
+    MAX-ACCESS	read-write
+    STATUS	current
+    DESCRIPTION
+	"Max flows limit. This limit is used for DoS protection."
+    ::= { iptNetflowSysctl 3 }
+
+active-timeout OBJECT-TYPE
+    SYNTAX	Integer32
+    UNITS	"minutes"
+    MAX-ACCESS	read-write
+    STATUS	current
+    DESCRIPTION
+	"Active flows timeout value."
+    ::= { iptNetflowSysctl 4 }
+
+inactive-timeout OBJECT-TYPE
+    SYNTAX	Integer32
+    UNITS	"minutes"
+    MAX-ACCESS	read-write
+    STATUS	current
+    DESCRIPTION
+	"Inactive flows timeout value."
+    ::= { iptNetflowSysctl 5 }
+
+sndbuf OBJECT-TYPE
+    SYNTAX	Integer32
+    UNITS	"bytes"
+    MAX-ACCESS	read-write
+    STATUS	current
+    DESCRIPTION
+	"Sockets SNDBUF size."
+    ::= { iptNetflowSysctl 6 }
+
+destination OBJECT-TYPE
+    SYNTAX	DisplayString
+    MAX-ACCESS	read-write
+    STATUS	current
+    DESCRIPTION
+	"Export destination parameter."
+    ::= { iptNetflowSysctl 7 }
+
+aggregation OBJECT-TYPE
+    SYNTAX	DisplayString
+    MAX-ACCESS	read-write
+    STATUS	current
+    DESCRIPTION
+	"Aggregation parameters."
+    ::= { iptNetflowSysctl 8 }
+
+sampler OBJECT-TYPE
+    SYNTAX	DisplayString
+    MAX-ACCESS	read-write
+    STATUS	current
+    DESCRIPTION
+	"Sampler parameters: sampling mode:sampling interval.
+	Where samplign modes: deterministic, random, hash."
+    ::= { iptNetflowSysctl 9 }
+
+natevents OBJECT-TYPE
+    SYNTAX	INTEGER {
+	disabled(0),
+	enabled(1)
+    }
+    MAX-ACCESS	read-write
+    STATUS	current
+    DESCRIPTION
+	"Natevents (NEL) controlling parameter."
+    ::= { iptNetflowSysctl 10 }
+
+promisc OBJECT-TYPE
+    SYNTAX	INTEGER {
+	disabled(0),
+	enabled(1)
+    }
+    MAX-ACCESS	read-write
+    STATUS	current
+    DESCRIPTION
+	"Promisc hack controlling parameter."
+    ::= { iptNetflowSysctl 11 }
+
+snmp-rules OBJECT-TYPE
+    SYNTAX	DisplayString
+    MAX-ACCESS	read-write
+    STATUS	current
+    DESCRIPTION
+	"SNMP-index translation rules."
+    ::= { iptNetflowSysctl 12 }
+
+scan-min OBJECT-TYPE
+    SYNTAX	Integer32
+    MAX-ACCESS	read-write
+    STATUS	current
+    DESCRIPTION
+	"scan-min parameter."
+    ::= { iptNetflowSysctl 13 }
+
+-- Statistics Objects --
+
+iptNetflowTotals	OBJECT IDENTIFIER ::= { iptNetflowStatistics 1 }
+
+inBitRate OBJECT-TYPE
+    SYNTAX      CounterBasedGauge64
+    UNITS       "bits/second"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total incoming bits per second."
+::= { iptNetflowTotals 1 }
+
+inPacketRate OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "packets/second"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total incoming packets per second."
+::= { iptNetflowTotals 2 }
+
+inFlows OBJECT-TYPE
+    SYNTAX      Counter64
+    UNITS       "flows"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total observed (metered) flows."
+::= { iptNetflowTotals 3 }
+
+inPackets OBJECT-TYPE
+    SYNTAX      Counter64
+    UNITS       "packets"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total metered packets. Not couning dropped packets."
+::= { iptNetflowTotals 4 }
+
+inBytes OBJECT-TYPE
+    SYNTAX      Counter64
+    UNITS       "bytes"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total metered bytes in inPackets."
+::= { iptNetflowTotals 5 }
+
+FixedDiv100 ::= TEXTUAL-CONVENTION
+    DISPLAY-HINT "d-2"
+    STATUS	current
+    DESCRIPTION "Fixed point, two decimals."
+    SYNTAX	Gauge32
+
+hashMetric OBJECT-TYPE
+    SYNTAX      FixedDiv100
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Measure of performance of hash table. When optimal should
+	attract to 1.0, when non-optimal will be highly above of 1."
+::= { iptNetflowTotals 6 }
+
+hashMemory OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "bytes"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"How much system memory is used by the hash table."
+::= { iptNetflowTotals 7 }
+
+hashFlows OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "flows"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Flows currently residing in the hash table and not
+	exported yet."
+::= { iptNetflowTotals 8 }
+
+hashPackets OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "packets"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Packets in flows currently residing in the hash table."
+::= { iptNetflowTotals 9 }
+
+hashBytes OBJECT-TYPE
+    SYNTAX      CounterBasedGauge64
+    UNITS       "bytes"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Bytes in flows currently residing in the hash table."
+::= { iptNetflowTotals 10 }
+
+dropPackets OBJECT-TYPE
+    SYNTAX      Counter64
+    UNITS       "packets"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total packets dropped by metering process."
+::= { iptNetflowTotals 11 }
+
+dropBytes OBJECT-TYPE
+    SYNTAX      Counter64
+    UNITS       "bytes"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total bytes in packets dropped by metering process."
+::= { iptNetflowTotals 12 }
+
+outByteRate OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "bytes/second"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total exporter output bytes per second."
+::= { iptNetflowTotals 13 }
+
+outFlows OBJECT-TYPE
+    SYNTAX      Counter64
+    UNITS       "flows"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total exported flow data records."
+::= { iptNetflowTotals 14 }
+
+outPackets OBJECT-TYPE
+    SYNTAX      Counter64
+    UNITS       "packets"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total exported packets of netflow stream itself."
+::= { iptNetflowTotals 15 }
+
+outBytes OBJECT-TYPE
+    SYNTAX      Counter64
+    UNITS       "bytes"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total exported bytes of netflow stream itself."
+::= { iptNetflowTotals 16 }
+
+lostFlows OBJECT-TYPE
+    SYNTAX      Counter64
+    UNITS       "flows"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total of accounted flows that are lost by exporting process
+	 due to socket errors. This value will not include asynchronous
+	 errors (cberr), these will be counted in errTotal."
+::= { iptNetflowTotals 17 }
+
+lostPackets OBJECT-TYPE
+    SYNTAX      Counter64
+    UNITS       "packets"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total metered packets lost by exporting process.
+	 See lostFlows for details."
+::= { iptNetflowTotals 18 }
+
+lostBytes OBJECT-TYPE
+    SYNTAX      Counter64
+    UNITS       "bytes"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total bytes in packets lost by exporting process.
+	 See lostFlows for details."
+::= { iptNetflowTotals 19 }
+
+errTotal OBJECT-TYPE
+    SYNTAX      Counter32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Total exporting sockets errors (including cberr)."
+::= { iptNetflowTotals 20 }
+
+sndbufPeak OBJECT-TYPE
+    SYNTAX      Counter32
+    UNITS       "bytes"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+	"Global maximum value of socket sndbuf. Sort of output
+	queue length."
+::= { iptNetflowTotals 21 }
+
+-- Per CPU statistics --
+
+iptNetflowCpuTable OBJECT-TYPE
+    SYNTAX	SEQUENCE OF IptNetflowCpuEntry
+    MAX-ACCESS	not-accessible
+    STATUS	current
+    DESCRIPTION
+	"Per-CPU statistics."
+    ::= { iptNetflowStatistics 2 }
+
+iptNetflowCpuEntry OBJECT-TYPE
+    SYNTAX	IptNetflowCpuEntry
+    MAX-ACCESS	not-accessible
+    STATUS	current
+    DESCRIPTION
+	"Defines an entry in the iptNetflowCpuTable."
+    INDEX	{ cpuIndex }
+    ::= { iptNetflowCpuTable 1 }
+
+IptNetflowCpuEntry ::=
+    SEQUENCE {
+      cpuIndex		INTEGER,
+      cpuInPacketRate	Gauge32,
+      cpuInFlows	Counter64,
+      cpuInPackets	Counter64,
+      cpuInBytes	Counter64,
+      cpuHashMetric	FixedDiv100,
+      cpuDropPackets	Counter64,
+      cpuDropBytes	Counter64,
+      cpuErrTrunc	Counter32,
+      cpuErrFrag	Counter32,
+      cpuErrAlloc	Counter32,
+      cpuErrMaxflows	Counter32
+    }
+
+cpuIndex OBJECT-TYPE
+    SYNTAX	Integer32 (0..4096)
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Index of this cpu."
+    ::= { iptNetflowCpuEntry 1 }
+
+cpuInPacketRate OBJECT-TYPE
+    SYNTAX	Gauge32
+    UNITS	"packets/second"
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Incoming packets per second for this cpu."
+    ::= { iptNetflowCpuEntry 2 }
+
+cpuInFlows OBJECT-TYPE
+    SYNTAX	Counter64
+    UNITS	"flows"
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Flows metered on this cpu."
+    ::= { iptNetflowCpuEntry 3 }
+
+cpuInPackets OBJECT-TYPE
+    SYNTAX	Counter64
+    UNITS	"packets"
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Packets metered for cpuIndex."
+    ::= { iptNetflowCpuEntry 4 }
+
+cpuInBytes OBJECT-TYPE
+    SYNTAX	Counter64
+    UNITS	"bytes"
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Bytes metered on this cpu."
+    ::= { iptNetflowCpuEntry 5 }
+
+cpuHashMetric OBJECT-TYPE
+    SYNTAX	FixedDiv100
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Measure of performance of hash table on this cpu."
+    ::= { iptNetflowCpuEntry 6 }
+
+cpuDropPackets OBJECT-TYPE
+    SYNTAX	Counter64
+    UNITS	"packets"
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Packets dropped by metering process on this cpu."
+    ::= { iptNetflowCpuEntry 7 }
+
+cpuDropBytes OBJECT-TYPE
+    SYNTAX	Counter64
+    UNITS	"bytes"
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Bytes in cpuDropPackets for this cpu."
+    ::= { iptNetflowCpuEntry 8 }
+
+cpuErrTrunc OBJECT-TYPE
+    SYNTAX	Counter32
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Truncated packets dropped for this cpu."
+    ::= { iptNetflowCpuEntry 9 }
+
+cpuErrFrag OBJECT-TYPE
+    SYNTAX	Counter32
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Fragmented packets dropped for this cpu."
+    ::= { iptNetflowCpuEntry 10 }
+
+cpuErrAlloc OBJECT-TYPE
+    SYNTAX	Counter32
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Packets dropped due to memory allocation errors."
+    ::= { iptNetflowCpuEntry 11 }
+
+cpuErrMaxflows OBJECT-TYPE
+    SYNTAX	Counter32
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Packets dropped due to maxflows limit being reached."
+    ::= { iptNetflowCpuEntry 12 }
+
+-- Per Socket statistics --
+
+iptNetflowSockTable OBJECT-TYPE
+    SYNTAX	SEQUENCE OF IptNetflowSockEntry
+    MAX-ACCESS	not-accessible
+    STATUS	current
+    DESCRIPTION
+	"Per socket statistics."
+    ::= { iptNetflowStatistics 3 }
+
+iptNetflowSockEntry OBJECT-TYPE
+    SYNTAX	IptNetflowSockEntry
+    MAX-ACCESS	not-accessible
+    STATUS	current
+    DESCRIPTION
+	"Defines an entry in the iptNetflowSockTable."
+    INDEX	{ sockIndex }
+    ::= { iptNetflowSockTable 1 }
+
+IptNetflowSockEntry ::=
+    SEQUENCE {
+      sockIndex		INTEGER,
+      sockDestination	DisplayString,
+      sockActive	INTEGER,
+      sockErrConnect	Counter32,
+      sockErrFull	Counter32,
+      sockErrCberr	Counter32,
+      sockErrOther	Counter32,
+      sockSndbuf	Gauge32,
+      sockSndbufFill	Gauge32,
+      sockSndbufPeak	Gauge32
+    }
+
+sockIndex OBJECT-TYPE
+    SYNTAX	Integer32 (0..4096)
+    MAX-ACCESS	not-accessible
+    STATUS	current
+    DESCRIPTION
+	"Exporting socket index."
+    ::= { iptNetflowSockEntry 1 }
+
+sockDestination OBJECT-TYPE
+    SYNTAX	DisplayString
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Exporting connection destination of this socket."
+    ::= { iptNetflowSockEntry 2 }
+
+sockActive OBJECT-TYPE
+    SYNTAX	INTEGER {
+	  inactive(0),
+	  active(1)
+    }
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Connection state of this socket."
+    ::= { iptNetflowSockEntry 3 }
+
+sockErrConnect OBJECT-TYPE
+    SYNTAX	Counter32
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Connections attempt count. High value usually mean
+	that network is not set up properly, or module is loaded
+	before network is up, in this case it is not dangerous
+	and should be ignored."
+    ::= { iptNetflowSockEntry 4 }
+
+sockErrFull OBJECT-TYPE
+    SYNTAX	Counter32
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Socket full errors on this socket. Usually mean sndbuf
+	value is too small."
+    ::= { iptNetflowSockEntry 5 }
+
+sockErrCberr OBJECT-TYPE
+    SYNTAX	Counter32
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Asynchronous callback errors on this socket. Usually mean
+	that there is 'connection refused' errors on UDP socket
+	reported via ICMP messages."
+    ::= { iptNetflowSockEntry 6 }
+
+sockErrOther OBJECT-TYPE
+    SYNTAX	Counter32
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"All other possible errors on this socket."
+    ::= { iptNetflowSockEntry 7 }
+
+sockSndbuf OBJECT-TYPE
+    SYNTAX	Gauge32
+    UNITS	"bytes"
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Sndbuf value for this socket. Higher value allows accommodate
+	(exporting) traffic bursts."
+    ::= { iptNetflowSockEntry 8 }
+
+sockSndbufFill OBJECT-TYPE
+    SYNTAX	Gauge32
+    UNITS	"bytes"
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Amount of data currently in socket buffers. When this value
+	will reach size sndbuf, packet loss will occur."
+    ::= { iptNetflowSockEntry 9 }
+
+sockSndbufPeak OBJECT-TYPE
+    SYNTAX	Gauge32
+    UNITS	"bytes"
+    MAX-ACCESS	read-only
+    STATUS	current
+    DESCRIPTION
+	"Historical peak amount of data in socket buffers. Useful to
+	evaluate sndbuf size, because sockSndbufFill is transient."
+    ::= { iptNetflowSockEntry 10 }
+
+-- Conformance Information --
+
+iptNetflowCompliances	OBJECT IDENTIFIER ::= { iptNetflowConformance 1 }
+iptNetflowGroups	OBJECT IDENTIFIER ::= { iptNetflowConformance 2 }
+
+iptNetflowCompliance MODULE-COMPLIANCE
+    STATUS current
+    DESCRIPTION "iptNetflowCompliance"
+    MODULE
+    MANDATORY-GROUPS {
+	iptNetflowModuleGroup,
+	iptNetflowSysctlGroup,
+	iptNetflowTotalsGroup,
+	iptNetflowCpuGroup,
+	iptNetflowSockGroup
+    }
+    ::= { iptNetflowCompliances 1 }
+
+iptNetflowModuleGroup OBJECT-GROUP
+    OBJECTS {
+	name,
+	version,
+	srcversion,
+	loadTime,
+	refcnt
+    }
+    STATUS	current
+    DESCRIPTION "Modinfo."
+    ::= { iptNetflowGroups 1 }
+
+iptNetflowSysctlGroup OBJECT-GROUP
+    OBJECTS {
+	hashsize,
+	maxflows,
+	protocol,
+	active-timeout,
+	inactive-timeout,
+	sndbuf,
+	destination,
+	aggregation,
+	sampler,
+	natevents,
+	promisc,
+	snmp-rules,
+	scan-min
+    }
+    STATUS	current
+    DESCRIPTION "Read-write objects accessed via sysctl"
+    ::= { iptNetflowGroups 2 }
+
+iptNetflowTotalsGroup OBJECT-GROUP
+    OBJECTS {
+	inBitRate,
+	inPacketRate,
+	inFlows,
+	inPackets,
+	inBytes,
+	hashMetric,
+	hashMemory,
+	hashFlows,
+	hashPackets,
+	hashBytes,
+	dropPackets,
+	dropBytes,
+	outByteRate,
+	outFlows,
+	outPackets,
+	outBytes,
+	lostFlows,
+	lostPackets,
+	lostBytes,
+	errTotal,
+	sndbufPeak
+    }
+    STATUS	current
+    DESCRIPTION "Statistics totals."
+    ::= { iptNetflowGroups 3 }
+
+iptNetflowCpuGroup OBJECT-GROUP
+    OBJECTS {
+	cpuIndex,
+	cpuInPacketRate,
+	cpuInFlows,
+	cpuInPackets,
+	cpuInBytes,
+	cpuHashMetric,
+	cpuDropPackets,
+	cpuDropBytes,
+	cpuErrTrunc,
+	cpuErrFrag,
+	cpuErrAlloc,
+	cpuErrMaxflows
+    }
+    STATUS	current
+    DESCRIPTION "Per CPU statistics."
+    ::= { iptNetflowGroups 4 }
+
+iptNetflowSockGroup OBJECT-GROUP
+    OBJECTS {
+	sockDestination,
+	sockActive,
+	sockErrConnect,
+	sockErrFull,
+	sockErrCberr,
+	sockErrOther,
+	sockSndbuf,
+	sockSndbufFill,
+	sockSndbufPeak
+    }
+    STATUS	current
+    DESCRIPTION "Per socket statistics."
+    ::= { iptNetflowGroups 5 }
+
+END

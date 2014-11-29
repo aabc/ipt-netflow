@@ -60,59 +60,113 @@ struct netflow5_pdu {
 	__be32			seq;
 	__u8			eng_type;
 	__u8			eng_id;
-	__u16			padding;
+	__u16			sampling;
 	struct netflow5_record	flow[NETFLOW5_RECORDS_MAX];
 } __attribute__ ((packed));
 #define NETFLOW5_HEADER_SIZE (sizeof(struct netflow5_pdu) - NETFLOW5_RECORDS_MAX * sizeof(struct netflow5_record))
 
-/* NetFlow v9 RFC http://www.ietf.org/rfc/rfc3954.txt */
+#define IF_NAME_SZ	IFNAMSIZ
+#define IF_DESC_SZ	32
+
+/* NetFlow v9	http://www.ietf.org/rfc/rfc3954.txt */
+/* IPFIX	http://www.iana.org/assignments/ipfix/ipfix.xhtml */
+/* v9 elements are uppercased, IPFIX camel cased. */
+#define one(id, name, len) name = id,
+#define two(id, a, b, len)		\
+		one(id, a, len)	\
+		one(id, b, len)
+#define Elements \
+	two(1,   IN_BYTES, octetDeltaCount, 4) \
+	two(2,   IN_PKTS, packetDeltaCount, 4) \
+	two(4,   PROTOCOL, protocolIdentifier, 1) \
+	two(5,   TOS, ipClassOfService, 1) \
+	two(6,   TCP_FLAGS, tcpControlBits, 1) \
+	two(7,   L4_SRC_PORT, sourceTransportPort, 2) \
+	two(8,   IPV4_SRC_ADDR, sourceIPv4Address, 4) \
+	two(9,   SRC_MASK, sourceIPv4PrefixLength, 1) \
+	two(10,  INPUT_SNMP, ingressInterface, 2) \
+	two(11,  L4_DST_PORT, destinationTransportPort, 2) \
+	two(12,  IPV4_DST_ADDR, destinationIPv4Address, 4) \
+	two(13,  DST_MASK, destinationIPv4PrefixLength, 1) \
+	two(14,  OUTPUT_SNMP, egressInterface, 2) \
+	two(15,  IPV4_NEXT_HOP, ipNextHopIPv4Address, 4) \
+	two(21,  LAST_SWITCHED, flowEndSysUpTime, 4) \
+	two(22,  FIRST_SWITCHED, flowStartSysUpTime, 4) \
+	one(25,  minimumIpTotalLength, 2) \
+	one(26,  maximumIpTotalLength, 2) \
+	two(27,  IPV6_SRC_ADDR, sourceIPv6Address, 16) \
+	two(28,  IPV6_DST_ADDR, destinationIPv6Address, 16) \
+	two(31,  IPV6_FLOW_LABEL, flowLabelIPv6, 3) \
+	two(32,  ICMP_TYPE, icmpTypeCodeIPv4, 2) \
+	two(33,  MUL_IGMP_TYPE, igmpType, 1) \
+	two(40,  TOTAL_BYTES_EXP, exportedOctetTotalCount, 8) \
+	two(41,  TOTAL_PKTS_EXP, exportedMessageTotalCount, 8) \
+	two(42,  TOTAL_FLOWS_EXP, exportedFlowRecordTotalCount, 8) \
+	two(48,  FLOW_SAMPLER_ID, samplerId, 1) \
+	two(49,  FLOW_SAMPLER_MODE, samplerMode, 1) \
+	two(50,  FLOW_SAMPLER_RANDOM_INTERVAL, samplerRandomInterval, 2) \
+	one(52,  minimumTTL, 1) \
+	one(53,  maximumTTL, 1) \
+	two(56,  SRC_MAC, sourceMacAddress, 6) \
+	two(57,  DST_MAC, postDestinationMacAddress, 6) \
+	two(58,  SRC_VLAN, vlanId, 2) \
+	two(61,  DIRECTION, flowDirection, 1) \
+	two(62,  IPV6_NEXT_HOP, ipNextHopIPv6Address, 16) \
+	two(64,  IPV6_OPTION_HEADERS, ipv6ExtensionHeaders, 2) \
+	one(80,  destinationMacAddress, 6) \
+	two(82,  IF_NAME, interfaceName, IF_NAME_SZ) \
+	two(83,  IF_DESC, interfaceDescription, IF_DESC_SZ) \
+	one(138, observationPointId, 4) \
+	one(141, LineCardId, 4) \
+	one(142, portId, 4) \
+	one(143, meteringProcessId, 4) \
+	one(144, exportingProcessId, 4) \
+	one(145, TemplateId, 2) \
+	one(149, observationDomainId, 4) \
+	one(152, flowStartMilliseconds, 8) \
+	one(153, flowEndMilliseconds, 8) \
+	one(154, flowStartMicroseconds, 8) \
+	one(155, flowEndMicroseconds, 8) \
+	one(160, systemInitTimeMilliseconds, 8) \
+	one(163, observedFlowTotalCount, 8) \
+	one(164, ignoredPacketTotalCount, 8) \
+	one(165, ignoredOctetTotalCount, 8) \
+	one(166, notSentFlowTotalCount, 8) \
+	one(167, notSentPacketTotalCount, 8) \
+	one(168, notSentOctetTotalCount, 8) \
+	one(208, ipv4Options, 4) \
+	one(209, tcpOptions, 4) \
+	one(225, postNATSourceIPv4Address, 4) \
+	one(226, postNATDestinationIPv4Address, 4) \
+	one(227, postNAPTSourceTransportPort, 2) \
+	one(228, postNAPTDestinationTransportPort, 2) \
+	one(230, natEvent, 1) \
+	one(243, dot1qVlanId, 2) \
+	one(244, dot1qPriority, 1) \
+	one(245, dot1qCustomerVlanId, 2) \
+	one(246, dot1qCustomerPriority, 1) \
+	one(256, ethernetType, 2) \
+	one(295, IPSecSPI, 4) \
+	one(300, observationDomainName, 128) \
+	one(302, selectorId, 1) \
+	one(309, samplingSize, 1) \
+	one(310, samplingPopulation, 2) \
+	one(318, selectorIdTotalPktsObserved, 8) \
+	one(319, selectorIdTotalPktsSelected, 8) \
+	one(323, observationTimeMilliseconds, 8) \
+	one(324, observationTimeMicroseconds, 8) \
+	one(325, observationTimeNanoseconds, 8) \
+	one(390, flowSelectorAlgorithm, 1) \
+	one(394, selectorIDTotalFlowsObserved, 8) \
+	one(395, selectorIDTotalFlowsSelected, 8) \
+	one(396, samplingFlowInterval, 1) \
+	one(397, samplingFlowSpacing, 2)
+
 enum {
-	IN_BYTES = 1,
-	IN_PKTS = 2,
-	PROTOCOL = 4,
-	TOS = 5,
-	TCP_FLAGS = 6,
-	L4_SRC_PORT = 7,
-	IPV4_SRC_ADDR = 8,
-	SRC_MASK = 9,
-	INPUT_SNMP = 10,
-	L4_DST_PORT = 11,
-	IPV4_DST_ADDR = 12,
-	DST_MASK = 13,
-	OUTPUT_SNMP = 14,
-	IPV4_NEXT_HOP = 15,
-	//SRC_AS = 16,
-	//DST_AS = 17,
-	//BGP_IPV4_NEXT_HOP = 18,
-	//MUL_DST_PKTS = 19,
-	//MUL_DST_BYTES = 20,
-	LAST_SWITCHED = 21,
-	FIRST_SWITCHED = 22,
-	IPV6_SRC_ADDR = 27,
-	IPV6_DST_ADDR = 28,
-	IPV6_FLOW_LABEL = 31,
-	ICMP_TYPE = 32,
-	MUL_IGMP_TYPE = 33,
-	//TOTAL_BYTES_EXP = 40,
-	//TOTAL_PKTS_EXP = 41,
-	//TOTAL_FLOWS_EXP = 42,
-	IPV6_NEXT_HOP = 62,
-	IPV6_OPTION_HEADERS = 64,
-	commonPropertiesId = 137, /* for MARK */
-	ipv4Options = 208,
-	tcpOptions = 209,
-	postNATSourceIPv4Address = 225,
-	postNATDestinationIPv4Address = 226,
-	postNAPTSourceTransportPort = 227,
-	postNAPTDestinationTransportPort = 228,
-	natEvent = 230,
-	postNATSourceIPv6Address = 281,
-	postNATDestinationIPv6Address = 282,
-	IPSecSPI = 295,
-	observationTimeMilliseconds = 323,
-	observationTimeMicroseconds = 324,
-	observationTimeNanoseconds = 325,
+	Elements
 };
+#undef one
+#undef two
 
 enum {
 	FLOWSET_TEMPLATE = 0,
@@ -122,36 +176,62 @@ enum {
 	FLOWSET_DATA_FIRST = 256,
 };
 
+enum {				/* v9 scopes */
+	SCOPE_SYSTEM = 1,
+	SCOPE_INTERFACE = 2,
+	SCOPE_LINECARD = 3,
+	SCOPE_CACHE = 4,
+	SCOPE_TEMPLATE = 5,
+};
+
 struct flowset_template {
 	__be16	flowset_id;
-	__be16	length;
+	__be16	length;		/* (bytes) */
 	__be16	template_id;
-	__be16	field_count;
+	__be16	field_count;	/* (items) */
 } __attribute__ ((packed));
 
 struct flowset_data {
+	__be16	flowset_id;	/* corresponds to template_id */
+	__be16	length;		/* (bytes) */
+} __attribute__ ((packed));
+
+/* http://tools.ietf.org/html/rfc3954#section-6.1 */
+struct flowset_opt_tpl_v9 {
 	__be16	flowset_id;
 	__be16	length;
+	__be16	template_id;
+	__be16	scope_len;	/* (bytes) */
+	__be16	opt_len;	/* (bytes) */
+} __attribute__ ((packed));
+
+/* http://tools.ietf.org/html/rfc5101#section-3.4.2.2 */
+struct flowset_opt_tpl_ipfix {
+	__be16	flowset_id;
+	__be16	length;
+	__be16	template_id;
+	__be16	field_count;	/* total (items) */
+	__be16	scope_count;	/* (items) must not be zero */
 } __attribute__ ((packed));
 
 /* NetFlow v9 packet. */
 struct netflow9_pdu {
 	__be16		version;
-	__be16		nr_records;
+	__be16		nr_records;	/* (items) */
 	__be32		sys_uptime_ms;
 	__be32		export_time_s;
 	__be32		seq;
-	__be32		source_id; /* Exporter Observation Domain */
+	__be32		source_id;	/* Exporter Observation Domain */
 	__u8		data[1400];
 } __attribute__ ((packed));
 
 /* IPFIX packet. */
 struct ipfix_pdu {
 	__be16		version;
-	__be16		length;
+	__be16		length;		/* (bytes) */
 	__be32		export_time_s;
 	__be32		seq;
-	__be32		odomain_id; /* Observation Domain ID */
+	__be32		odomain_id;	/* Observation Domain ID */
 	__u8		data[1400];
 } __attribute__ ((packed));
 
@@ -168,6 +248,10 @@ union nf_inet_addr {
 };
 #endif
 
+#define EXTRACT_SPI(tuple)	((tuple.s_port << 16) | tuple.d_port)
+#define SAVE_SPI(tuple, spi)	{ tuple.s_port = spi >> 16; \
+				  tuple.d_port = spi; }
+
 /* hashed data which identify unique flow */
 /* 16+16 + 2+2 + 2+1+1+1 = 41 */
 struct ipt_netflow_tuple {
@@ -176,10 +260,18 @@ struct ipt_netflow_tuple {
 	__be16		s_port; // Network byte order
 	__be16		d_port; // -"-
 	__u16		i_ifc;	// Host byte order
+#ifdef ENABLE_VLAN
+	__be16		tag1;	// Network byte order (outer tag)
+	__be16		tag2;	// -"-
+#endif
 	__u8		protocol;
 	__u8		tos;
 	__u8		l3proto;
-};
+#ifdef ENABLE_MAC
+	__u8		h_dst[ETH_ALEN];
+	__u8		h_src[ETH_ALEN];
+#endif
+} __attribute__ ((packed));
 
 /* hlist[2] + tuple[]: 8+8 + 41 = 57 (less than usual cache line, 64) */
 struct ipt_netflow {
@@ -190,14 +282,26 @@ struct ipt_netflow {
 
 	/* volatile data */
 	union nf_inet_addr nh;
+#if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
+	__be16		ethernetType; /* Network byte order */
+#endif
 	__u16		o_ifc;
+#ifdef SNMP_RULES
+	__u16		i_ifcr;
+	__u16		o_ifcr;
+#endif
 	__u8		s_mask;
 	__u8		d_mask;
 	__u8		tcp_flags; /* `OR' of all tcp flags */
-
+#ifdef ENABLE_DIRECTION
+	__u8		hooknumx; /* hooknum + 1 */
+#endif
 	/* flow statistics */
 	u_int32_t	nr_packets;
 	u_int32_t	nr_bytes;
+#ifdef ENABLE_SAMPLER
+	unsigned int	sampler_count; /* for deterministic sampler only */
+#endif
 	union {
 		struct {
 			unsigned long first;
@@ -205,27 +309,30 @@ struct ipt_netflow {
 		} ts;
 		ktime_t	ts_obs;
 	} _ts_un;
-#define ts_first _ts_un.ts.first
-#define ts_last  _ts_un.ts.last
-#define ts_obs   _ts_un.ts_obs
+#define nf_ts_first _ts_un.ts.first
+#define nf_ts_last  _ts_un.ts.last
+#define nf_ts_obs   _ts_un.ts_obs
 	u_int32_t	flow_label; /* IPv6 */
 	u_int32_t	options; /* IPv4(16) & IPv6(32) Options */
 	u_int32_t	tcpoptions;
-#ifdef CONFIG_NF_CONNTRACK_MARK
-	u_int32_t	mark; /* Exported as commonPropertiesId */
-#endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	__be32		s_as;
 	__be32		d_as;
 	struct nat_event *nat;
 #endif
-	struct list_head list; // all flows chain
-	spinlock_t	*lock;
+	union {
+		struct list_head list; /* all flows in ipt_netflow_list */
+#ifdef HAVE_LLIST
+		struct llist_node llnode; /* purged flows */
+#endif
+	} _flow_list;
+#define flows_list  _flow_list.list
+#define flows_llnode _flow_list.llnode
 };
 
 #ifdef CONFIG_NF_NAT_NEEDED
 enum {
-	NAT_CREATE, NAT_DESTROY, NAT_POOLEXHAUSTED
+	NAT_CREATE = 1, NAT_DESTROY = 2, NAT_POOLEXHAUSTED = 3
 };
 struct nat_event {
 	struct list_head list;
@@ -254,12 +361,19 @@ static inline int ipt_netflow_tuple_equal(const struct ipt_netflow_tuple *t1,
 struct ipt_netflow_sock {
 	struct list_head list;
 	struct socket *sock;
-	__be32 ipaddr;
+	__be32 ipaddr;			// destination
 	unsigned short port;
-	atomic_t wmem_peak;	// sk_wmem_alloc peak value
-	atomic_t err_full;	// socket filled error
-	atomic_t err_connect;	// connect errors
-	atomic_t err_other;	// other socket errors
+	atomic_t wmem_peak;		// sk_wmem_alloc peak value
+	unsigned int err_connect;	// connect errors
+	unsigned int err_full;		// socket filled error
+	unsigned int err_other;		// other socket errors
+	unsigned int err_cberr;		// async errors, icmp
+	unsigned int pkt_exp;		// pkts expoted to this dest
+	u64 bytes_exp;			// bytes -"-
+	u64 bytes_exp_old;		// for rate calculation
+	unsigned int bytes_rate;	// bytes per second
+	unsigned int pkt_sent;		// pkts sent to this dest
+	unsigned int pkt_fail;		// pkts failed to send to this dest
 };
 
 struct netflow_aggr_n {
@@ -281,41 +395,86 @@ struct netflow_aggr_p {
 
 #define NETFLOW_STAT_INC(count) (__get_cpu_var(ipt_netflow_stat).count++)
 #define NETFLOW_STAT_ADD(count, val) (__get_cpu_var(ipt_netflow_stat).count += (unsigned long long)val)
+#define NETFLOW_STAT_SET(count, val) (__get_cpu_var(ipt_netflow_stat).count = (unsigned long long)val)
+#define NETFLOW_STAT_TS(count)							 \
+	do {									 \
+		ktime_t kts = ktime_get_real();					 \
+		if (!(__get_cpu_var(ipt_netflow_stat)).count.first.tv64)	 \
+			__get_cpu_var(ipt_netflow_stat).count.first = kts;	 \
+		__get_cpu_var(ipt_netflow_stat).count.last = kts;		 \
+	} while (0);
 
 #define NETFLOW_STAT_INC_ATOMIC(count)				\
 	do {							\
 		preempt_disable();				\
 		(__get_cpu_var(ipt_netflow_stat).count++);	\
 		preempt_enable();				\
-	} while(0);
+	} while (0);
 
 #define NETFLOW_STAT_ADD_ATOMIC(count, val)			\
 	do {							\
 		preempt_disable();				\
 		(__get_cpu_var(ipt_netflow_stat).count += (unsigned long long)val); \
 		preempt_enable();				\
-	} while(0);
+	} while (0);
+#define NETFLOW_STAT_READ(count) ({					\
+		unsigned int _tmp = 0, _cpu;				\
+		for_each_present_cpu(_cpu)				\
+			 _tmp += per_cpu(ipt_netflow_stat, _cpu).count;	\
+		_tmp;							\
+	})
 
+struct duration {
+	ktime_t first;
+	ktime_t last;
+};
 
 /* statistics */
 struct ipt_netflow_stat {
 	u64 searched;			// hash stat
 	u64 found;			// hash stat
-	u64 notfound;			// hash stat
-	unsigned int truncated;		// packets stat
-	unsigned int frags;		// packets stat
-	unsigned int alloc_err;		// failed to allocate flow mem
-	unsigned int maxflows_err;	// maxflows reached
+	u64 notfound;			// hash stat (new flows)
+	u64  pkt_total;			// packets metered
+	u64 traf_total;			// traffic metered
+#ifdef ENABLE_PROMISC
+	u64 pkt_promisc;		// how much packets passed promisc code
+	u64 pkt_promisc_drop;		// how much packets discarded
+#endif
+	/* above is grouped for cache */
+	unsigned int truncated;		// packets stat (drop)
+	unsigned int frags;		// packets stat (drop)
+	unsigned int maxflows_err;	// maxflows reached (drop)
+	unsigned int alloc_err;		// failed to allocate memory (drop & lost)
+#ifdef ENABLE_DEBUGFS
+	unsigned int freeze_err;	// freeze errors (drop)
+#endif
+	struct duration drop;
 	unsigned int send_success;	// sendmsg() ok
 	unsigned int send_failed;	// sendmsg() failed
-	unsigned int sock_errors;	// socket error callback called (got icmp refused)
-	u64 exported_size;		// netflow traffic itself
-	u64 pkt_total;			// packets accounted total
-	u64 traf_total;			// traffic accounted total
-	u64 pkt_drop;			// packets not accounted total
-	u64 traf_drop;			// traffic not accounted total
-	u64 pkt_out;			// packets out of the memory
-	u64 traf_out;			// traffic out of the memory
+	unsigned int sock_cberr;	// socket error callback called (got icmp refused)
+	unsigned int exported_rate;	// netflow traffic itself
+	u64 exported_pkt;		// netflow traffic itself
+	u64 exported_flow;		// netflow traffic itself
+	u64 exported_traf;		// netflow traffic itself
+	u64 exported_trafo;		// netflow traffic itself
+	u64  pkt_total_prev;		// packets metered previous interval
+	u32  pkt_total_rate;		// packet rate for this cpu
+	u64  pkt_drop;			// packets not metered
+	u64 traf_drop;			// traffic not metered
+	u64 flow_lost;			// flows not sent to collector
+	u64  pkt_lost;			// packets not sent to collector
+	u64 traf_lost;			// traffic not sent to collector
+	struct duration lost;
+	u64  pkt_out;			// packets out of the hash
+	u64 traf_out;			// traffic out of the hash
+#ifdef ENABLE_SAMPLER
+	u64 pkts_observed;		// sampler stat
+	u64 pkts_selected;		// sampler stat
+#endif
+	u64 old_searched;		// previous hash stat
+	u64 old_found;			// for calculation per cpu metric
+	u64 old_notfound;
+	int metric;			// one minute ewma of hash efficiency
 };
 
 #ifndef list_first_entry

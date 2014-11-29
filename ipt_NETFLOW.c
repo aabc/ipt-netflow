@@ -1,6 +1,6 @@
 /*
  * This is NetFlow exporting module (NETFLOW target) for linux
- * (c) 2008-2013 <abc@telekom.ru>
+ * (c) 2008-2014 <abc@telekom.ru>
  *
  *
  *   This program is free software: you can redistribute it and/or modify
@@ -19,34 +19,57 @@
  */
 
 #include <linux/module.h>
+#include <linux/ctype.h>
 #include <linux/skbuff.h>
 #include <linux/proc_fs.h>
 #include <linux/vmalloc.h>
 #include <linux/seq_file.h>
 #include <linux/random.h>
+#include <linux/in6.h>
 #include <linux/ip.h>
 #include <linux/udp.h>
 #include <linux/icmp.h>
 #include <linux/igmp.h>
 #include <linux/inetdevice.h>
+#include <linux/netdevice.h>
+#include <linux/etherdevice.h>
+#include <linux/ethtool.h>
 #include <linux/hash.h>
 #include <linux/delay.h>
 #include <linux/spinlock_types.h>
+#include <linux/ktime.h>
+#include <linux/if_arp.h>
 #include <net/icmp.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
 #include <net/tcp.h>
 #include <net/route.h>
 #include <net/ip6_fib.h>
+#include <net/addrconf.h>
 #include <net/dst.h>
 #include <linux/netfilter_ipv4/ip_tables.h>
-#if defined(CONFIG_NF_NAT_NEEDED) || defined(CONFIG_NF_CONNTRACK_MARK)
+#ifndef ENABLE_NAT
+# undef CONFIG_NF_NAT_NEEDED
+#endif
+#ifdef ENABLE_VLAN
+#include <linux/if_vlan.h>
+#endif
+#ifdef ENABLE_MAC
+#include <linux/if_ether.h>
+#include <linux/etherdevice.h>
+#endif
+#if defined(CONFIG_NF_NAT_NEEDED)
 #include <linux/notifier.h>
 #include <net/netfilter/nf_conntrack.h>
 #include <net/netfilter/nf_conntrack_core.h>
 #endif
 #include <linux/version.h>
 #include <asm/unaligned.h>
+#ifdef HAVE_LLIST
+	/* llist.h is officially defined since linux 3.1,
+	 * but centos6 have it backported on its 2.6.32.el6 */
+#include <linux/llist.h>
+#endif
 #include "ipt_NETFLOW.h"
 #include "murmur3.h"
 #ifdef CONFIG_BRIDGE_NETFILTER
@@ -54,6 +77,17 @@
 #endif
 #ifdef CONFIG_SYSCTL
 #include <linux/sysctl.h>
+#endif
+#ifdef ENABLE_DEBUGFS
+# ifdef CONFIG_DEBUG_FS
+# include <linux/debugfs.h>
+# else
+# undef ENABLE_DEBUGFS
+# endif
+#endif
+#ifndef CONFIG_NF_CONNTRACK_EVENTS
+/* No conntrack events in the kernel imply no natevents. */
+#undef CONFIG_NF_NAT_NEEDED
 #endif
 
 #ifndef NIPQUAD
@@ -82,7 +116,7 @@
 #define ipt_target xt_target
 #endif
 
-#define IPT_NETFLOW_VERSION "1.8.2" /* Note that if you are using git, you
+#define IPT_NETFLOW_VERSION "2.0"   /* Note that if you are using git, you
 				       will see version in other format. */
 #include "version.h"
 #ifdef GITVERSION
@@ -96,11 +130,44 @@ MODULE_DESCRIPTION("iptables NETFLOW target module");
 MODULE_VERSION(IPT_NETFLOW_VERSION);
 MODULE_ALIAS("ip6t_NETFLOW");
 
+static char version_string[128];
+static int  version_string_size;
+static struct duration start_ts; /* ts of module start (ktime) */
+
 #define DST_SIZE 256
 static char destination_buf[DST_SIZE] = "127.0.0.1:2055";
 static char *destination = destination_buf;
 module_param(destination, charp, 0444);
 MODULE_PARM_DESC(destination, "export destination ipaddress:port");
+
+#ifdef ENABLE_SAMPLER
+static char sampler_buf[128] = "";
+static char *sampler = sampler_buf;
+module_param(sampler, charp, 0444);
+MODULE_PARM_DESC(sampler, "flow sampler parameters");
+static atomic_t flow_count = ATOMIC_INIT(0); /* flow counter for deterministic sampler */
+static atomic64_t flows_observed = ATOMIC_INIT(0);
+static atomic64_t flows_selected = ATOMIC_INIT(0);
+#define SAMPLER_INFO_INTERVAL (5*60)
+static unsigned long ts_sampler_last = 0; /* template send time (jiffies) */
+static struct duration sampling_ts; /* ts of sampling start (ktime) */
+#define SAMPLER_SHIFT       14
+#define SAMPLER_INTERVAL_M  ((1 << SAMPLER_SHIFT) - 1)
+enum {
+	SAMPLER_DETERMINISTIC = 1,
+	SAMPLER_RANDOM	      = 2,
+	SAMPLER_HASH	      = 3
+};
+struct sampling {
+	union {
+		u32		v32;
+		struct {
+			u8	mode;
+			u16 	interval;
+		};
+	};
+} samp;
+#endif
 
 static int inactive_timeout = 15;
 module_param(inactive_timeout, int, 0644);
@@ -109,6 +176,17 @@ MODULE_PARM_DESC(inactive_timeout, "inactive flows timeout in seconds");
 static int active_timeout = 30 * 60;
 module_param(active_timeout, int, 0644);
 MODULE_PARM_DESC(active_timeout, "active flows timeout in seconds");
+
+static int exportcpu = -1;
+module_param(exportcpu, int, 0644);
+MODULE_PARM_DESC(exportcpu, "lock exporter to this cpu");
+
+#ifdef ENABLE_PROMISC
+static int promisc = 0;
+module_param(promisc, int, 0444);
+MODULE_PARM_DESC(promisc, "enable promisc hack (0=default, 1)");
+static DEFINE_MUTEX(promisc_lock);
+#endif
 
 static int debug = 0;
 module_param(debug, int, 0644);
@@ -120,7 +198,7 @@ MODULE_PARM_DESC(sndbuf, "udp socket SNDBUF size");
 
 static int protocol = 5;
 module_param(protocol, int, 0444);
-MODULE_PARM_DESC(protocol, "netflow protocol version (5, 9, 10)");
+MODULE_PARM_DESC(protocol, "netflow protocol version (5, 9, 10=IPFIX)");
 
 static unsigned int refresh_rate = 20;
 module_param(refresh_rate, uint, 0644);
@@ -130,10 +208,25 @@ static unsigned int timeout_rate = 30;
 module_param(timeout_rate, uint, 0644);
 MODULE_PARM_DESC(timeout_rate, "NetFlow v9/IPFIX timeout rate (minutes)");
 
+static int one = 1;
+static unsigned int scan_min = 1;
+static unsigned int scan_max = HZ / 10;
+module_param(scan_min, uint, 0644);
+MODULE_PARM_DESC(scan_min, "Minimal interval between export scans (jiffies)");
+
+#ifdef SNMP_RULES
+static char snmp_rules_buf[DST_SIZE] = "";
+static char *snmp_rules = snmp_rules_buf;
+module_param(snmp_rules, charp, 0444);
+MODULE_PARM_DESC(snmp_rules, "SNMP-index conversion rules");
+static unsigned char *snmp_ruleset;
+static DEFINE_SPINLOCK(snmp_lock);
+#endif
+
 #ifdef CONFIG_NF_NAT_NEEDED
 static int natevents = 0;
 module_param(natevents, int, 0444);
-MODULE_PARM_DESC(natevents, "send NAT Events");
+MODULE_PARM_DESC(natevents, "enable NAT Events");
 #endif
 
 static int hashsize;
@@ -144,13 +237,20 @@ static int maxflows = 2000000;
 module_param(maxflows, int, 0644);
 MODULE_PARM_DESC(maxflows, "maximum number of flows");
 static int peakflows = 0;
-static unsigned long peakflows_at;
+static unsigned long peakflows_at; /* jfffies */
 
+#ifdef ENABLE_AGGR
 #define AGGR_SIZE 1024
 static char aggregation_buf[AGGR_SIZE] = "";
 static char *aggregation = aggregation_buf;
 module_param(aggregation, charp, 0400);
 MODULE_PARM_DESC(aggregation, "aggregation ruleset");
+static LIST_HEAD(aggr_n_list);
+static LIST_HEAD(aggr_p_list);
+static DEFINE_RWLOCK(aggr_lock);
+static void aggregation_remove(struct list_head *list);
+static int add_aggregation(char *ptr);
+#endif
 
 static DEFINE_PER_CPU(struct ipt_netflow_stat, ipt_netflow_stat);
 static LIST_HEAD(usock_list);
@@ -158,18 +258,26 @@ static DEFINE_MUTEX(sock_lock);
 
 #define LOCK_COUNT (1<<8)
 #define LOCK_COUNT_MASK (LOCK_COUNT-1)
-static spinlock_t htable_locks[LOCK_COUNT] = {
-	[0 ... LOCK_COUNT - 1] = __SPIN_LOCK_UNLOCKED(htable_locks)
+struct stripe_entry {
+	struct list_head list; /* struct ipt_netflow, list for export */
+	spinlock_t lock; /* this locks both: hash table stripe & list above */
 };
-static DEFINE_RWLOCK(htable_rwlock); /* global lock to protect htable_locks change */
-static unsigned int ipt_netflow_hash_rnd;
-static struct hlist_head *ipt_netflow_hash __read_mostly; /* hash table memory */
-static unsigned int ipt_netflow_hash_size __read_mostly = 0; /* buckets */
-static LIST_HEAD(ipt_netflow_list); /* all flows */
-static DEFINE_SPINLOCK(hlist_lock); /* should almost always be locked w/o _bh */
-static LIST_HEAD(aggr_n_list);
-static LIST_HEAD(aggr_p_list);
-static DEFINE_RWLOCK(aggr_lock);
+static struct stripe_entry htable_stripes[LOCK_COUNT];
+static DEFINE_RWLOCK(htable_rwlock); /* global rwlock to protect htable[] resize */
+static struct hlist_head *htable __read_mostly; /* hash table memory */
+static unsigned int htable_size __read_mostly = 0; /* buckets */
+/* How it's organized:
+ *  htable_rwlock locks access to htable[hash], where
+ *  htable[htable_size] is big/resizable hash table, which is striped into
+ *  htable_stripes[LOCK_COUNT] smaller/static hash table, which contains
+ *  .list - list of flows ordered by exportability (usually it's access time)
+ *  .lock - lock to both: that .list and to htable[hash], where
+ *  hash to the htable[] is hash_netflow(&tuple) % htable_size
+ *  hash to the htable_stripes[] is hash & LOCK_COUNT_MASK
+ */
+#ifdef HAVE_LLIST
+static LLIST_HEAD(export_llist); /* flows to purge */
+#endif
 #ifdef CONFIG_NF_NAT_NEEDED
 static LIST_HEAD(nat_list); /* nat events */
 static DEFINE_SPINLOCK(nat_lock);
@@ -182,10 +290,13 @@ static atomic_t ipt_netflow_count = ATOMIC_INIT(0);
 static long long pdu_packets = 0, pdu_traf = 0; /* how much accounted traffic in pdu */
 static unsigned int pdu_count = 0;
 static unsigned int pdu_seq = 0;
-static unsigned int pdu_data_records = 0;
+static unsigned int pdu_data_records = 0; /* Data records */
+static unsigned int pdu_flow_records = 0; /* Data records with flows (for stat only) */
 static unsigned int pdu_tpl_records = 0;
-static unsigned long pdu_ts_mod; /* ts of last flow */
+static unsigned long pdu_ts_mod; /* ts(jiffies) of last flow */
+static unsigned int pdu_needs_export = 0;
 static union {
+	__be16 version;
 	struct netflow5_pdu v5;
 	struct netflow9_pdu v9;
 	struct ipfix_pdu ipfix;
@@ -193,9 +304,14 @@ static union {
 static int engine_id = 0; /* Observation Domain */
 static __u8 *pdu_data_used;
 static __u8 *pdu_high_wm; /* high watermark */
-static unsigned int pdu_max_size; /* sizeof pdu */
 static struct flowset_data *pdu_flowset = NULL; /* current data flowset */
 
+static unsigned long wk_start; /* last start of worker (jiffies) */
+static unsigned long wk_busy;  /* last work busy time (jiffies) */
+static unsigned int wk_count;  /* how much is scanned */
+static unsigned int wk_cpu;
+static unsigned int wk_trylock;
+static unsigned int wk_llist;
 static void (*netflow_export_flow)(struct ipt_netflow *nf);
 static void (*netflow_export_pdu)(void); /* called on timeout */
 static void netflow_switch_version(int ver);
@@ -215,20 +331,30 @@ static struct timer_list rate_timer;
 static long long sec_prate = 0, sec_brate = 0;
 static long long min_prate = 0, min_brate = 0;
 static long long min5_prate = 0, min5_brate = 0;
-static unsigned int metric = 100, min15_metric = 100, min5_metric = 100, min_metric = 100; /* hash metrics */
+#define METRIC_DFL 100
+static int metric = METRIC_DFL,
+	   min15_metric = METRIC_DFL,
+	   min5_metric = METRIC_DFL,
+	   min_metric = METRIC_DFL; /* hash metrics */
 
 static int set_hashsize(int new_size);
 static void destination_removeall(void);
 static int add_destinations(char *ptr);
-static void aggregation_remove(struct list_head *list);
-static int add_aggregation(char *ptr);
 static int netflow_scan_and_export(int flush);
 enum {
 	DONT_FLUSH, AND_FLUSH
 };
 static int template_ids = FLOWSET_DATA_FIRST;
 static int tpl_count = 0; /* how much active templates */
-
+#define STAT_INTERVAL	 (1*60)
+#define SYSINFO_INTERVAL (5*60)
+static unsigned long ts_stat_last = 0; /* (jiffies) */
+static unsigned long ts_sysinf_last = 0; /* (jiffies) */
+static unsigned long ts_ifnames_last = 0; /* (jiffies) */
+#ifdef ENABLE_DEBUGFS
+static atomic_t freeze = ATOMIC_INIT(0);
+static struct dentry *flows_dump_d;
+#endif
 
 static inline __be32 bits2mask(int bits) {
 	return (bits? 0xffffffff << (32 - bits) : 0);
@@ -245,22 +371,33 @@ static inline int mask2bits(__be32 mask) {
 /* under that lock worker is always stopped and not rescheduled,
  * and we can call worker sub-functions manually */
 static DEFINE_MUTEX(worker_lock);
-#define MIN_DELAY 1
-#define MAX_DELAY (HZ / 10)
+
 static int worker_delay = HZ / 10;
-static inline void _schedule_scan_worker(const int status)
+static inline void _schedule_scan_worker(const int pdus)
 {
+	int cpu = exportcpu;
+
 	/* rudimentary congestion avoidance */
-	if (status > 0)
-		worker_delay -= status;
-	else if (status < 0)
-		worker_delay /= 2;
+	if (pdus > 0)
+		worker_delay /= pdus;
 	else
-		worker_delay++;
-	if (worker_delay < MIN_DELAY)
-		worker_delay = MIN_DELAY;
-	else if (worker_delay > MAX_DELAY)
-		worker_delay = MAX_DELAY;
+		worker_delay *= 2;
+
+	if (worker_delay < scan_min)
+		worker_delay = scan_min;
+	else if (worker_delay > scan_max)
+		worker_delay = scan_max;
+
+	if (cpu >= 0) {
+		if (cpu < NR_CPUS &&
+		    cpu_online(cpu)) {
+			schedule_delayed_work_on(cpu, &netflow_work, worker_delay);
+			return;
+		}
+		printk(KERN_WARNING "ipt_NETFLOW: can't schedule exporter on cpu %d. Disabling cpu lock.\n",
+		    cpu);
+		exportcpu = -1;
+	}
 	schedule_delayed_work(&netflow_work, worker_delay);
 }
 
@@ -293,110 +430,214 @@ static inline void pause_scan_worker(void)
 #define INIT_NET(x) init_net.x
 #endif
 
+#ifdef ENABLE_SAMPLER
+static inline unsigned char get_sampler_mode(void)
+{
+	return samp.mode;
+}
+static inline unsigned short get_sampler_interval(void)
+{
+	return samp.interval;
+}
+static inline const char *sampler_mode_string(void)
+{
+	const unsigned char mode = get_sampler_mode();
+	return mode == SAMPLER_DETERMINISTIC? "deterministic" :
+		mode == SAMPLER_RANDOM? "random" : "hash";
+}
+/* map SAMPLER_HASH into SAMPLER_RANDOM */
+static unsigned char get_sampler_mode_nf(void)
+{
+	const unsigned char mode = get_sampler_mode();
+	return (mode == SAMPLER_HASH)? SAMPLER_RANDOM : mode;
+}
+static inline unsigned short sampler_nf_v5(void)
+{
+	return (get_sampler_mode_nf() << SAMPLER_SHIFT) | get_sampler_interval();
+}
+#endif
+
 #ifdef CONFIG_PROC_FS
+static inline int ABS(int x) { return x >= 0 ? x : -x; }
+#define SAFEDIV(x,y) ((y)? ({ u64 __tmp = x; do_div(__tmp, y); (int)__tmp; }) : 0)
+#define FFLOAT(x, prec) (int)(x) / prec, ABS((int)(x) % prec)
+static int snmp_seq_show(struct seq_file *seq, void *v)
+{
+	int cpu;
+	unsigned int nr_flows = atomic_read(&ipt_netflow_count);
+	struct ipt_netflow_stat t = { 0 };
+	struct ipt_netflow_sock *usock;
+	unsigned int sndbuf_peak = 0;
+	int snum = 0;
+
+	for_each_present_cpu(cpu) {
+		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+
+		t.notfound	+= st->notfound;
+		t.pkt_total	+= st->pkt_total;
+		t.traf_total	+= st->traf_total;
+
+		t.send_failed	+= st->send_failed;
+		t.sock_cberr	+= st->sock_cberr;
+
+		t.exported_rate	+= st->exported_rate;
+		t.exported_pkt	+= st->exported_pkt;
+		t.exported_flow	+= st->exported_flow;
+		t.exported_traf	+= st->exported_traf;
+
+		t.pkt_drop	+= st->pkt_drop;
+		t.traf_drop	+= st->traf_drop;
+		t.pkt_lost	+= st->pkt_lost;
+		t.traf_lost	+= st->traf_lost;
+		t.flow_lost	+= st->flow_lost;
+	}
+
+
+	seq_printf(seq,
+	    "inBitRate    %llu\n"
+	    "inPacketRate %llu\n"
+	    "inFlows      %llu\n"
+	    "inPackets    %llu\n"
+	    "inBytes      %llu\n"
+	    "hashMetric   %d.%02d\n"
+	    "hashMemory   %lu\n"
+	    "hashFlows    %u\n"
+	    "hashPackets  %llu\n"
+	    "hashBytes    %llu\n"
+	    "dropPackets  %llu\n"
+	    "dropBytes    %llu\n"
+	    "outByteRate  %u\n"
+	    "outFlows     %llu\n"
+	    "outPackets   %llu\n"
+	    "outBytes     %llu\n"
+	    "lostFlows    %llu\n"
+	    "lostPackets  %llu\n"
+	    "lostBytes    %llu\n"
+	    "errTotal     %u\n",
+	    sec_brate,
+	    sec_prate,
+	    t.notfound,
+	    t.pkt_total,
+	    t.traf_total,
+	    FFLOAT(SAFEDIV(100LL * (t.searched + t.found + t.notfound), (t.found + t.notfound)), 100),
+	    (unsigned long)nr_flows * sizeof(struct ipt_netflow) +
+		   (unsigned long)htable_size * sizeof(struct hlist_head),
+	    nr_flows,
+	    t.pkt_total - t.pkt_out,
+	    t.traf_total - t.traf_out,
+	    t.pkt_drop,
+	    t.traf_drop,
+	    t.exported_rate,
+	    t.exported_flow,
+	    t.exported_pkt,
+	    t.exported_traf,
+	    t.flow_lost,
+	    t.pkt_lost,
+	    t.traf_lost,
+	    t.send_failed + t.sock_cberr);
+
+	for_each_present_cpu(cpu) {
+		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+
+		seq_printf(seq,
+		    "cpu%u %u %llu %llu %llu %d.%02d %llu %llu %u %u %u %u\n",
+		    cpu,
+		    st->pkt_total_rate,
+		    st->notfound,
+		    st->pkt_total,
+		    st->traf_total,
+		    FFLOAT(st->metric, 100),
+		    st->pkt_drop,
+		    st->traf_drop,
+		    st->truncated,
+		    st->frags,
+		    st->alloc_err,
+		    st->maxflows_err);
+	}
+
+	mutex_lock(&sock_lock);
+	list_for_each_entry(usock, &usock_list, list) {
+		int wmem_peak = atomic_read(&usock->wmem_peak);
+
+		if (sndbuf_peak < wmem_peak)
+			sndbuf_peak = wmem_peak;
+		seq_printf(seq, "sock%d %u.%u.%u.%u:%u %d %u %u %u %u",
+		    snum,
+		    HIPQUAD(usock->ipaddr),
+		    usock->port,
+		    !!usock->sock,
+		    usock->err_connect,
+		    usock->err_full,
+		    usock->err_cberr,
+		    usock->err_other);
+		if (usock->sock) {
+			struct sock *sk = usock->sock->sk;
+
+			seq_printf(seq, " %u %u %u\n",
+			    sk->sk_sndbuf,
+			    atomic_read(&sk->sk_wmem_alloc),
+			    wmem_peak);
+		} else
+			seq_printf(seq, " 0 0 %u\n", wmem_peak);
+
+		snum++;
+	}
+	mutex_unlock(&sock_lock);
+	seq_printf(seq, "sndbufPeak   %u\n", sndbuf_peak);
+
+	return 0;
+}
+
 /* procfs statistics /proc/net/stat/ipt_netflow */
 static int nf_seq_show(struct seq_file *seq, void *v)
 {
 	unsigned int nr_flows = atomic_read(&ipt_netflow_count);
 	int cpu;
-	unsigned long long searched = 0, found = 0, notfound = 0;
-	unsigned int truncated = 0, frags = 0, alloc_err = 0, maxflows_err = 0;
-	unsigned int sock_errors = 0, send_failed = 0, send_success = 0;
-	unsigned long long pkt_total = 0, traf_total = 0, exported_size = 0;
-	unsigned long long pkt_drop = 0, traf_drop = 0;
-	unsigned long long pkt_out = 0, traf_out = 0;
+	struct ipt_netflow_stat t = { 0 };
 	struct ipt_netflow_sock *usock;
+#ifdef ENABLE_AGGR
 	struct netflow_aggr_n *aggr_n;
 	struct netflow_aggr_p *aggr_p;
+#endif
 	int snum = 0;
 	int peak = (jiffies - peakflows_at) / HZ;
 
-	seq_printf(seq, "ipt_NETFLOW version " IPT_NETFLOW_VERSION ", srcversion %s\n",
+	seq_printf(seq, "ipt_NETFLOW " IPT_NETFLOW_VERSION ", srcversion %s;"
+#ifdef ENABLE_AGGR
+	    " aggr"
+#endif
+#ifdef ENABLE_DEBUGFS
+	    " debugfs"
+#endif
+#ifdef ENABLE_DIRECTION
+	    " dir"
+#endif
+#ifdef HAVE_LLIST
+	    " llist"
+#endif
+#ifdef ENABLE_MAC
+	    " mac"
+#endif
+#ifdef CONFIG_NF_NAT_NEEDED
+	    " nel"
+#endif
+#ifdef ENABLE_PROMISC
+	    " promisc"
+#endif
+#ifdef ENABLE_SAMPLER
+	    " samp"
+# ifdef SAMPLING_HASH
+	    "-h"
+# endif
+#endif
+#ifdef SNMP_RULES
+	    " snmp"
+#endif
+#ifdef ENABLE_VLAN
+	    " vlan"
+#endif
+	    "\n",
 	    THIS_MODULE->srcversion);
-	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d.\n",
-		   nr_flows,
-		   peakflows,
-		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
-		   (unsigned int)((nr_flows * sizeof(struct ipt_netflow)) >> 10),
-		   worker_delay, HZ);
-
-	for_each_present_cpu(cpu) {
-		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
-
-		searched += st->searched;
-		found += st->found;
-		notfound += st->notfound;
-		truncated += st->truncated;
-		frags += st->frags;
-		alloc_err += st->alloc_err;
-		maxflows_err += st->maxflows_err;
-		send_success += st->send_success;
-		send_failed += st->send_failed;
-		sock_errors += st->sock_errors;
-		exported_size += st->exported_size;
-		pkt_total += st->pkt_total;
-		traf_total += st->traf_total;
-		pkt_drop += st->pkt_drop;
-		traf_drop += st->traf_drop;
-		pkt_out += st->pkt_out;
-		traf_out += st->traf_out;
-	}
-
-#define FFLOAT(x, prec) (int)(x) / prec, (int)(x) % prec
-	seq_printf(seq, "Hash: size %u (mem %uK), metric %d.%02d [%d.%02d, %d.%02d, %d.%02d]."
-	    " MemTraf: %llu pkt, %llu K (pdu %llu, %llu), Out %llu pkt, %llu K.\n",
-	    ipt_netflow_hash_size,
-	    (unsigned int)((ipt_netflow_hash_size * sizeof(struct hlist_head)) >> 10),
-	    FFLOAT(metric, 100),
-	    FFLOAT(min_metric, 100),
-	    FFLOAT(min5_metric, 100),
-	    FFLOAT(min15_metric, 100),
-	    pkt_total - pkt_out + pdu_packets,
-	    (traf_total - traf_out + pdu_traf) >> 10,
-	    pdu_packets,
-	    pdu_traf,
-	    pkt_out,
-	    traf_out >> 10);
-
-	seq_printf(seq, "Rate: %llu bits/sec, %llu packets/sec;"
-	    " Avg 1 min: %llu bps, %llu pps; 5 min: %llu bps, %llu pps\n",
-	    sec_brate, sec_prate, min_brate, min_prate, min5_brate, min5_prate);
-
-	seq_printf(seq, "cpu#  stat: <search found new [metric], trunc frag alloc maxflows>,"
-	    " sock: <ok fail cberr, bytes>, traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
-
-#define SAFEDIV(x,y) ((y)? ({ u64 __tmp = x; do_div(__tmp, y); (int)__tmp; }) : 0)
-	seq_printf(seq, "Total stat: %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
-	    " sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
-	    searched,
-	    (unsigned long long)found,
-	    (unsigned long long)notfound,
-	    FFLOAT(SAFEDIV(100LL * (searched + found + notfound), (found + notfound)), 100),
-	    truncated, frags, alloc_err, maxflows_err,
-	    send_success, send_failed, sock_errors,
-	    (unsigned long long)exported_size >> 10,
-	    (unsigned long long)pkt_total, (unsigned long long)traf_total >> 20,
-	    (unsigned long long)pkt_drop, (unsigned long long)traf_drop >> 10);
-
-	if (num_present_cpus() > 1) {
-		for_each_present_cpu(cpu) {
-			struct ipt_netflow_stat *st;
-
-			st = &per_cpu(ipt_netflow_stat, cpu);
-			seq_printf(seq, "cpu%u  stat: %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
-			    " sock: %6u %u %u, %llu K, traffic: %llu, %llu MB, drop: %llu, %llu K\n",
-			    cpu,
-			    (unsigned long long)st->searched,
-			    (unsigned long long)st->found,
-			    (unsigned long long)st->notfound,
-			    FFLOAT(SAFEDIV(100LL * (st->searched + st->found + st->notfound), (st->found + st->notfound)), 100),
-			    st->truncated, st->frags, st->alloc_err, st->maxflows_err,
-			    st->send_success, st->send_failed, st->sock_errors,
-			    (unsigned long long)st->exported_size >> 10,
-			    (unsigned long long)st->pkt_total, (unsigned long long)st->traf_total >> 20,
-			    (unsigned long long)st->pkt_drop, (unsigned long long)st->traf_drop >> 10);
-		}
-	}
 
 	seq_printf(seq, "Protocol version %d", protocol);
 	if (protocol == 10)
@@ -404,18 +645,166 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	else
 		seq_printf(seq, " (netflow)");
 	if (protocol >= 9)
-		seq_printf(seq, ", refresh-rate %u, timeout-rate %u, (templates %d, active %d)",
+		seq_printf(seq, ", refresh-rate %u, timeout-rate %u, (templates %d, active %d).\n",
 		    refresh_rate, timeout_rate, template_ids - FLOWSET_DATA_FIRST, tpl_count);
+	else
+		seq_printf(seq, "\n");
 
-	seq_printf(seq, ". Timeouts: active %d, inactive %d. Maxflows %u\n",
+	seq_printf(seq, "Timeouts: active %ds, inactive %ds. Maxflows %u\n",
 	    active_timeout,
 	    inactive_timeout,
 	    maxflows);
+
+#ifdef ENABLE_SAMPLER
+	if (get_sampler_mode()) {
+		seq_printf(seq, "Flow sampling mode %s one-out-of %u.",
+		    sampler_mode_string(),
+		    get_sampler_interval());
+		if (get_sampler_mode() != SAMPLER_HASH)
+			seq_printf(seq, " Flows selected %lu, discarded %lu.",
+			    atomic64_read(&flows_selected),
+			    atomic64_read(&flows_observed) - atomic64_read(&flows_selected));
+		else
+			seq_printf(seq, " Flows selected %lu.", atomic64_read(&flows_selected));
+		seq_printf(seq, " Pkts selected %llu, discarded %llu.\n",
+		    t.pkts_selected,
+		    t.pkts_observed - t.pkts_selected);
+	} else
+		seq_printf(seq, "Flow sampling is disabled.\n");
+#endif
+
+#ifdef ENABLE_PROMISC
+	seq_printf(seq, "Promisc hack is %s (observed %llu packets, discarded %llu).\n",
+	    promisc? "enabled" : "disabled",
+	    t.pkt_promisc,
+	    t.pkt_promisc_drop);
+#endif
 
 #ifdef CONFIG_NF_NAT_NEEDED
 	seq_printf(seq, "Natevents %s, count start %lu, stop %lu.\n", natevents? "enabled" : "disabled",
 	    nat_events_start, nat_events_stop);
 #endif
+
+	seq_printf(seq, "Flows: active %u (peak %u reached %ud%uh%um ago), mem %uK, worker delay %d/%d"
+	    " [%d..%d] (%u ms, %u us, %u:%u"
+#ifdef HAVE_LLIST
+	    " %u"
+#endif
+	    " [cpu%u]).\n",
+		   nr_flows,
+		   peakflows,
+		   peak / (60 * 60 * 24), (peak / (60 * 60)) % 24, (peak / 60) % 60,
+		   (unsigned int)(((unsigned long)nr_flows * sizeof(struct ipt_netflow) +
+				   (unsigned long)htable_size * sizeof(struct hlist_head)) >> 10),
+		   worker_delay, HZ,
+		   scan_min, scan_max,
+		   jiffies_to_msecs(jiffies - wk_start),
+		   jiffies_to_usecs(wk_busy),
+		   wk_count,
+		   wk_trylock,
+#ifdef HAVE_LLIST
+		   wk_llist,
+#endif
+		   wk_cpu);
+
+	for_each_present_cpu(cpu) {
+		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+
+		t.searched	+= st->searched;
+		t.found		+= st->found;
+		t.notfound	+= st->notfound;
+		t.pkt_total	+= st->pkt_total;
+		t.traf_total	+= st->traf_total;
+#ifdef ENABLE_PROMISC
+		t.pkt_promisc	+= st->pkt_promisc;
+		t.pkt_promisc_drop += st->pkt_promisc_drop;
+#endif
+		t.truncated	+= st->truncated;
+		t.frags		+= st->frags;
+		t.maxflows_err	+= st->maxflows_err;
+		t.alloc_err	+= st->alloc_err;
+		t.send_failed	+= st->send_failed;
+		t.sock_cberr	+= st->sock_cberr;
+
+		t.exported_rate	+= st->exported_rate;
+		t.exported_pkt	+= st->exported_pkt;
+		t.exported_flow	+= st->exported_flow;
+		t.exported_traf	+= st->exported_traf;
+
+		t.pkt_total_rate += st->pkt_total_rate;
+		t.pkt_drop	+= st->pkt_drop;
+		t.traf_drop	+= st->traf_drop;
+		t.pkt_lost	+= st->pkt_lost;
+		t.traf_lost	+= st->traf_lost;
+		t.flow_lost	+= st->flow_lost;
+		t.pkt_out	+= st->pkt_out;
+		t.traf_out	+= st->traf_out;
+#ifdef ENABLE_SAMPLER
+		t.pkts_observed	+= st->pkts_observed;
+		t.pkts_selected	+= st->pkts_selected;
+#endif
+	}
+
+	seq_printf(seq, "Hash: size %u (mem %uK), metric %d.%02d [%d.%02d, %d.%02d, %d.%02d]."
+	    " InHash: %llu pkt, %llu K, InPDU %llu, %llu.\n",
+	    htable_size,
+	    (unsigned int)((htable_size * sizeof(struct hlist_head)) >> 10),
+	    FFLOAT(metric, 100),
+	    FFLOAT(min_metric, 100),
+	    FFLOAT(min5_metric, 100),
+	    FFLOAT(min15_metric, 100),
+	    t.pkt_total - t.pkt_out,
+	    (t.traf_total - t.traf_out) >> 10,
+	    pdu_packets,
+	    pdu_traf);
+
+	seq_printf(seq, "Rate: %llu bits/sec, %llu packets/sec;"
+	    " Avg 1 min: %llu bps, %llu pps; 5 min: %llu bps, %llu pps\n",
+	    sec_brate, sec_prate, min_brate, min_prate, min5_brate, min5_prate);
+
+	seq_printf(seq, "cpu#     pps; <search found new [metric], trunc frag alloc maxflows>,"
+	    " traffic: <pkt, bytes>, drop: <pkt, bytes>\n");
+
+	seq_printf(seq, "Total %6u; %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
+	    " traffic: %llu, %llu MB, drop: %llu, %llu K\n",
+	    t.pkt_total_rate,
+	    t.searched,
+	    t.found,
+	    t.notfound,
+	    FFLOAT(SAFEDIV(100LL * (t.searched + t.found + t.notfound), (t.found + t.notfound)), 100),
+	    t.truncated, t.frags, t.alloc_err, t.maxflows_err,
+	    t.pkt_total, t.traf_total >> 20,
+	    t.pkt_drop, t.traf_drop >> 10);
+
+	if (num_present_cpus() > 1) {
+		for_each_present_cpu(cpu) {
+			struct ipt_netflow_stat *st;
+
+			st = &per_cpu(ipt_netflow_stat, cpu);
+			seq_printf(seq, "cpu%-2u %6u; %6llu %6llu %6llu [%d.%02d], %4u %4u %4u %4u,"
+			    " traffic: %llu, %llu MB, drop: %llu, %llu K\n",
+			    cpu,
+			    st->pkt_total_rate,
+			    st->searched,
+			    st->found,
+			    st->notfound,
+			    FFLOAT(st->metric, 100),
+			    st->truncated, st->frags, st->alloc_err, st->maxflows_err,
+			    st->pkt_total, st->traf_total >> 20,
+			    st->pkt_drop, st->traf_drop >> 10);
+		}
+	}
+
+	seq_printf(seq, "Export: Rate %u bytes/s; Total %llu pkts, %llu MB, %llu flows;"
+	    " Errors %u pkts; Traffic lost %llu pkts, %llu Kbytes, %llu flows.\n",
+	    t.exported_rate,
+	    t.exported_pkt,
+	    t.exported_traf >> 20,
+	    t.exported_flow,
+	    t.send_failed,
+	    t.pkt_lost,
+	    t.traf_lost >> 10,
+	    t.flow_lost);
 
 	mutex_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
@@ -427,20 +816,22 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 			struct sock *sk = usock->sock->sk;
 
 			seq_printf(seq, ", sndbuf %u, filled %u, peak %u;"
-			    " err: sndbuf reached %u, connect %u, other %u\n",
+			    " err: sndbuf reached %u, connect %u, cberr %u, other %u\n",
 			    sk->sk_sndbuf,
 			    atomic_read(&sk->sk_wmem_alloc),
 			    atomic_read(&usock->wmem_peak),
-			    atomic_read(&usock->err_full),
-			    atomic_read(&usock->err_connect),
-			    atomic_read(&usock->err_other));
+			    usock->err_full,
+			    usock->err_connect,
+			    usock->err_cberr,
+			    usock->err_other);
 		} else
 			seq_printf(seq, " unconnected (%u attempts).\n",
-			    atomic_read(&usock->err_connect));
+			    usock->err_connect);
 		snum++;
 	}
 	mutex_unlock(&sock_lock);
 
+#ifdef ENABLE_AGGR
 	read_lock_bh(&aggr_lock);
 	snum = 0;
 	list_for_each_entry(aggr_n, &aggr_n_list, list) {
@@ -463,12 +854,37 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		snum++;
 	}
 	read_unlock_bh(&aggr_lock);
+#endif
+#ifdef SNMP_RULES
+	{
+		const unsigned char *rules;
+
+		snum = 0;
+		rcu_read_lock();
+		rules = rcu_dereference(snmp_ruleset);
+		if (rules)
+		while (*rules) {
+			const unsigned int len = *rules++;
+
+			seq_printf(seq, "SNMP-rule#%d: prefix '%.*s' map to %d\n",
+				snum, len, rules, (rules[len] << 8) + rules[len + 1]);
+			rules += len + 2;
+			++snum;
+		}
+		rcu_read_unlock();
+	}
+#endif
 	return 0;
 }
 
 static int nf_seq_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, nf_seq_show, NULL);
+}
+
+static int snmp_seq_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, snmp_seq_show, NULL);
 }
 
 static struct file_operations nf_seq_fops = {
@@ -478,7 +894,403 @@ static struct file_operations nf_seq_fops = {
 	.llseek	 = seq_lseek,
 	.release = single_release,
 };
+
+static struct file_operations snmp_seq_fops = {
+	.owner	 = THIS_MODULE,
+	.open	 = snmp_seq_open,
+	.read	 = seq_read,
+	.llseek	 = seq_lseek,
+	.release = single_release,
+};
 #endif /* CONFIG_PROC_FS */
+
+#ifdef ENABLE_DEBUGFS
+static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout, const unsigned long jiff);
+static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple);
+
+static int seq_stripe = -1;
+
+/* get first & next ipt_netflow list entry and lock it */
+static struct list_head *nf_get_first(int nstripe)
+{
+	/* no locking here since it's under global rwlock */
+	for (; nstripe < LOCK_COUNT; nstripe++) {
+		struct stripe_entry *stripe = &htable_stripes[nstripe];
+
+		if (!list_empty(&stripe->list)) {
+			seq_stripe = nstripe;
+			return stripe->list.next;
+		}
+	}
+	seq_stripe = -1;
+	return NULL;
+}
+
+static struct list_head *nf_get_next(struct list_head *head)
+{
+	struct stripe_entry *stripe;
+
+	if (seq_stripe < 0)
+		return NULL;
+	stripe = &htable_stripes[seq_stripe];
+	head = head->next;
+	if (head != &stripe->list)
+		return head;
+	return nf_get_first(seq_stripe + 1);
+}
+
+static int seq_pcache;
+static void *seq_vcache;
+static void *flows_dump_seq_start(struct seq_file *seq, loff_t *pos)
+{
+	int ppos = *pos;
+	struct list_head *lh;
+
+	if (!ppos) {
+		seq_pcache = 0;
+		seq_vcache = nf_get_first(0);
+		return seq_vcache;
+	}
+	if (ppos >= seq_pcache) {
+		ppos -= seq_pcache;
+		lh = seq_vcache;
+	} else
+		lh = nf_get_first(0);
+	while (ppos--)
+		lh = nf_get_next(lh);
+	seq_pcache = *pos;
+	seq_vcache = lh;
+	return seq_vcache;
+}
+
+static void *flows_dump_seq_next(struct seq_file *seq, void *v, loff_t *pos)
+{
+	seq_pcache = ++*pos;
+	seq_vcache = nf_get_next((struct list_head *)v);
+	return seq_vcache;
+}
+
+static void flows_dump_seq_stop(struct seq_file *seq, void *v)
+{
+}
+
+static unsigned long dump_start; /* jiffies */
+static unsigned int dump_err;
+/* To view this: cat /sys/kernel/debug/netflow_dump */
+static int flows_dump_seq_show(struct seq_file *seq, void *v)
+{
+	struct ipt_netflow *nf = list_entry(v, struct ipt_netflow, flows_list);
+	long i_timeout = inactive_timeout * HZ;
+	long a_timeout = active_timeout * HZ;
+	int inactive = (jiffies - nf->ts_last) >= i_timeout;
+	int active = active_needs_export(nf, a_timeout, dump_start);
+	u_int32_t hash = hash_netflow(&nf->tuple);
+
+	if (seq_pcache == 0) {
+		unsigned int nr_flows = atomic_read(&ipt_netflow_count);
+
+		seq_printf(seq, "# Attention: netflow processing is disabled while dumping. (~%u flows)\n", nr_flows);
+		return 0;
+	}
+
+	seq_printf(seq, "%d %02x,%04x %02d",
+	    seq_pcache,
+	    seq_stripe,
+	    hash,
+	    inactive * 10 + active);
+#ifdef SNMP_RULES
+	seq_printf(seq, " %hd,%hd(%hd,%hd)",
+	    nf->i_ifcr,
+	    nf->o_ifcr,
+	    nf->tuple.i_ifc,
+	    nf->o_ifc);
+#else
+	seq_printf(seq, " %hd,%hd",
+	    nf->tuple.i_ifc,
+	    nf->o_ifc);
+#endif
+#ifdef ENABLE_MAC
+	seq_printf(seq, " %pM,%pM", &nf->tuple.h_src, &nf->tuple.h_dst);
+#endif
+#ifdef ENABLE_VLAN
+	if (nf->tuple.tag1 || nf->tuple.tag2) {
+		seq_printf(seq, ",%d", ntohs(nf->tuple.tag1));
+		if (nf->tuple.tag2)
+			seq_printf(seq, ",%d", ntohs(nf->tuple.tag2));
+	}
+#endif
+#if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
+	seq_printf(seq, " [%04x]", ntohs(nf->ethernetType));
+#endif
+	seq_printf(seq, " %u,%u ",
+	    nf->tuple.l3proto,
+	    nf->tuple.protocol);
+	if (nf->tuple.l3proto == AF_INET) {
+		seq_printf(seq, "%pI4n:%u,%pI4n:%u %pI4n",
+		    &nf->tuple.src,
+		    ntohs(nf->tuple.s_port),
+		    &nf->tuple.dst,
+		    ntohs(nf->tuple.d_port),
+		    &nf->nh);
+		/* sanity check */
+		if (nf->tuple.src.ip6[1] ||
+		    nf->tuple.src.ip6[2] ||
+		    nf->tuple.src.ip6[3])
+			seq_puts(seq, "error:src:garbage");
+		if (nf->tuple.dst.ip6[1] ||
+		    nf->tuple.dst.ip6[2] ||
+		    nf->tuple.dst.ip6[3])
+			seq_puts(seq, "error:dst:garbage");
+	} else if (nf->tuple.l3proto == AF_INET6) {
+		seq_printf(seq, "%pI6c#%u,%pI6c#%u %pI6c",
+		    &nf->tuple.src,
+		    ntohs(nf->tuple.s_port),
+		    &nf->tuple.dst,
+		    ntohs(nf->tuple.d_port),
+		    &nf->nh);
+	} else {
+		seq_puts(seq, "error:l3proto:unknown");
+	}
+	seq_printf(seq, " %x,%x,%x,%x",
+	    nf->tuple.tos,
+	    nf->tcp_flags,
+	    nf->options,
+	    nf->tcpoptions);
+	seq_printf(seq, " %d,%d %lu,%lu\n",
+	    nf->nr_packets,
+	    nf->nr_bytes,
+	    jiffies - nf->nf_ts_first,
+	    jiffies - nf->nf_ts_last
+	    );
+
+	return 0;
+}
+
+static struct seq_operations flows_dump_seq_ops = {
+	.start	= flows_dump_seq_start,
+	.show	= flows_dump_seq_show,
+	.next	= flows_dump_seq_next,
+	.stop	= flows_dump_seq_stop,
+};
+
+static int flows_dump_open(struct inode *inode, struct file *file)
+{
+	int ret;
+	char *buf;
+
+	if (atomic_inc_return(&freeze) > 1) {
+		/* do not let concurrent dumps. */
+		atomic_dec(&freeze);
+		return -EAGAIN;
+	}
+	buf = kmalloc(KMALLOC_MAX_SIZE, GFP_KERNEL);
+	if (!buf) {
+		atomic_dec(&freeze);
+		return -ENOMEM;
+	}
+	pause_scan_worker();
+	synchronize_sched();
+	/* write_lock to be sure that softirq is finished */
+	write_lock(&htable_rwlock);
+
+	dump_start = jiffies;
+	dump_err = NETFLOW_STAT_READ(freeze_err);
+
+	ret = seq_open(file, &flows_dump_seq_ops);
+	if (ret) {
+		write_unlock(&htable_rwlock);
+		cont_scan_worker();
+		kfree(buf);
+		atomic_dec(&freeze);
+		return ret;
+	}
+	((struct seq_file *)file->private_data)->buf = buf;
+	((struct seq_file *)file->private_data)->size = KMALLOC_MAX_SIZE;
+	return 0;
+
+}
+static int flows_dump_release(struct inode *inode, struct file *file)
+{
+	seq_stripe = -1;
+	write_unlock(&htable_rwlock);
+	cont_scan_worker();
+	atomic_dec(&freeze);
+
+	printk(KERN_INFO "ipt_NETFLOW: dump finished in %lu/%lu sec, dropped %u packets.\n", 
+	    jiffies - dump_start,
+	    msecs_to_jiffies(1000),
+	    NETFLOW_STAT_READ(freeze_err) - dump_err);
+	return seq_release(inode, file);
+}
+
+static const struct file_operations flows_dump_fops = {
+	.owner	 = THIS_MODULE,
+	.open	 = flows_dump_open,
+	.read	 = seq_read,
+	.llseek	 = seq_lseek,
+	.release = flows_dump_release,
+};
+#endif /* ENABLE_DEBUGFS */
+
+#ifdef ENABLE_PROMISC
+static int promisc_finish(struct sk_buff *skb)
+{
+	/* don't pass to the routing */
+	kfree_skb(skb);
+	return NET_RX_DROP;
+}
+
+static int promisc4_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, struct net_device *orig_dev)
+{
+	const struct iphdr *iph;
+	u32 len;
+
+	/* what is not PACKET_OTHERHOST will be parsed at ip_rcv() */
+	if (skb->pkt_type != PACKET_OTHERHOST)
+		goto out;
+
+	NETFLOW_STAT_INC(pkt_promisc);
+
+	/* clone skb and do basic IPv4 sanity checking and preparations
+	 * for L3, this is quick and dirty version of ip_rcv() */
+	if ((skb = skb_share_check(skb, GFP_ATOMIC)) == NULL)
+		goto drop;
+	if (!pskb_may_pull(skb, sizeof(struct iphdr)))
+		goto drop;
+	iph = ip_hdr(skb);
+	if (iph->ihl < 5 || iph->version != 4)
+		goto drop;
+	if (!pskb_may_pull(skb, iph->ihl*4))
+		goto drop;
+	iph = ip_hdr(skb);
+	if (unlikely(ip_fast_csum((u8 *)iph, iph->ihl)))
+		goto drop;
+	len = ntohs(iph->tot_len);
+	if (skb->len < len)
+		goto drop;
+	else if (len < (iph->ihl*4))
+		goto drop;
+	if (pskb_trim_rcsum(skb, len))
+		goto drop;
+	skb->transport_header = skb->network_header + iph->ihl*4;
+	memset(IPCB(skb), 0, sizeof(struct inet_skb_parm));
+	skb_orphan(skb);
+
+	return NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING, skb, dev, NULL, promisc_finish);
+drop:
+	NETFLOW_STAT_INC(pkt_promisc_drop);
+out:
+	kfree_skb(skb);
+	return NET_RX_DROP;
+}
+
+static int promisc6_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, struct net_device *orig_dev)
+{
+	const struct ipv6hdr *hdr;
+	u32 pkt_len;
+	struct inet6_dev *idev;
+
+	/* what is not PACKET_OTHERHOST will be parsed at ipv6_rcv() */
+	if (skb->pkt_type != PACKET_OTHERHOST)
+		goto out;
+
+	NETFLOW_STAT_INC(pkt_promisc);
+
+	/* quick and dirty version of ipv6_rcv(), basic sanity checking
+	 * and preparation of skb for later processing */
+	rcu_read_lock();
+	idev = __in6_dev_get(skb->dev);
+	if ((skb = skb_share_check(skb, GFP_ATOMIC)) == NULL ||
+	    !idev || unlikely(idev->cnf.disable_ipv6))
+		goto drop;
+	memset(IP6CB(skb), 0, sizeof(struct inet6_skb_parm));
+	IP6CB(skb)->iif = skb_dst(skb) ? ip6_dst_idev(skb_dst(skb))->dev->ifindex : dev->ifindex;
+	if (unlikely(!pskb_may_pull(skb, sizeof(*hdr))))
+		goto drop;
+	hdr = ipv6_hdr(skb);
+	if (hdr->version != 6)
+		goto drop;
+	if (!(dev->flags & IFF_LOOPBACK) &&
+	    ipv6_addr_loopback(&hdr->daddr))
+		goto drop;
+	if (!(skb->pkt_type == PACKET_LOOPBACK ||
+		    dev->flags & IFF_LOOPBACK) &&
+	    ipv6_addr_is_multicast(&hdr->daddr) &&
+	    IPV6_ADDR_MC_SCOPE(&hdr->daddr) == 1)
+		goto drop;
+	if (ipv6_addr_is_multicast(&hdr->daddr) &&
+	    IPV6_ADDR_MC_SCOPE(&hdr->daddr) == 0)
+		goto drop;
+	if (ipv6_addr_is_multicast(&hdr->saddr))
+		goto drop;
+	skb->transport_header = skb->network_header + sizeof(*hdr);
+	IP6CB(skb)->nhoff = offsetof(struct ipv6hdr, nexthdr);
+	pkt_len = ntohs(hdr->payload_len);
+	if (pkt_len || hdr->nexthdr != NEXTHDR_HOP) {
+		if (pkt_len + sizeof(struct ipv6hdr) > skb->len)
+			goto drop;
+		if (pskb_trim_rcsum(skb, pkt_len + sizeof(struct ipv6hdr)))
+			goto drop;
+		hdr = ipv6_hdr(skb);
+	}
+	if (hdr->nexthdr == NEXTHDR_HOP) {
+		int optlen;
+		/* ipv6_parse_hopopts() is not exported by kernel.
+		 * I dont really need to parse hop options, since packets
+		 * are not routed, nor terminated, but I keep calculations
+		 * in case other code depend on it. */
+		if (!pskb_may_pull(skb, sizeof(struct ipv6hdr) + 8) ||
+		    !pskb_may_pull(skb, (sizeof(struct ipv6hdr) +
+				    ((skb_transport_header(skb)[1] + 1) << 3))))
+			goto drop;
+		optlen = (skb_transport_header(skb)[1] + 1) << 3;
+		if (skb_transport_offset(skb) + optlen > skb_headlen(skb))
+			goto drop;
+		skb->transport_header += optlen;
+		IP6CB(skb)->nhoff = sizeof(struct ipv6hdr);
+	}
+	rcu_read_unlock();
+	skb_orphan(skb);
+
+	return NF_HOOK(NFPROTO_IPV6, NF_INET_PRE_ROUTING, skb, dev, NULL, promisc_finish);
+drop:
+	rcu_read_unlock();
+	NETFLOW_STAT_INC(pkt_promisc_drop);
+out:
+	kfree_skb(skb);
+	return NET_RX_DROP;
+}
+
+static struct packet_type promisc4_packet_type __read_mostly = {
+	.type = htons(ETH_P_IP),
+	.func = promisc4_rcv,
+};
+static struct packet_type promisc6_packet_type __read_mostly = {
+	.type = htons(ETH_P_IPV6),
+	.func = promisc6_rcv,
+};
+
+static int switch_promisc(int newpromisc)
+{
+	newpromisc = !!newpromisc;
+	mutex_lock(&promisc_lock);
+	if (newpromisc == promisc)
+		goto unlock;
+	if (newpromisc) {
+		dev_add_pack(&promisc4_packet_type);
+		dev_add_pack(&promisc6_packet_type);
+	} else {
+		dev_remove_pack(&promisc4_packet_type);
+		dev_remove_pack(&promisc6_packet_type);
+	}
+	printk(KERN_INFO "ipt_NETFLOW: promisc hack is %s\n",
+	    newpromisc? "enabled" : "disabled");
+	promisc = newpromisc;
+unlock:
+	mutex_unlock(&promisc_lock);
+	return 0;
+}
+#endif
 
 #ifdef CONFIG_SYSCTL
 
@@ -488,19 +1300,26 @@ static struct file_operations nf_seq_fops = {
 #define BEFORE2632(x,y)
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
+#define ctl_table struct ctl_table
+#endif
+
+#ifndef CONFIG_GRKERNSEC
+#define ctl_table_no_const ctl_table
+#endif
+
 /* sysctl /proc/sys/net/netflow */
 static int hsize_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
-	void *orig = ctl->data;
 	int ret, hsize;
+	ctl_table_no_const lctl = *ctl;
 
 	if (write)
-		ctl->data = &hsize;
-	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+		lctl.data = &hsize;
+	ret = proc_dointvec(&lctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (write) {
-		ctl->data = orig;
-		if (hsize < 1)
+		if (hsize < LOCK_COUNT)
 			return -EPERM;
 		return set_hashsize(hsize)?:ret;
 	} else
@@ -512,6 +1331,7 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 {
 	int ret;
 	struct ipt_netflow_sock *usock;
+	ctl_table_no_const lctl = *ctl;
 
 	mutex_lock(&sock_lock);
 	if (list_empty(&usock_list)) {
@@ -523,8 +1343,8 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 		sndbuf = usock->sock->sk->sk_sndbuf;
 	mutex_unlock(&sock_lock);
 
-	ctl->data = &sndbuf;
-	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+	lctl.data = &sndbuf;
+	ret = proc_dointvec(&lctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 	if (!write)
 		return ret;
 	if (sndbuf < SOCK_MIN_SNDBUF)
@@ -540,6 +1360,7 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 	return ret;
 }
 
+static void free_templates(void);
 static int destination_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
@@ -550,11 +1371,13 @@ static int destination_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 		pause_scan_worker();
 		destination_removeall();
 		add_destinations(destination_buf);
+		free_templates();
 		cont_scan_worker();
 	}
 	return ret;
 }
 
+#ifdef ENABLE_AGGR
 static int aggregation_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
@@ -563,10 +1386,86 @@ static int aggregation_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 	if (debug > 1)
 		printk(KERN_INFO "aggregation_procctl (%d) %u %llu\n", write, (unsigned int)(*lenp), *fpos);
 	ret = proc_dostring(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
-	if (ret >= 0 && write) {
+	if (ret >= 0 && write)
 		add_aggregation(aggregation_buf);
+	return ret;
+}
+#endif
+
+#ifdef ENABLE_PROMISC
+static int promisc_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+			 void __user *buffer, size_t *lenp, loff_t *fpos)
+{
+	int newpromisc = promisc;
+	int ret;
+	ctl_table_no_const lctl = *ctl;
+
+	lctl.data = &newpromisc;
+	ret = proc_dointvec(&lctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+	if (ret < 0 || !write)
+		return ret;
+	return switch_promisc(newpromisc);
+}
+#endif
+
+#ifdef ENABLE_SAMPLER
+static int parse_sampler(char *ptr);
+static int sampler_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+			 void __user *buffer, size_t *lenp, loff_t *fpos)
+{
+	int ret;
+
+	if (debug > 1)
+		printk(KERN_INFO "sampler_procctl (%d) %u %llu\n", write, (unsigned int)(*lenp), *fpos);
+	ret = proc_dostring(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+	if (ret >= 0 && write) {
+		int cpu;
+
+		pause_scan_worker();
+		netflow_scan_and_export(AND_FLUSH);
+		/* paused for sampling_code reads to be consistent */
+		ret = parse_sampler(sampler_buf);
+		/* resend templates */
+		ts_sampler_last = 0;
+		/* zero stat */
+		atomic64_set(&flows_observed, 0);
+		atomic64_set(&flows_selected, 0);
+		for_each_present_cpu(cpu) {
+			struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+			st->pkts_selected = 0;
+			st->pkts_observed = 0;
+		}
+		cont_scan_worker();
 	}
 	return ret;
+}
+#endif
+
+#ifdef SNMP_RULES
+static int add_snmp_rules(char *ptr);
+static int snmp_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+			 void __user *buffer, size_t *lenp, loff_t *fpos)
+{
+       int ret;
+
+       if (debug > 1)
+	       printk(KERN_INFO "snmp_procctl (%d) %u %llu\n", write, (unsigned int)(*lenp), *fpos);
+       ret = proc_dostring(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+       if (ret >= 0 && write)
+               return add_snmp_rules(snmp_rules_buf);
+       return ret;
+}
+#endif
+
+static void clear_ipt_netflow_stat(void)
+{
+	int cpu;
+
+	for_each_present_cpu(cpu) {
+		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+		memset(st, 0, sizeof(*st));
+		st->metric = METRIC_DFL;
+	}
 }
 
 static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
@@ -574,17 +1473,24 @@ static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 {
 	int ret;
 	int val = 0;
+	ctl_table_no_const lctl = *ctl;
 
-	ctl->data = &val;
-	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+	lctl.data = &val;
+	ret = proc_dointvec(&lctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 
 	if (!write)
 		return ret;
 
 	if (val > 0) {
-		printk(KERN_INFO "ipt_NETFLOW: forced flush\n");
+		char *stat = "";
+
 		pause_scan_worker();
 		netflow_scan_and_export(AND_FLUSH);
+		if (val > 1) {
+			clear_ipt_netflow_stat();
+			stat = " (reset stat counters)";
+		}
+		printk(KERN_INFO "ipt_NETFLOW: forced flush%s.\n", stat);
 		cont_scan_worker();
 	}
 
@@ -596,9 +1502,10 @@ static int protocol_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *f
 {
 	int ret;
 	int ver = protocol;
+	ctl_table_no_const lctl = *ctl;
 
-	ctl->data = &ver;
-	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+	lctl.data = &ver;
+	ret = proc_dointvec(&lctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 
 	if (!write)
 		return ret;
@@ -628,9 +1535,10 @@ static int natevents_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *
 {
 	int ret;
 	int val = natevents;
+	ctl_table_no_const lctl = *ctl;
 
-	ctl->data = &val;
-	ret = proc_dointvec(ctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
+	lctl.data = &val;
+	ret = proc_dointvec(&lctl, write, BEFORE2632(filp,) buffer, lenp, fpos);
 
 	if (!write)
 		return ret;
@@ -648,12 +1556,19 @@ static struct ctl_table_header *netflow_sysctl_header;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
 #define _CTL_NAME(x) .ctl_name = x,
+static void ctl_table_renumber(ctl_table *table)
+{
+	int c;
+
+	for (c = 1; table->procname; table++, c++)
+		table->ctl_name = c;
+}
 #else
 #define _CTL_NAME(x)
+#define ctl_table_renumber(x)
 #endif
-static struct ctl_table netflow_sysctl_table[] = {
+static ctl_table netflow_sysctl_table[] = {
 	{
-		_CTL_NAME(1)
 		.procname	= "active_timeout",
 		.mode		= 0644,
 		.data		= &active_timeout,
@@ -661,7 +1576,6 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		_CTL_NAME(2)
 		.procname	= "inactive_timeout",
 		.mode		= 0644,
 		.data		= &inactive_timeout,
@@ -669,7 +1583,6 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		_CTL_NAME(3)
 		.procname	= "debug",
 		.mode		= 0644,
 		.data		= &debug,
@@ -677,38 +1590,35 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		_CTL_NAME(4)
 		.procname	= "hashsize",
 		.mode		= 0644,
-		.data		= &ipt_netflow_hash_size,
+		.data		= &htable_size,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &hsize_procctl,
 	},
 	{
-		_CTL_NAME(5)
 		.procname	= "sndbuf",
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &sndbuf_procctl,
 	},
 	{
-		_CTL_NAME(6)
 		.procname	= "destination",
 		.mode		= 0644,
 		.data		= &destination_buf,
 		.maxlen		= sizeof(destination_buf),
 		.proc_handler	= &destination_procctl,
 	},
+#ifdef ENABLE_AGGR
 	{
-		_CTL_NAME(7)
 		.procname	= "aggregation",
 		.mode		= 0644,
 		.data		= &aggregation_buf,
 		.maxlen		= sizeof(aggregation_buf),
 		.proc_handler	= &aggregation_procctl,
 	},
+#endif
 	{
-		_CTL_NAME(8)
 		.procname	= "maxflows",
 		.mode		= 0644,
 		.data		= &maxflows,
@@ -716,21 +1626,18 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		_CTL_NAME(9)
 		.procname	= "flush",
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &flush_procctl,
 	},
 	{
-		_CTL_NAME(10)
 		.procname	= "protocol",
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &protocol_procctl,
 	},
 	{
-		_CTL_NAME(11)
 		.procname	= "refresh-rate",
 		.mode		= 0644,
 		.data		= &refresh_rate,
@@ -738,16 +1645,50 @@ static struct ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
-		_CTL_NAME(12)
 		.procname	= "timeout-rate",
 		.mode		= 0644,
 		.data		= &timeout_rate,
 		.maxlen		= sizeof(int),
 		.proc_handler	= &proc_dointvec,
 	},
+#ifdef ENABLE_PROMISC
+	{
+		.procname	= "promisc",
+		.mode		= 0644,
+		.data		= &promisc,
+		.maxlen		= sizeof(int),
+		.proc_handler	= &promisc_procctl,
+	},
+#endif
+#ifdef ENABLE_SAMPLER
+	{
+		.procname	= "sampler",
+		.mode		= 0644,
+		.data		= &sampler_buf,
+		.maxlen		= sizeof(sampler_buf),
+		.proc_handler	= &sampler_procctl,
+	},
+#endif
+	{
+		.procname	= "scan-min",
+		.mode		= 0644,
+		.data		= &scan_min,
+		.maxlen		= sizeof(int),
+		.proc_handler	= &proc_dointvec_minmax,
+		.extra1		= &one,
+		.extra2		= &scan_max,
+	},
+#ifdef SNMP_RULES
+	{
+		.procname	= "snmp-rules",
+		.mode		= 0644,
+		.data		= &snmp_rules_buf,
+		.maxlen		= sizeof(snmp_rules_buf),
+		.proc_handler	= &snmp_procctl,
+	},
+#endif
 #ifdef CONFIG_NF_NAT_NEEDED
 	{
-		_CTL_NAME(13)
 		.procname	= "natevents",
 		.mode		= 0644,
 		.maxlen		= sizeof(int),
@@ -758,7 +1699,7 @@ static struct ctl_table netflow_sysctl_table[] = {
 };
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
-static struct ctl_table netflow_sysctl_root[] = {
+static ctl_table netflow_sysctl_root[] = {
 	{
 		_CTL_NAME(33)
 		.procname	= "netflow",
@@ -768,7 +1709,7 @@ static struct ctl_table netflow_sysctl_root[] = {
 	{ }
 };
 
-static struct ctl_table netflow_net_table[] = {
+static ctl_table netflow_net_table[] = {
 	{
 		.ctl_name	= CTL_NET,
 		.procname	= "net",
@@ -794,15 +1735,24 @@ static struct ctl_path netflow_sysctl_path[] = {
 /* socket code */
 static void sk_error_report(struct sock *sk)
 {
+	struct ipt_netflow_sock *usock;
+
 	/* clear connection refused errors if any */
 	if (debug > 1)
 		printk(KERN_INFO "ipt_NETFLOW: socket error <%d>\n", sk->sk_err);
 	sk->sk_err = 0;
-	NETFLOW_STAT_INC(sock_errors);
+	usock = sk->sk_user_data;
+	if (usock)
+		usock->err_cberr++;
+	NETFLOW_STAT_INC(sock_cberr);
+	/* It's theoretically possible to determine to which datagram this reply is,
+	 * because ICMP message frequently includes header of erroneous packet, but
+	 * this is not that reliable - packets could be spoofed, and requires keeping
+	 * book of sent packets. */
 	return;
 }
 
-static struct socket *_usock_alloc(const __be32 ipaddr, const unsigned short port)
+static struct socket *_usock_alloc(const __be32 ipaddr, const unsigned short port, void *u)
 {
 	struct sockaddr_in sin;
 	struct socket *sock;
@@ -815,6 +1765,7 @@ static struct socket *_usock_alloc(const __be32 ipaddr, const unsigned short por
 	sock->sk->sk_allocation = GFP_ATOMIC;
 	sock->sk->sk_prot->unhash(sock->sk); /* hidden from input */
 	sock->sk->sk_error_report = &sk_error_report; /* clear ECONNREFUSED */
+	sock->sk->sk_user_data = u;
 	if (sndbuf)
 		sock->sk->sk_sndbuf = sndbuf;
 	else
@@ -836,14 +1787,14 @@ static struct socket *_usock_alloc(const __be32 ipaddr, const unsigned short por
 
 static void usock_connect(struct ipt_netflow_sock *usock, const int sendmsg)
 {
-	usock->sock = _usock_alloc(usock->ipaddr, usock->port);
+	usock->sock = _usock_alloc(usock->ipaddr, usock->port, usock);
 	if (usock->sock) {
 		if (sendmsg || debug)
 			printk(KERN_INFO "ipt_NETFLOW: connected %u.%u.%u.%u:%u\n",
 			    HIPQUAD(usock->ipaddr),
 			    usock->port);
 	} else {
-		atomic_inc(&usock->err_connect);
+		usock->err_connect++;
 		if (debug)
 			printk(KERN_INFO "ipt_NETFLOW: connect to %u.%u.%u.%u:%u failed%s.\n",
 			    HIPQUAD(usock->ipaddr),
@@ -851,9 +1802,11 @@ static void usock_connect(struct ipt_netflow_sock *usock, const int sendmsg)
 			    (sendmsg)? " (pdu lost)" : "");
 	}
 	atomic_set(&usock->wmem_peak, 0);
-	atomic_set(&usock->err_full, 0);
-	atomic_set(&usock->err_other, 0);
+	usock->err_full = 0;
+	usock->err_other = 0;
 }
+
+ktime_t ktime_get_real(void);
 
 // return numbers of sends succeded, 0 if none
 /* only called in scan worker path */
@@ -867,10 +1820,13 @@ static void netflow_sendmsg(void *buffer, const int len)
 
 	mutex_lock(&sock_lock);
 	list_for_each_entry(usock, &usock_list, list) {
+		usock->pkt_exp++;
+		usock->bytes_exp += len;
 		if (!usock->sock)
 			usock_connect(usock, 1);
 		if (!usock->sock) {
-			NETFLOW_STAT_INC_ATOMIC(send_failed);
+			NETFLOW_STAT_INC(send_failed);
+			usock->pkt_fail++;
 			continue;
 		}
 		if (debug)
@@ -883,20 +1839,24 @@ static void netflow_sendmsg(void *buffer, const int len)
 		if (ret < 0) {
 			char *suggestion = "";
 
-			NETFLOW_STAT_INC_ATOMIC(send_failed);
+			NETFLOW_STAT_INC(send_failed);
+			usock->pkt_fail++;
 			if (ret == -EAGAIN) {
-				atomic_inc(&usock->err_full);
+				usock->err_full++;
 				suggestion = ": increase sndbuf!";
+			} else if (ret == -ENETUNREACH) {
+				suggestion = ": network is unreachable.";
 			} else
-				atomic_inc(&usock->err_other);
+				usock->err_other++;
 			printk(KERN_ERR "ipt_NETFLOW: sendmsg[%d] error %d: data loss %llu pkt, %llu bytes%s\n",
 			       snum, ret, pdu_packets, pdu_traf, suggestion);
 		} else {
 			unsigned int wmem = atomic_read(&usock->sock->sk->sk_wmem_alloc);
 			if (wmem > atomic_read(&usock->wmem_peak))
 				atomic_set(&usock->wmem_peak, wmem);
-			NETFLOW_STAT_INC_ATOMIC(send_success);
-			NETFLOW_STAT_ADD_ATOMIC(exported_size, ret);
+			NETFLOW_STAT_INC(exported_pkt);
+			NETFLOW_STAT_ADD(exported_traf, ret);
+			usock->pkt_sent++;
 			retok++;
 		}
 		snum++;
@@ -904,8 +1864,12 @@ static void netflow_sendmsg(void *buffer, const int len)
 	mutex_unlock(&sock_lock);
 	if (retok == 0) {
 		/* not least one send succeded, account stat for dropped packets */
-		NETFLOW_STAT_ADD_ATOMIC(pkt_drop, pdu_packets);
-		NETFLOW_STAT_ADD_ATOMIC(traf_drop, pdu_traf);
+		NETFLOW_STAT_ADD(pkt_lost, pdu_packets);
+		NETFLOW_STAT_ADD(traf_lost, pdu_traf);
+		NETFLOW_STAT_ADD(flow_lost, pdu_flow_records);
+		NETFLOW_STAT_TS(lost);
+	} else {
+		NETFLOW_STAT_ADD(exported_flow, pdu_flow_records);
 	}
 }
 
@@ -957,6 +1921,179 @@ static void add_usock(struct ipt_netflow_sock *usock)
 	mutex_unlock(&sock_lock);
 }
 
+#if defined(ENABLE_SAMPLER) || defined(SNMP_RULES)
+static inline int xisdigit(int ch)
+{
+	return (ch >= '0') && (ch <= '9');
+}
+
+static inline int simple_atoi(const char *p)
+{
+	int i;
+
+	for (i = 0; xisdigit(*p); p++)
+		i = i * 10 + *p - '0';
+	return i;
+}
+#endif
+
+#ifdef ENABLE_SAMPLER
+static void set_sampler(const unsigned char mode, const unsigned short interval)
+{
+	struct sampling s;
+
+	s.mode = mode;
+	s.interval = interval;
+	if (!mode || interval > SAMPLER_INTERVAL_M) {
+		*sampler_buf = 0;
+		samp.v32 = s.v32;
+		printk(KERN_ERR "ipt_NETFLOW: flow sampling is disabled.\n");
+	} else {
+		sampling_ts.first = ktime_get_real();
+		/* no race here, becasue exporting process is stopped */
+		samp.v32 = s.v32;
+		sprintf(sampler_buf, "%s:%u", sampler_mode_string(), interval);
+		printk(KERN_ERR "ipt_NETFLOW: flow sampling is enabled, mode %s one-out-of %u.\n",
+		    sampler_mode_string(), interval);
+	}
+}
+
+static int parse_sampler(char *ptr)
+{
+	char *p;
+	unsigned char mode;
+	unsigned int val;
+	int ret = 0;
+
+	switch (tolower(*ptr)) {
+	case 'd': mode = SAMPLER_DETERMINISTIC; break;
+	case 'r': mode = SAMPLER_RANDOM; break;
+#ifdef SAMPLING_HASH
+	case 'h': mode = SAMPLER_HASH; break;
+#endif
+	default:
+		printk(KERN_ERR "ipt_NETFLOW: sampler parse error (%s '%s').\n",
+		    "unknown mode", ptr);
+		ret = -EINVAL;
+		/* FALLTHROUGH */
+	case '\0': /* empty */
+	case 'n':  /* none */
+	case 'o':  /* off */
+	case '0':  /* zero */
+		  set_sampler(0, 0);
+		  return ret;
+	}
+	p = strchr(ptr, ':');
+	if (!p) {
+		printk(KERN_ERR "ipt_NETFLOW: sampler parse error (%s '%s').\n",
+		    "no interval specified", ptr);
+		set_sampler(0, 0);
+		return -EINVAL;
+	}
+	val = simple_atoi(++p);
+	if (val < 2 || val > SAMPLER_INTERVAL_M) {
+		printk(KERN_ERR "ipt_NETFLOW: sampler parse error (%s '%s').\n",
+		    "illegal interval", p);
+		set_sampler(0, 0);
+		return -EINVAL;
+	}
+	set_sampler(mode, val);
+	return 0;
+}
+#endif
+
+#ifdef SNMP_RULES
+/* source string: eth:100,ppp:200,vlan:300 */
+/* reformat to: length[1], prefix[len], offset[2], ..., null[1]. */
+static int parse_snmp_rules(char *ptr, unsigned char *dst)
+{
+	int osize = 0;
+
+	while (*ptr) {
+		char *prefix = ptr;
+		unsigned int number;
+		int len, lsize;
+		char *p;
+
+		p = strchr(ptr, ':');
+		if (!p)
+			return -EINVAL;
+		len = p - ptr;
+		if (len == 0)
+			return -EINVAL;
+		ptr += len;
+		if (sscanf(ptr, ":%d%n", &number, &lsize) < 1)
+			return -EINVAL;
+		ptr += lsize;
+		if (*ptr) /* any separator will work */
+			ptr++;
+		osize += 1 + len + 2;
+		if (dst) {
+			*dst++ = len;
+			memcpy(dst, prefix, len);
+			dst += len;
+			*dst++ = (number >> 8) & 0xff;
+			*dst++ = number & 0xff;
+		}
+	}
+	osize += 1;
+	if (dst)
+		*dst = '\0';
+	return osize;
+}
+
+static int add_snmp_rules(char *ptr)
+{
+	int osize = parse_snmp_rules(ptr, NULL);
+	char *dst;
+	char *old;
+
+	if (osize <= 0) {
+		printk(KERN_ERR "ipt_NETFLOW: add_snmp_rules parse error.\n");
+		strcpy(snmp_rules_buf, "parse error");
+		return -EINVAL;
+	}
+	dst = kmalloc(osize, GFP_KERNEL);
+	if (!dst) {
+		strcpy(snmp_rules_buf, "no memory");
+		printk(KERN_ERR "ipt_NETFLOW: add_snmp_rules no memory.\n");
+		return -ENOMEM;
+	}
+	parse_snmp_rules(ptr, dst);
+	spin_lock(&snmp_lock);
+	old = snmp_ruleset;
+	rcu_assign_pointer(snmp_ruleset, dst);
+	spin_unlock(&snmp_lock);
+	synchronize_rcu();
+	if (old)
+		kfree(old);
+	return 0;
+}
+
+static inline int resolve_snmp(const struct net_device *ifc)
+{
+	const unsigned char *rules;
+
+	if (!ifc)
+		return -1;
+	rules = rcu_dereference(snmp_ruleset);
+	if (!rules)
+		return ifc->ifindex;
+	while (*rules) {
+		const unsigned int len = *rules++;
+		const char *ifname = ifc->name;
+
+		if (!strncmp(ifname, rules, len)) {
+			rules += len;
+			return (rules[0] << 8) + rules[1] +
+				simple_atoi(ifname + len);
+		}
+		rules += len + 2;
+	}
+	return ifc->ifindex;
+}
+#endif /* SNMP_RULES */
+
 #define SEPARATORS " ,;\t\n"
 static int add_destinations(char *ptr)
 {
@@ -976,7 +2113,6 @@ static int add_destinations(char *ptr)
 			}
 
 			memset(usock, 0, sizeof(*usock));
-			atomic_set(&usock->err_connect, 0);
 			usock->ipaddr = ntohl(*(__be32 *)ip);
 			usock->port = port;
 			usock_connect(usock, 0);
@@ -989,6 +2125,7 @@ static int add_destinations(char *ptr)
 	return 0;
 }
 
+#ifdef ENABLE_AGGR
 static void aggregation_remove(struct list_head *list)
 {
 	write_lock_bh(&aggr_lock);
@@ -1075,10 +2212,22 @@ static int add_aggregation(char *ptr)
 	aggregation_remove(&old_aggr_list);
 	return 0;
 }
+#endif
+
+#ifdef SAMPLING_HASH
+static uint32_t hash_seed;
+#define HASH_SEED hash_seed
+#else
+#define HASH_SEED 0
+#endif
+static inline u_int32_t __hash_netflow(const struct ipt_netflow_tuple *tuple)
+{
+	return murmur3(tuple, sizeof(struct ipt_netflow_tuple), HASH_SEED);
+}
 
 static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple)
 {
-	return murmur3(tuple, sizeof(struct ipt_netflow_tuple), ipt_netflow_hash_rnd) % ipt_netflow_hash_size;
+	return __hash_netflow(tuple) % htable_size;
 }
 
 static struct ipt_netflow *
@@ -1094,7 +2243,7 @@ ipt_netflow_find(const struct ipt_netflow_tuple *tuple, const unsigned int hash)
 #define compat_hlist_for_each_entry_safe(a,pos,c,d,e) hlist_for_each_entry_safe(a,c,d,e)
 #endif
 
-	compat_hlist_for_each_entry(nf, pos, &ipt_netflow_hash[hash], hlist) {
+	compat_hlist_for_each_entry(nf, pos, &htable[hash], hlist) {
 		if (ipt_netflow_tuple_equal(tuple, &nf->tuple) &&
 		    nf->nr_bytes < FLOW_FULL_WATERMARK) {
 			NETFLOW_STAT_INC(found);
@@ -1122,40 +2271,44 @@ static struct hlist_head *alloc_hashtable(const int size)
 	return hash;
 }
 
-static int set_hashsize(const int new_size)
+static int set_hashsize(int new_size)
 {
 	struct hlist_head *new_hash, *old_hash;
-	struct ipt_netflow *nf;
-	int rnd;
+	struct ipt_netflow *nf, *tmp;
+	LIST_HEAD(all_list);
+	int i;
 
+	if (new_size < LOCK_COUNT)
+		new_size = LOCK_COUNT;
 	printk(KERN_INFO "ipt_NETFLOW: allocating new hash table %u -> %u buckets\n",
-	       ipt_netflow_hash_size, new_size);
+	       htable_size, new_size);
 	new_hash = alloc_hashtable(new_size);
 	if (!new_hash)
 		return -ENOMEM;
 
-	get_random_bytes(&rnd, 4);
-
 	/* rehash */
 	write_lock_bh(&htable_rwlock);
-	old_hash = ipt_netflow_hash;
-	ipt_netflow_hash = new_hash;
-	ipt_netflow_hash_size = new_size;
-	ipt_netflow_hash_rnd = rnd;
-	/* hash_netflow() is dependent on ipt_netflow_hash_* values */
-	spin_lock(&hlist_lock);
-	list_for_each_entry(nf, &ipt_netflow_list, list) {
+	old_hash = htable;
+	htable = new_hash;
+	htable_size = new_size;
+	for (i = 0; i < LOCK_COUNT; i++) {
+		struct stripe_entry *stripe = &htable_stripes[i];
+		spin_lock(&stripe->lock);
+		list_splice_init(&stripe->list, &all_list);
+		spin_unlock(&stripe->lock);
+	}
+	list_for_each_entry_safe(nf, tmp, &all_list, flows_list) {
 		unsigned int hash;
+		struct stripe_entry *stripe;
 
 		hash = hash_netflow(&nf->tuple);
-		/* hlist_add_head overwrites hlist pointers for this node
-		 * so it's good */
-		hlist_add_head(&nf->hlist, &new_hash[hash]);
-		nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
+		stripe = &htable_stripes[hash & LOCK_COUNT_MASK];
+		spin_lock(&stripe->lock);
+		list_move_tail(&nf->flows_list, &stripe->list);
+		hlist_add_head(&nf->hlist, &htable[hash]);
+		spin_unlock(&stripe->lock);
 	}
-	spin_unlock(&hlist_lock);
 	write_unlock_bh(&htable_rwlock);
-
 	vfree(old_hash);
 
 	return 0;
@@ -1193,25 +2346,6 @@ static void ipt_netflow_free(struct ipt_netflow *nf)
 	kmem_cache_free(ipt_netflow_cachep, nf);
 }
 
-static struct ipt_netflow *
-init_netflow(const struct ipt_netflow_tuple *tuple,
-	     const struct sk_buff *skb, const unsigned int hash)
-{
-	struct ipt_netflow *nf;
-
-	nf = ipt_netflow_alloc(tuple);
-	if (!nf)
-		return NULL;
-
-	nf->lock = &htable_locks[hash & LOCK_COUNT_MASK];
-	hlist_add_head(&nf->hlist, &ipt_netflow_hash[hash]);
-	spin_lock(&hlist_lock);
-	list_add(&nf->list, &ipt_netflow_list);
-	spin_unlock(&hlist_lock);
-
-	return nf;
-}
-
 /* cook pdu, send, and clean */
 /* only called in scan worker path */
 static void netflow_export_pdu_v5(void)
@@ -1234,8 +2368,9 @@ static void netflow_export_pdu_v5(void)
 	pdu.v5.seq		= htonl(pdu_seq);
 	//pdu.v5.eng_type	= 0;
 	pdu.v5.eng_id		= engine_id;
-	//pdu.v5.padding	= 0;
-
+#ifdef ENABLE_SAMPLER
+	pdu.v5.sampling		= htons(sampler_nf_v5());
+#endif
 	pdusize = NETFLOW5_HEADER_SIZE + sizeof(struct netflow5_record) * pdu_data_records;
 
 	netflow_sendmsg(&pdu.v5, pdusize);
@@ -1245,7 +2380,7 @@ static void netflow_export_pdu_v5(void)
 
 	pdu_seq += pdu_data_records;
 	pdu_count++;
-	pdu_data_records = 0;
+	pdu_flow_records = pdu_data_records = 0;
 }
 
 /* only called in scan worker path */
@@ -1260,17 +2395,23 @@ static void netflow_export_flow_v5(struct ipt_netflow *nf)
 	pdu_traf += nf->nr_bytes;
 	pdu_ts_mod = jiffies;
 	rec = &pdu.v5.flow[pdu_data_records++];
+	pdu_flow_records++;
 
 	/* make V5 flow record */
 	rec->s_addr	= nf->tuple.src.ip;
 	rec->d_addr	= nf->tuple.dst.ip;
 	rec->nexthop	= nf->nh.ip;
+#ifdef SNMP_RULES
+	rec->i_ifc	= htons(nf->i_ifcr);
+	rec->o_ifc	= htons(nf->o_ifcr);
+#else
 	rec->i_ifc	= htons(nf->tuple.i_ifc);
 	rec->o_ifc	= htons(nf->o_ifc);
+#endif
 	rec->nr_packets = htonl(nf->nr_packets);
 	rec->nr_octets	= htonl(nf->nr_bytes);
-	rec->first_ms	= htonl(jiffies_to_msecs(nf->ts_first));
-	rec->last_ms	= htonl(jiffies_to_msecs(nf->ts_last));
+	rec->first_ms	= htonl(jiffies_to_msecs(nf->nf_ts_first));
+	rec->last_ms	= htonl(jiffies_to_msecs(nf->nf_ts_last));
 	rec->s_port	= nf->tuple.s_port;
 	rec->d_port	= nf->tuple.d_port;
 	//rec->reserved	= 0; /* pdu is always zeroized for v5 in netflow_switch_version */
@@ -1320,7 +2461,7 @@ static void netflow_export_pdu_v9(void)
 
 	pdu_seq++;
 	pdu_count++;
-	pdu_data_records = pdu_tpl_records = 0;
+	pdu_flow_records = pdu_data_records = pdu_tpl_records = 0;
 	pdu_data_used = pdu.v9.data;
 	pdu_flowset = NULL;
 }
@@ -1352,7 +2493,7 @@ static void netflow_export_pdu_ipfix(void)
 
 	pdu_seq += pdu_data_records;
 	pdu_count++;
-	pdu_data_records = pdu_tpl_records = 0;
+	pdu_flow_records = pdu_data_records = pdu_tpl_records = 0;
 	pdu_data_used = pdu.ipfix.data;
 	pdu_flowset = NULL;
 }
@@ -1369,8 +2510,13 @@ static inline unsigned char *pdu_grab_space(const size_t size)
 	return ptr;
 }
 
-// allocate data space in pdu, or fail if pdu is reallocated.
-static inline unsigned char *pdu_alloc_fail(const size_t size)
+static inline void pdu_rewind_space(const size_t size)
+{
+	pdu_data_used -= size;
+}
+
+/* allocate data space in pdu, or export (reallocate) and fail. */
+static inline unsigned char *pdu_alloc_fail_export(const size_t size)
 {
 	if (!pdu_have_space(size)) {
 		netflow_export_pdu();
@@ -1380,59 +2526,19 @@ static inline unsigned char *pdu_alloc_fail(const size_t size)
 }
 
 /* doesn't fail, but can provide empty pdu. */
-static unsigned char *pdu_alloc(const size_t size)
+static unsigned char *pdu_alloc_export(const size_t size)
 {
-	return pdu_alloc_fail(size) ?: pdu_grab_space(size);
+	return pdu_alloc_fail_export(size) ?: pdu_grab_space(size);
 }
 
 /* global table of sizes of template field types */
+#define two(id, a, b, len)	[id] = len,
+#define one(id, a, len)		[id] = len,
 static u_int8_t tpl_element_sizes[] = {
-	[IN_BYTES]	= 4,
-	[IN_PKTS]	= 4,
-	[PROTOCOL]	= 1,
-	[TOS]		= 1,
-	[TCP_FLAGS]	= 1,
-	[L4_SRC_PORT]	= 2,
-	[IPV4_SRC_ADDR]	= 4,
-	[SRC_MASK]	= 1,
-	[INPUT_SNMP]	= 2,
-	[L4_DST_PORT]	= 2,
-	[IPV4_DST_ADDR]	= 4,
-	[DST_MASK]	= 1,
-	[OUTPUT_SNMP]	= 2,
-	[IPV4_NEXT_HOP]	= 4,
-	//[SRC_AS]		= 2,
-	//[DST_AS]		= 2,
-	//[BGP_IPV4_NEXT_HOP]	= 4,
-	//[MUL_DST_PKTS]	= 4,
-	//[MUL_DST_BYTES]	= 4,
-	[LAST_SWITCHED]	= 4,
-	[FIRST_SWITCHED]= 4,
-	[IPV6_SRC_ADDR]	= 16,
-	[IPV6_DST_ADDR]	= 16,
-	[IPV6_FLOW_LABEL] = 3,
-	[ICMP_TYPE]	= 2,
-	[MUL_IGMP_TYPE]	= 1,
-	//[TOTAL_BYTES_EXP]	= 4,
-	//[TOTAL_PKTS_EXP]	= 4,
-	//[TOTAL_FLOWS_EXP]	= 4,
-	[IPV6_NEXT_HOP]			   = 16,
-	[IPV6_OPTION_HEADERS]		   = 2,
-	[commonPropertiesId]		   = 4,
-	[ipv4Options]			   = 4,
-	[tcpOptions]			   = 4,
-	[postNATSourceIPv4Address]	   = 4,
-	[postNATDestinationIPv4Address]	   = 4,
-	[postNAPTSourceTransportPort]	   = 2,
-	[postNAPTDestinationTransportPort] = 2,
-	[natEvent]			   = 1,
-	[postNATSourceIPv6Address]	   = 16,
-	[postNATDestinationIPv6Address]	   = 16,
-	[IPSecSPI]			   = 4,
-	[observationTimeMilliseconds]	   = 8,
-	[observationTimeMicroseconds]	   = 8,
-	[observationTimeNanoseconds]	   = 8,
+	Elements
 };
+#undef two
+#undef one
 
 #define TEMPLATES_HASH_BSIZE	8
 #define TEMPLATES_HASH_SIZE	(1<<TEMPLATES_HASH_BSIZE)
@@ -1443,24 +2549,45 @@ struct base_template {
 	u_int16_t types[]; /* {type, size} pairs */
 };
 
-/* base templates */
-#define BTPL_BASE	0x00000001	/* base stat */
-#define BTPL_IP4	0x00000002	/* IPv4 */
-#define BTPL_MASK4	0x00000004	/* Aggregated */
-#define BTPL_PORTS	0x00000008	/* UDP&TCP */
-#define BTPL_IP6	0x00000010	/* IPv6 */
-#define BTPL_ICMP	0x00000020	/* ICMP */
-#define BTPL_IGMP	0x00000040	/* IGMP */
-#define BTPL_IPSEC	0x00000080	/* AH&ESP */
-#define BTPL_NAT4	0x00000100	/* NAT IPv4 */
-#define BTPL_MARK	0x00000400	/* connmark */
-#define BTPL_LABEL6	0x00000800	/* IPv6 flow label */
-#define BTPL_OPTIONS4	0x00001000	/* IPv4 Options */
-#define BTPL_OPTIONS6	0x00002000	/* IPv6 Options */
-#define BTPL_TCPOPTIONS	0x00004000	/* TCP Options */
+/* Data Templates */
+#define BTPL_BASE9	0x00000001	/* netflow base stat */
+#define BTPL_BASEIPFIX	0x00000002	/* ipfix base stat */
+#define BTPL_IP4	0x00000004	/* IPv4 */
+#define BTPL_MASK4	0x00000008	/* Aggregated */
+#define BTPL_PORTS	0x00000010	/* UDP&TCP */
+#define BTPL_IP6	0x00000020	/* IPv6 */
+#define BTPL_ICMP	0x00000040	/* ICMP */
+#define BTPL_IGMP	0x00000080	/* IGMP */
+#define BTPL_IPSEC	0x00000100	/* AH&ESP */
+#define BTPL_NAT4	0x00000200	/* NAT IPv4 */
+#define BTPL_LABEL6	0x00000400	/* IPv6 flow label */
+#define BTPL_IP4OPTIONS	0x00000800	/* IPv4 Options */
+#define BTPL_IP6OPTIONS	0x00001000	/* IPv6 Options */
+#define BTPL_TCPOPTIONS	0x00002000	/* TCP Options */
+#define BTPL_MAC	0x00004000	/* MAC addresses */
+#define BTPL_VLAN9	0x00008000	/* outer VLAN for v9 */
+#define BTPL_VLANX	0x00010000	/* outer VLAN for IPFIX */
+#define BTPL_VLANI	0x00020000	/* inner VLAN (IPFIX) */
+#define BTPL_ETHERTYPE	0x00040000	/* ethernetType */
+#define BTPL_DIRECTION	0x00080000	/* flowDirection */
+#define BTPL_SAMPLERID	0x00100000	/* samplerId (v9) */
+#define BTPL_SELECTORID	0x00200000	/* selectorId (IPFIX) */
+#define BTPL_OPTION	0x80000000	/* Options Template */
 #define BTPL_MAX	32
+/* Options Templates */
+#define OTPL(x) (BTPL_OPTION | x)
+#define OTPL_SYSITIME	OTPL(1)		/* systemInitTimeMilliseconds */
+#define OTPL_MPSTAT	OTPL(2)		/* The Metering Process Statistics (rfc5101) */
+#define OTPL_MPRSTAT	OTPL(3)		/* The Metering Process Reliability Statistics */
+#define OTPL_EPRSTAT	OTPL(4)		/* The Exporting Process Reliability Statistics */
+#define OTPL_SAMPLER	OTPL(5)		/* Flow Sampler for v9 */
+#define OTPL_SEL_RAND	OTPL(6)		/* Random Flow Selector for IPFIX */
+#define OTPL_SEL_COUNT	OTPL(7)		/* Systematic count-based Flow Selector for IPFIX */
+#define OTPL_SEL_STAT	OTPL(8)		/* rfc7014 */
+#define OTPL_SEL_STATH	OTPL(9)		/* OTPL_SEL_STAT, except selectorIDTotalFlowsObserved */
+#define OTPL_IFNAMES	OTPL(10)
 
-static struct base_template template_base = {
+static struct base_template template_base_9 = {
 	.types = {
 		INPUT_SNMP,
 		OUTPUT_SNMP,
@@ -1473,6 +2600,58 @@ static struct base_template template_base = {
 		0
 	}
 };
+static struct base_template template_base_ipfix = {
+	.types = {
+		ingressInterface,
+		egressInterface,
+		packetDeltaCount,
+		octetDeltaCount,
+		flowStartMilliseconds,
+		flowEndMilliseconds,
+		protocolIdentifier,
+		ipClassOfService,
+		0
+	}
+};
+#ifdef ENABLE_MAC
+static struct base_template template_mac_ipfix = {
+	.types = {
+		destinationMacAddress,
+		sourceMacAddress,
+		0
+	}
+};
+#endif
+#if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
+static struct base_template template_ethertype = {
+	.types = { ethernetType, 0 }
+};
+#endif
+#ifdef ENABLE_VLAN
+static struct base_template template_vlan_v9 = {
+	.types = { SRC_VLAN, 0 }
+};
+/* IPFIX is different from v9, see rfc7133. */
+static struct base_template template_vlan_ipfix = {
+	.types = {
+		dot1qVlanId,
+		dot1qPriority,
+		0
+	}
+};
+static struct base_template template_vlan_inner = {
+	.types = {
+		dot1qCustomerVlanId,
+		dot1qCustomerPriority,
+		0
+	}
+};
+#endif
+#ifdef ENABLE_DIRECTION
+static struct base_template template_direction = {
+	.types = { DIRECTION, 0 }
+};
+#endif
 static struct base_template template_ipv4 = {
 	.types = {
 		IPV4_SRC_ADDR,
@@ -1541,20 +2720,151 @@ static struct base_template template_nat4 = {
 		0
 	}
 };
-static struct base_template template_mark = {
-	.types = { commonPropertiesId, 0 }
+
+static struct base_template template_sys_init_time = {
+	.types = {
+		observationDomainId,
+
+		/* ipfix does not report sys_uptime_ms like v9 does,
+		 * so this could be useful to detect system restart
+		 * (rfc5102), and conversion of flow times to absolute
+		 * time (rfc5153 4.7) */
+		systemInitTimeMilliseconds,
+
+		/* this will let collector detect module version and
+		 * recompilation (by srcversion) */
+		observationDomainName,
+
+		/* useful to detect module reload */
+		flowStartMilliseconds,
+		flowEndMilliseconds,
+		0
+	}
+};
+
+/* http://tools.ietf.org/html/rfc5101#section-4 */
+/* The Metering Process Statistics Option Template */
+static struct base_template template_meter_stat = {
+	.types = {
+		observationDomainId,
+		exportedMessageTotalCount,
+		exportedFlowRecordTotalCount,
+		exportedOctetTotalCount,
+		observedFlowTotalCount,
+		0
+	}
+};
+/* The Metering Process Reliability Statistics Option Template */
+static struct base_template template_meter_rel_stat = {
+	.types = {
+		observationDomainId,
+		ignoredPacketTotalCount,
+		ignoredOctetTotalCount,
+		flowStartMilliseconds, /* sampling start time */
+		flowEndMilliseconds,
+		0
+	}
+};
+/* The Exporting Process Reliability Statistics Option Template */
+static struct base_template template_exp_rel_stat = {
+	.types = {
+		exportingProcessId,
+		notSentFlowTotalCount,
+		notSentPacketTotalCount,
+		notSentOctetTotalCount,
+		flowStartMilliseconds, /* sampling start time */
+		flowEndMilliseconds,
+		0
+	}
+};
+
+#ifdef ENABLE_SAMPLER
+static struct base_template template_samplerid = {
+	.types = { FLOW_SAMPLER_ID, 0 }
+};
+static struct base_template template_selectorid = {
+	.types = { selectorId, 0 }
+};
+
+/* sampler for v9 */
+static struct base_template template_sampler = {
+	.types = {
+		observationDomainId,
+		FLOW_SAMPLER_ID,
+		FLOW_SAMPLER_MODE,
+		FLOW_SAMPLER_RANDOM_INTERVAL,
+		0
+	}
+};
+/* sampler for ipfix */
+static struct base_template template_selector_systematic = {
+	.types = {
+		observationDomainId,
+		selectorId,
+		flowSelectorAlgorithm,
+		samplingFlowInterval,
+		samplingFlowSpacing,
+		0
+	}
+};
+static struct base_template template_selector_random = {
+	.types = {
+		observationDomainId,
+		selectorId,
+		flowSelectorAlgorithm,
+		samplingSize,
+		samplingPopulation,
+		0
+	}
+};
+static struct base_template template_selector_stat = {
+	.types = {
+		selectorId,
+		selectorIDTotalFlowsObserved,
+		selectorIDTotalFlowsSelected,
+		selectorIdTotalPktsObserved,
+		selectorIdTotalPktsSelected,
+		flowStartMilliseconds,
+		flowEndMilliseconds,
+		0
+	}
+};
+/* can't calc selectorIDTotalFlowsObserved for hash sampling,
+ * because dropped flows are not accounted */
+static struct base_template template_selector_stat_hash = {
+	.types = {
+		selectorId,
+		selectorIDTotalFlowsSelected,
+		selectorIdTotalPktsObserved,
+		selectorIdTotalPktsSelected,
+		flowStartMilliseconds,
+		flowEndMilliseconds,
+		0
+	}
+};
+#endif
+
+static struct base_template template_interfaces = {
+	.types = {
+		observationDomainId,
+		INPUT_SNMP,
+		IF_NAME,
+		IF_DESC,
+		0
+	}
 };
 
 struct data_template {
 	struct hlist_node hlist;
-	int tpl_mask;
+	unsigned int tpl_key;
 
-	int length; /* number of elements in template */
-	int tpl_size; /* summary size of template with flowset header */
-	int rec_size; /* summary size of all recods of template (w/o flowset header) */
-	int template_id_n; /* assigned from template_ids, network order. */
+	char options;	/* is it Options Template */
+	short length;	/* number of elements in template */
+	short tpl_size;	/* whole size of template itself (with header), for alloc */
+	short rec_size;	/* size of one template record (w/o header) */
+	int template_id_n; /* uassigned from template_ids, network order. */
 	int		exported_cnt;
-	unsigned long	exported_ts; /* jiffies */
+	unsigned long	exported_ts; /* last exported (jiffies) */
 	u_int16_t fields[]; /* {type, size} pairs */
 } __attribute__ ((packed));
 
@@ -1577,10 +2887,16 @@ static void free_templates(void)
 		INIT_HLIST_HEAD(thead);
 	}
 	tpl_count = 0;
+
+	/* reinitialize template timeouts */
+	ts_sysinf_last = ts_stat_last = 0;
+#ifdef ENABLE_SAMPLER
+	ts_sampler_last = 0;
+#endif
 }
 
-/* create combined template from mask */
-static struct data_template *get_template(const int tmask)
+/* find old, or create new combined template from template key (tmask) */
+static struct data_template *get_template(const unsigned int tmask)
 {
 	struct base_template *tlist[BTPL_MAX];
 	struct data_template *tpl;
@@ -1593,40 +2909,108 @@ static struct data_template *get_template(const int tmask)
 	int hash = hash_long(tmask, TEMPLATES_HASH_BSIZE);
 
 	compat_hlist_for_each_entry(tpl, pos, &templates_hash[hash], hlist)
-		if (tpl->tpl_mask == tmask)
+		if (tpl->tpl_key == tmask)
 			return tpl;
 
 	tnum = 0;
-	if (tmask & BTPL_IP4) {
-		tlist[tnum++] = &template_ipv4;
-		if (tmask & BTPL_OPTIONS4)
-			tlist[tnum++] = &template_options4;
-		if (tmask & BTPL_MASK4)
-			tlist[tnum++] = &template_ipv4_mask;
-	} else if (tmask & BTPL_IP6) {
-		tlist[tnum++] = &template_ipv6;
-		if (tmask & BTPL_LABEL6)
-			tlist[tnum++] = &template_label6;
-		if (tmask & BTPL_OPTIONS6)
-			tlist[tnum++] = &template_options6;
-	} else if (tmask & BTPL_NAT4)
-		tlist[tnum++] = &template_nat4;
-	if (tmask & BTPL_PORTS)
-		tlist[tnum++] = &template_ports;
-	if (tmask & BTPL_BASE)
-		tlist[tnum++] = &template_base;
-	if (tmask & BTPL_TCPOPTIONS)
-		tlist[tnum++] = &template_tcpoptions;
-	if (tmask & BTPL_ICMP)
-		tlist[tnum++] = &template_icmp;
-	if (tmask & BTPL_IGMP)
-		tlist[tnum++] = &template_igmp;
-	if (tmask & BTPL_IPSEC)
-		tlist[tnum++] = &template_ipsec;
-	if (tmask & BTPL_MARK)
-		tlist[tnum++] = &template_mark;
+	/* assemble array of base_templates from template key */
+	/* NB: this should not have protocol dependent checks */
+	if (tmask & BTPL_OPTION) {
+		switch (tmask) {
+		case OTPL_SYSITIME:
+			tlist[tnum++] = &template_sys_init_time;
+			break;
+		case OTPL_MPSTAT:
+			tlist[tnum++] = &template_meter_stat;
+			break;
+		case OTPL_MPRSTAT:
+			tlist[tnum++] = &template_meter_rel_stat;
+			break;
+		case OTPL_EPRSTAT:
+			tlist[tnum++] = &template_exp_rel_stat;
+			break;
+#ifdef ENABLE_SAMPLER
+		case OTPL_SAMPLER:
+			tlist[tnum++] = &template_sampler;
+			break;
+		case OTPL_SEL_RAND:
+			tlist[tnum++] = &template_selector_random;
+			break;
+		case OTPL_SEL_COUNT:
+			tlist[tnum++] = &template_selector_systematic;
+			break;
+		case OTPL_SEL_STAT:
+			tlist[tnum++] = &template_selector_stat;
+			break;
+		case OTPL_SEL_STATH:
+			tlist[tnum++] = &template_selector_stat_hash;
+			break;
+#endif
+		case OTPL_IFNAMES:
+			tlist[tnum++] = &template_interfaces;
+			break;
+		}
+	} else {
+		if (tmask & BTPL_IP4) {
+			tlist[tnum++] = &template_ipv4;
+			if (tmask & BTPL_IP4OPTIONS)
+				tlist[tnum++] = &template_options4;
+			if (tmask & BTPL_MASK4)
+				tlist[tnum++] = &template_ipv4_mask;
+		} else if (tmask & BTPL_IP6) {
+			tlist[tnum++] = &template_ipv6;
+			if (tmask & BTPL_LABEL6)
+				tlist[tnum++] = &template_label6;
+			if (tmask & BTPL_IP6OPTIONS)
+				tlist[tnum++] = &template_options6;
+		} else if (tmask & BTPL_NAT4)
+			tlist[tnum++] = &template_nat4;
+		if (tmask & BTPL_PORTS)
+			tlist[tnum++] = &template_ports;
+		if (tmask & BTPL_BASE9)
+			tlist[tnum++] = &template_base_9;
+		else if (tmask & BTPL_BASEIPFIX)
+			tlist[tnum++] = &template_base_ipfix;
+		if (tmask & BTPL_TCPOPTIONS)
+			tlist[tnum++] = &template_tcpoptions;
+		if (tmask & BTPL_ICMP)
+			tlist[tnum++] = &template_icmp;
+		if (tmask & BTPL_IGMP)
+			tlist[tnum++] = &template_igmp;
+		if (tmask & BTPL_IPSEC)
+			tlist[tnum++] = &template_ipsec;
+#ifdef ENABLE_MAC
+		if (tmask & BTPL_MAC)
+			tlist[tnum++] = &template_mac_ipfix;
+#endif
+#ifdef ENABLE_VLAN
+		if (tmask & BTPL_VLAN9)
+			tlist[tnum++] = &template_vlan_v9;
+		else {
+			if (tmask & BTPL_VLANX)
+				tlist[tnum++] = &template_vlan_ipfix;
+			if (tmask & BTPL_VLANI)
+				tlist[tnum++] = &template_vlan_inner;
+		}
+#endif
+#if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
+		if (tmask & BTPL_ETHERTYPE)
+			tlist[tnum++] = &template_ethertype;
+#endif
+#ifdef ENABLE_DIRECTION
+		if (tmask & BTPL_DIRECTION)
+			tlist[tnum++] = &template_direction;
+#endif
+#ifdef ENABLE_SAMPLER
+		if (tmask & BTPL_SAMPLERID)
+			tlist[tnum++] = &template_samplerid;
+		else if (tmask & BTPL_SELECTORID)
+			tlist[tnum++] = &template_selectorid;
+#endif
+	} /* !BTPL_OPTION */
 
-	/* calc memory size */
+	/* calculate resulting template length
+	 * and update base_template array lengths  */
 	length = 0;
 	for (i = 0; i < tnum; i++) {
 		if (!tlist[i]->length) {
@@ -1635,20 +3019,25 @@ static struct data_template *get_template(const int tmask)
 		}
 		length += tlist[i]->length;
 	}
-	/* elements are pairs + one termiantor */
+	/* elements are [type, len] pairs + one termiantor */
 	tpl = kmalloc(sizeof(struct data_template) + (length * 2 + 1) * sizeof(u_int16_t), GFP_KERNEL);
 	if (!tpl) {
-		printk(KERN_ERR "ipt_NETFLOW: unable to kmalloc template.\n");
+		printk(KERN_ERR "ipt_NETFLOW: unable to kmalloc template (%#x).\n", tmask);
 		return NULL;
 	}
-	tpl->tpl_mask = tmask;
+	tpl->tpl_key = tmask;
+	tpl->options = (tmask & BTPL_OPTION) != 0;
+	if (tpl->options)
+		tpl->tpl_size = sizeof(struct flowset_opt_tpl_v9); /* ipfix is of the same size */
+	else
+		tpl->tpl_size = sizeof(struct flowset_template);
 	tpl->length = length;
-	tpl->tpl_size = sizeof(struct flowset_template);
 	tpl->rec_size = 0;
 	tpl->template_id_n = htons(template_ids++);
 	tpl->exported_cnt = 0;
 	tpl->exported_ts = 0;
 
+	/* construct resulting data_template and fill lengths */
 	j = 0;
 	for (i = 0; i < tnum; i++) {
 		struct base_template *btpl = tlist[i];
@@ -1672,27 +3061,83 @@ static struct data_template *get_template(const int tmask)
 	return tpl;
 }
 
+static u_int16_t scope_ipfix_to_v9(const u_int16_t elem)
+{
+	switch (elem) {
+	case observationDomainId:
+	case meteringProcessId:
+	case exportingProcessId:
+		return SCOPE_SYSTEM;
+	case ingressInterface:
+	case portId:
+		return SCOPE_INTERFACE;
+	case observationPointId:
+	case LineCardId:
+		return SCOPE_LINECARD;
+	case TemplateId:
+		return SCOPE_TEMPLATE;
+	default:
+		return -1;
+	}
+}
+
+/* add template of any type and version */
 static void pdu_add_template(struct data_template *tpl)
 {
-	int i;
-	unsigned char *ptr;
+	__u8 *ptr;
 	struct flowset_template *ntpl;
-	__be16 *sptr;
+	__be16 *sptr, *fields;
+	size_t added_size = 0;
 
-	ptr = pdu_alloc(tpl->tpl_size);
-	ntpl = (struct flowset_template *)ptr;
-	ntpl->flowset_id  = protocol == 9? htons(FLOWSET_TEMPLATE) : htons(IPFIX_TEMPLATE);
+	/* for options template we also make sure there is enough
+	 * room in the packet for one record, with flowset header */
+	if (tpl->options)
+		added_size = sizeof(struct flowset_data) + tpl->rec_size;
+	ptr = pdu_alloc_export(tpl->tpl_size + added_size);
+	pdu_rewind_space(added_size);
+	ntpl = (void *)ptr;
+
+	/* first three fields are equal for all types of templates */
+	if (tpl->options)
+		ntpl->flowset_id = protocol == 9? htons(FLOWSET_OPTIONS) : htons(IPFIX_OPTIONS);
+	else
+		ntpl->flowset_id = protocol == 9? htons(FLOWSET_TEMPLATE) : htons(IPFIX_TEMPLATE);
 	ntpl->length	  = htons(tpl->tpl_size);
 	ntpl->template_id = tpl->template_id_n;
-	ntpl->field_count = htons(tpl->length);
-	ptr += sizeof(struct flowset_template);
+
+	if (tpl->options) {
+		/* option templates should be defined with first element being scope */
+		if (protocol == 9) {
+			struct flowset_opt_tpl_v9 *otpl = (void *)ptr;
+
+			otpl->scope_len   = htons(TPL_FIELD_NSIZE);
+			otpl->opt_len     = htons((tpl->length - 1) * TPL_FIELD_NSIZE);
+			ptr += sizeof(struct flowset_opt_tpl_v9);
+		} else {
+			struct flowset_opt_tpl_ipfix *otpl = (void *)ptr;
+
+			otpl->field_count = htons(tpl->length);
+			otpl->scope_count = htons(1);
+			ptr += sizeof(struct flowset_opt_tpl_ipfix);
+		}
+	} else {
+		ntpl->field_count = htons(tpl->length);
+		ptr += sizeof(struct flowset_template);
+	}
+
 	sptr = (__be16 *)ptr;
-	for (i = 0; ; ) {
-		int type = tpl->fields[i++];
+	fields = tpl->fields;
+	if (tpl->options && protocol == 9) {
+		/* v9 scope */
+		*sptr++ = htons(scope_ipfix_to_v9(*fields++));
+		*sptr++ = htons(*fields++);
+	}
+	for (;;) {
+		const int type = *fields++;
 		if (!type)
 			break;
 		*sptr++ = htons(type);
-		*sptr++ = htons(tpl->fields[i++]);
+		*sptr++ = htons(*fields++);
 	}
 
 	tpl->exported_cnt = pdu_count;
@@ -1710,59 +3155,164 @@ static inline s64 portable_ktime_to_ms(const ktime_t kt)
 }
 #define ktime_to_ms portable_ktime_to_ms
 #endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
+static inline s64 portable_ktime_to_us(const ktime_t kt)
+{
+	struct timeval tv = ktime_to_timeval(kt);
+	return (s64) tv.tv_sec * USEC_PER_SEC + tv.tv_usec;
+}
+#define ktime_to_us portable_ktime_to_us
+#endif
 
-/* encode one field */
+#ifdef ENABLE_DIRECTION
+static inline __u8 hook2dir(const __u8 hooknum)
+{
+	switch (hooknum) {
+	case NF_INET_PRE_ROUTING:
+	case NF_INET_LOCAL_IN:
+		return 0;
+	case NF_INET_LOCAL_OUT:
+	case NF_INET_POST_ROUTING:
+		return 1;
+	default:
+		return -1;
+	}
+}
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)
+static inline void put_unaligned_be16(u16 val, void *p)
+{
+	put_unaligned(cpu_to_be16(val), (__be16 *)p);
+}
+static inline void put_unaligned_be32(u32 val, void *p)
+{
+	put_unaligned(cpu_to_be32(val), (__be32 *)p);
+}
+static inline void put_unaligned_be64(u64 val, void *p)
+{
+	put_unaligned(cpu_to_be64(val), (__be64 *)p);
+}
+#endif
+
+static inline void put_unaligned_be24(u32 val, unsigned char *p)
+{
+	*p++ = val >> 16;
+	put_unaligned_be16(val, p);
+}
+
+static struct {
+	s64		ms;	 /* this much abs milliseconds */
+	unsigned long	jiffies; /* is that much jiffies */
+} jiffies_base;
+
+/* prepare for jiffies_to_ms_abs() batch */
+static void set_jiffies_base(void)
+{
+	ktime_t ktime;
+
+	/* try to get them atomically */
+	local_bh_disable();
+	jiffies_base.jiffies = jiffies;
+	ktime = ktime_get_real();
+	local_bh_enable();
+
+	jiffies_base.ms = ktime_to_ms(ktime);
+}
+
+/* convert jiffies to ktime and rebase to unix epoch */
+static inline s64 jiffies_to_ms_abs(unsigned long j)
+{
+	long jdiff = jiffies_base.jiffies - j;
+
+	if (likely(jdiff >= 0))
+		return jiffies_base.ms - (s64)jiffies_to_msecs(jdiff);
+	else
+		return jiffies_base.ms + (s64)jiffies_to_msecs(-jdiff);
+}
+
+#ifndef WARN_ONCE
+#define WARN_ONCE(x,fmt...) ({ if (x) printk(KERN_WARNING fmt); })
+#endif
 typedef struct in6_addr in6_t;
-static inline void add_ipv4_field(__u8 *ptr, const int type, const struct ipt_netflow *nf)
+/* encode one field (data records only) */
+static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_netflow *nf)
 {
 	switch (type) {
-		case IN_BYTES:	     *(__be32 *)ptr = htonl(nf->nr_bytes); break;
-		case IN_PKTS:	     *(__be32 *)ptr = htonl(nf->nr_packets); break;
-		case FIRST_SWITCHED: *(__be32 *)ptr = htonl(jiffies_to_msecs(nf->ts_first)); break;
-		case LAST_SWITCHED:  *(__be32 *)ptr = htonl(jiffies_to_msecs(nf->ts_last)); break;
-		case IPV4_SRC_ADDR:  *(__be32 *)ptr = nf->tuple.src.ip; break;
-		case IPV4_DST_ADDR:  *(__be32 *)ptr = nf->tuple.dst.ip; break;
-		case IPV4_NEXT_HOP:  *(__be32 *)ptr = nf->nh.ip; break;
-		case L4_SRC_PORT:    *(__be16 *)ptr = nf->tuple.s_port; break;
-		case L4_DST_PORT:    *(__be16 *)ptr = nf->tuple.d_port; break;
-		case INPUT_SNMP:     *(__be16 *)ptr = htons(nf->tuple.i_ifc); break;
-		case OUTPUT_SNMP:    *(__be16 *)ptr = htons(nf->o_ifc); break;
-		case PROTOCOL:	               *ptr = nf->tuple.protocol; break;
-		case TCP_FLAGS:	               *ptr = nf->tcp_flags; break;
-		case TOS:	               *ptr = nf->tuple.tos; break;
-		case IPV6_SRC_ADDR:   *(in6_t *)ptr = nf->tuple.src.in6; break;
-		case IPV6_DST_ADDR:   *(in6_t *)ptr = nf->tuple.dst.in6; break;
-		case IPV6_NEXT_HOP:   *(in6_t *)ptr = nf->nh.in6; break;
-		case IPV6_FLOW_LABEL:        *ptr++ = nf->flow_label >> 16;
-				     *(__be16 *)ptr = nf->flow_label;
-				      break;
-		case tcpOptions:     *(__be32 *)ptr = htonl(nf->tcpoptions); break;
-		case ipv4Options:    *(__be32 *)ptr = htonl(nf->options); break;
-		case IPV6_OPTION_HEADERS: *(__be16 *)ptr = htons(nf->options); break;
-#ifdef CONFIG_NF_CONNTRACK_MARK
-		case commonPropertiesId:
-				     *(__be32 *)ptr = htonl(nf->mark); break;
+	case IN_BYTES:	     put_unaligned_be32(nf->nr_bytes, ptr); break;
+	case IN_PKTS:	     put_unaligned_be32(nf->nr_packets, ptr); break;
+	case FIRST_SWITCHED: put_unaligned_be32(jiffies_to_msecs(nf->nf_ts_first), ptr); break;
+	case LAST_SWITCHED:  put_unaligned_be32(jiffies_to_msecs(nf->nf_ts_last), ptr); break;
+	case flowStartMilliseconds: put_unaligned_be64(jiffies_to_ms_abs(nf->nf_ts_first), ptr); break;
+	case flowEndMilliseconds:   put_unaligned_be64(jiffies_to_ms_abs(nf->nf_ts_last), ptr); break;
+	case IPV4_SRC_ADDR:  put_unaligned(nf->tuple.src.ip, (__be32 *)ptr); break;
+	case IPV4_DST_ADDR:  put_unaligned(nf->tuple.dst.ip, (__be32 *)ptr); break;
+	case IPV4_NEXT_HOP:  put_unaligned(nf->nh.ip, (__be32 *)ptr); break;
+	case L4_SRC_PORT:    put_unaligned(nf->tuple.s_port, (__be16 *)ptr); break;
+	case L4_DST_PORT:    put_unaligned(nf->tuple.d_port, (__be16 *)ptr); break;
+#ifdef SNMP_RULES
+	case INPUT_SNMP:     put_unaligned_be16(nf->i_ifcr, ptr); break;
+	case OUTPUT_SNMP:    put_unaligned_be16(nf->o_ifcr, ptr); break;
+#else
+	case INPUT_SNMP:     put_unaligned_be16(nf->tuple.i_ifc, ptr); break;
+	case OUTPUT_SNMP:    put_unaligned_be16(nf->o_ifc, ptr); break;
 #endif
-		case SRC_MASK:	               *ptr = nf->s_mask; break;
-		case DST_MASK:	               *ptr = nf->d_mask; break;
-		case ICMP_TYPE:	     *(__be16 *)ptr = nf->tuple.d_port; break;
-		case MUL_IGMP_TYPE:            *ptr = nf->tuple.d_port; break;
+#ifdef ENABLE_VLAN
+#define EXTRACT_VLAN_PRIO(tag) ((ntohs(tag) & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT)
+	case SRC_VLAN:
+	case dot1qVlanId:    put_unaligned(nf->tuple.tag1 & htons(VLAN_VID_MASK), (__be16 *)ptr); break;
+	case dot1qPriority:            *ptr = EXTRACT_VLAN_PRIO(nf->tuple.tag1); break;
+	case dot1qCustomerVlanId:
+			     put_unaligned(nf->tuple.tag2 & htons(VLAN_VID_MASK), (__be16 *)ptr); break;
+	case dot1qCustomerPriority:    *ptr = EXTRACT_VLAN_PRIO(nf->tuple.tag2); break;
+#endif
+#if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
+	case ethernetType:   put_unaligned(nf->ethernetType, (__be16 *)ptr); break;
+#endif
+#ifdef ENABLE_MAC
+	case destinationMacAddress: memcpy(ptr, &nf->tuple.h_dst, ETH_ALEN); break;
+	case sourceMacAddress:	    memcpy(ptr, &nf->tuple.h_src, ETH_ALEN); break;
+#endif
+#ifdef ENABLE_DIRECTION
+	case DIRECTION:		       *ptr = hook2dir(nf->hooknumx - 1); break;
+#endif
+	case PROTOCOL:	               *ptr = nf->tuple.protocol; break;
+	case TCP_FLAGS:	               *ptr = nf->tcp_flags; break;
+	case TOS:	               *ptr = nf->tuple.tos; break;
+	case IPV6_SRC_ADDR:   *(in6_t *)ptr = nf->tuple.src.in6; break;
+	case IPV6_DST_ADDR:   *(in6_t *)ptr = nf->tuple.dst.in6; break;
+	case IPV6_NEXT_HOP:   *(in6_t *)ptr = nf->nh.in6; break;
+	case IPV6_FLOW_LABEL: put_unaligned_be24(nf->flow_label, ptr); break;
+	case tcpOptions:      put_unaligned_be32(nf->tcpoptions, ptr); break;
+	case ipv4Options:     put_unaligned_be32(nf->options, ptr); break;
+	case IPV6_OPTION_HEADERS:
+			     put_unaligned_be16(nf->options, ptr); break;
+	case SRC_MASK:	               *ptr = nf->s_mask; break;
+	case DST_MASK:	               *ptr = nf->d_mask; break;
+	case ICMP_TYPE:	     put_unaligned(nf->tuple.d_port, (__be16 *)ptr); break;
+	case MUL_IGMP_TYPE:            *ptr = nf->tuple.d_port; break;
 #ifdef CONFIG_NF_NAT_NEEDED
-		case postNATSourceIPv4Address:	       *(__be32 *)ptr = nf->nat->post.s_addr; break;
-		case postNATDestinationIPv4Address:    *(__be32 *)ptr = nf->nat->post.d_addr; break;
-		case postNAPTSourceTransportPort:      *(__be16 *)ptr = nf->nat->post.s_port; break;
-		case postNAPTDestinationTransportPort: *(__be16 *)ptr = nf->nat->post.d_port; break;
-		case natEvent:				         *ptr = nf->nat->nat_event; break;
+	case postNATSourceIPv4Address:	       put_unaligned(nf->nat->post.s_addr, (__be32 *)ptr); break;
+	case postNATDestinationIPv4Address:    put_unaligned(nf->nat->post.d_addr, (__be32 *)ptr); break;
+	case postNAPTSourceTransportPort:      put_unaligned(nf->nat->post.s_port, (__be16 *)ptr); break;
+	case postNAPTDestinationTransportPort: put_unaligned(nf->nat->post.d_port, (__be16 *)ptr); break;
+	case natEvent:		       *ptr = nf->nat->nat_event; break;
 #endif
-		case IPSecSPI:        *(__u32 *)ptr = (nf->tuple.s_port << 16) | nf->tuple.d_port; break;
-		case observationTimeMilliseconds:
-				      *(__be64 *)ptr = cpu_to_be64(ktime_to_ms(nf->ts_obs)); break;
-		case observationTimeMicroseconds:
-				      *(__be64 *)ptr = cpu_to_be64(ktime_to_us(nf->ts_obs)); break;
-		case observationTimeNanoseconds:
-				      *(__be64 *)ptr = cpu_to_be64(ktime_to_ns(nf->ts_obs)); break;
-		default:
-					memset(ptr, 0, tpl_element_sizes[type]);
+	case IPSecSPI:       put_unaligned(EXTRACT_SPI(nf->tuple), (__be32 *)ptr); break;
+	case observationTimeMilliseconds:
+			     put_unaligned_be64(ktime_to_ms(nf->nf_ts_obs), ptr); break;
+	case observationTimeMicroseconds:
+			     put_unaligned_be64(ktime_to_us(nf->nf_ts_obs), ptr); break;
+	case observationTimeNanoseconds:
+			     put_unaligned_be64(ktime_to_ns(nf->nf_ts_obs), ptr); break;
+#ifdef ENABLE_SAMPLER
+	case FLOW_SAMPLER_ID:
+	case selectorId:
+			     *ptr = get_sampler_mode(); break;
+#endif
+	default:
+			     WARN_ONCE(1, "NETFLOW: Unknown Element id %d\n", type);
+			     memset(ptr, 0, tpl_element_sizes[type]);
 	}
 }
 
@@ -1790,26 +3340,102 @@ static inline unsigned long timeout_rate_j(void)
 #ifndef time_is_before_jiffies
 #define time_is_before_jiffies(a) time_after(jiffies, a)
 #endif
+#ifndef time_is_after_jiffies
+#define time_is_after_jiffies(a) time_before(jiffies, a)
+#endif
+
+
+/* return buffer where to write records data */
+static unsigned char *alloc_record_tpl(struct data_template *tpl)
+{
+	unsigned char *ptr;
+
+	/* If previous write was to the same template and there is room, then we just add new record,
+	 * otherwise we (re)allocate flowset (and/or whole pdu). */
+	if (unlikely(!pdu_flowset ||
+	    pdu_flowset->flowset_id != tpl->template_id_n ||
+	    !(ptr = pdu_alloc_fail_export(tpl->rec_size)))) {
+
+		/* if there was previous data template we should pad it to 4 bytes */
+		if (pdu_flowset) {
+			int padding = (PAD_SIZE - ntohs(pdu_flowset->length) % PAD_SIZE) % PAD_SIZE;
+			if (padding && (ptr = pdu_alloc_fail_export(padding))) {
+				pdu_flowset->length = htons(ntohs(pdu_flowset->length) + padding);
+				for (; padding; padding--)
+					*ptr++ = 0;
+			}
+		}
+
+		/* export template if needed */
+		if (!tpl->exported_ts ||
+		    pdu_count > (tpl->exported_cnt + refresh_rate) ||
+		    time_is_before_jiffies(tpl->exported_ts + timeout_rate_j())) {
+			pdu_add_template(tpl);
+		}
+
+		/* new flowset */
+		ptr = pdu_alloc_export(sizeof(struct flowset_data) + tpl->rec_size);
+		pdu_flowset		= (struct flowset_data *)ptr;
+		pdu_flowset->flowset_id = tpl->template_id_n;
+		pdu_flowset->length	= htons(sizeof(struct flowset_data));
+		ptr += sizeof(struct flowset_data);
+	}
+	return ptr;
+}
+
+static unsigned char *alloc_record_key(const unsigned int t_key, struct data_template **ptpl)
+{
+	struct data_template *tpl;
+
+	tpl = get_template(t_key);
+	if (unlikely(!tpl)) {
+		printk(KERN_INFO "ipt_NETFLOW: template %#x allocation failed.\n", t_key);
+		NETFLOW_STAT_INC_ATOMIC(alloc_err);
+		return NULL;
+	}
+	*ptpl = tpl;
+	return alloc_record_tpl(tpl);
+}
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,14,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
+#define prandom_u32 get_random_int
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0)
+#define prandom_u32 random32
+#endif
+static inline u32 prandom_u32_max(u32 ep_ro)
+{
+	return (u32)(((u64) prandom_u32() * ep_ro) >> 32);
+}
+#endif
 
 static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 {
 	unsigned char *ptr;
-	int i;
 	struct data_template *tpl;
-	int tpl_mask = BTPL_BASE;
+	unsigned int tpl_mask;
+	int i;
 
 	if (unlikely(debug > 2))
 		printk(KERN_INFO "adding flow to export (%d)\n",
 		    pdu_data_records + pdu_tpl_records);
 
+	/* build the template key */
+#ifdef CONFIG_NF_NAT_NEEDED
+	if (nf->nat) {
+		tpl_mask = BTPL_NAT4;
+		goto ready;
+	}
+#endif
+	tpl_mask = (protocol == 9)? BTPL_BASE9 : BTPL_BASEIPFIX;
 	if (likely(nf->tuple.l3proto == AF_INET)) {
 		tpl_mask |= BTPL_IP4;
 		if (unlikely(nf->options))
-			tpl_mask |= BTPL_OPTIONS4;
+			tpl_mask |= BTPL_IP4OPTIONS;
 	} else {
 		tpl_mask |= BTPL_IP6;
 		if (unlikely(nf->options))
-			tpl_mask |= BTPL_OPTIONS6;
+			tpl_mask |= BTPL_IP6OPTIONS;
 		if (unlikely(nf->flow_label))
 			tpl_mask |= BTPL_LABEL6;
 	}
@@ -1826,50 +3452,49 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 		tpl_mask |= BTPL_ICMP;
 	else if (nf->tuple.protocol == IPPROTO_IGMP)
 		tpl_mask |= BTPL_IGMP;
-#ifdef CONFIG_NF_CONNTRACK_MARK
-	if (nf->mark)
-		tpl_mask |= BTPL_MARK;
+        else if (nf->tuple.protocol == IPPROTO_AH ||
+                    nf->tuple.protocol == IPPROTO_ESP)
+                tpl_mask |= BTPL_IPSEC;
+#ifdef ENABLE_MAC
+	if (!is_zero_ether_addr(nf->tuple.h_src) ||
+	    !is_zero_ether_addr(nf->tuple.h_dst))
+		tpl_mask |= BTPL_MAC;
 #endif
-#ifdef CONFIG_NF_NAT_NEEDED
-	if (nf->nat)
-		tpl_mask = BTPL_NAT4;
+#ifdef ENABLE_VLAN
+	if (nf->tuple.tag1) {
+		if (protocol == 9)
+			tpl_mask |= BTPL_VLAN9;
+		else {
+			tpl_mask |= BTPL_VLANX;
+			if (nf->tuple.tag2)
+				tpl_mask |= BTPL_VLANI;
+		}
+	}
+#endif
+#if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
+	if (nf->ethernetType)
+		tpl_mask |= BTPL_ETHERTYPE;
+#endif
+#ifdef ENABLE_DIRECTION
+	if (nf->hooknumx)
+		tpl_mask |= BTPL_DIRECTION;
+#endif
+#ifdef ENABLE_SAMPLER
+	if (get_sampler_mode())
+		tpl_mask |= (protocol == 9)? BTPL_SAMPLERID : BTPL_SELECTORID;
 #endif
 
-	tpl = get_template(tpl_mask);
-	if (unlikely(!tpl)) {
-		printk(KERN_INFO "ipt_NETFLOW: template allocation failed.\n");
-		NETFLOW_STAT_INC(alloc_err);
-		NETFLOW_STAT_ADD_ATOMIC(pkt_drop, nf->nr_packets);
-		NETFLOW_STAT_ADD_ATOMIC(traf_drop, nf->nr_bytes);
+#ifdef CONFIG_NF_NAT_NEEDED
+ready:
+#endif
+	ptr = alloc_record_key(tpl_mask, &tpl);
+	if (unlikely(!ptr)) {
+		NETFLOW_STAT_ADD(pkt_lost, nf->nr_packets);
+		NETFLOW_STAT_ADD(traf_lost, nf->nr_bytes);
+		NETFLOW_STAT_INC(flow_lost);
+		NETFLOW_STAT_TS(lost);
 		ipt_netflow_free(nf);
 		return;
-	}
-
-	if (unlikely(!pdu_flowset ||
-	    pdu_flowset->flowset_id != tpl->template_id_n ||
-	    !(ptr = pdu_alloc_fail(tpl->rec_size)))) {
-
-		/* if there was previous data template we should pad it to 4 bytes */
-		if (pdu_flowset) {
-			int padding = (PAD_SIZE - ntohs(pdu_flowset->length) % PAD_SIZE) % PAD_SIZE;
-			if (padding && (ptr = pdu_alloc_fail(padding))) {
-				pdu_flowset->length = htons(ntohs(pdu_flowset->length) + padding);
-				for (; padding; padding--)
-					*ptr++ = 0;
-			}
-		}
-
-		if (!tpl->exported_ts ||
-		    pdu_count > (tpl->exported_cnt + refresh_rate) ||
-		    time_is_before_jiffies(tpl->exported_ts + timeout_rate_j())) {
-			pdu_add_template(tpl);
-		}
-
-		ptr = pdu_alloc(sizeof(struct flowset_data) + tpl->rec_size);
-		pdu_flowset = (struct flowset_data *)ptr;
-		pdu_flowset->flowset_id = tpl->template_id_n;
-		pdu_flowset->length     = htons(sizeof(struct flowset_data));
-		ptr += sizeof(struct flowset_data);
 	}
 
 	/* encode all fields */
@@ -1878,43 +3503,453 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 
 		if (!type)
 			break;
-		add_ipv4_field(ptr, type, nf);
+		add_tpl_field(ptr, type, nf);
+		ptr += tpl->fields[i++];
+	}
+
+	pdu_data_records++;
+	pdu_flow_records++;
+	pdu_flowset->length = htons(ntohs(pdu_flowset->length) + tpl->rec_size);
+
+	pdu_packets += nf->nr_packets;
+	pdu_traf    += nf->nr_bytes;
+	pdu_ts_mod = jiffies;
+
+	ipt_netflow_free(nf);
+}
+
+static u64 get_sys_init_time_ms(void)
+{
+	static u64 sys_init_time = 0;
+
+	if (!sys_init_time)
+		sys_init_time = ktime_to_ms(ktime_get_real()) - jiffies_to_msecs(jiffies);
+	return sys_init_time;
+}
+
+#ifdef ENABLE_SAMPLER
+/* http://www.iana.org/assignments/ipfix/ipfix.xml#ipfix-flowselectoralgorithm */
+static unsigned char get_flowselectoralgo(void)
+{
+	switch (get_sampler_mode()) {
+	case SAMPLER_DETERMINISTIC:
+		return 1; /* Systematic count-based Sampling */
+	case SAMPLER_HASH:
+	case SAMPLER_RANDOM:
+		return 3; /* Random n-out-of-N Sampling */
+	default:
+		return 0; /* Unassigned */
+	}
+}
+#endif
+
+static void export_stat_st_ts(const unsigned int tpl_mask, struct ipt_netflow_stat *st, struct duration *ts)
+{
+	unsigned char *ptr;
+	struct data_template *tpl;
+	int i;
+
+	ptr = alloc_record_key(tpl_mask, &tpl);
+	if (unlikely(!ptr))
+		return;
+
+	/* encode all fields */
+	for (i = 0; ; ) {
+		int type = tpl->fields[i++];
+
+		if (!type)
+			break;
+		switch (type) {
+		case observationDomainId:	put_unaligned_be32(engine_id, ptr); break;
+		case exportingProcessId:	put_unaligned_be32(engine_id, ptr); break;
+		case observedFlowTotalCount:	put_unaligned_be64(st->notfound, ptr); break;
+		case exportedMessageTotalCount:	put_unaligned_be64(st->exported_pkt, ptr); break;
+		case exportedOctetTotalCount:	put_unaligned_be64(st->exported_traf, ptr); break;
+		case exportedFlowRecordTotalCount: put_unaligned_be64(st->exported_flow, ptr); break;
+		case ignoredPacketTotalCount:	put_unaligned_be64(st->pkt_drop, ptr); break;
+		case ignoredOctetTotalCount:	put_unaligned_be64(st->traf_drop, ptr); break;
+		case notSentFlowTotalCount:	put_unaligned_be64(st->flow_lost, ptr); break;
+		case notSentPacketTotalCount:	put_unaligned_be64(st->pkt_lost, ptr); break;
+		case notSentOctetTotalCount:	put_unaligned_be64(st->traf_lost, ptr); break;
+		case flowStartMilliseconds:	put_unaligned_be64(ktime_to_ms(ts->first), ptr); break;
+		case flowEndMilliseconds:	put_unaligned_be64(ktime_to_ms(ts->last), ptr); break;
+		case systemInitTimeMilliseconds: put_unaligned_be64(get_sys_init_time_ms(), ptr); break;
+		case observationDomainName:     memcpy(ptr, version_string, version_string_size + 1); break;
+#ifdef ENABLE_SAMPLER
+		case FLOW_SAMPLER_ID:
+		case selectorId:
+						*ptr = get_sampler_mode(); break;
+		case FLOW_SAMPLER_MODE:
+						*ptr = get_sampler_mode_nf(); break;
+		case flowSelectorAlgorithm:	*ptr = get_flowselectoralgo(); break;
+		case samplingSize:
+		case samplingFlowInterval:
+						*ptr = 1 /* always 'one-out-of' */; break;
+		case samplingFlowSpacing:
+		case samplingPopulation:
+		case FLOW_SAMPLER_RANDOM_INTERVAL:
+						put_unaligned_be16(get_sampler_interval(), ptr); break;
+		case selectorIDTotalFlowsObserved: put_unaligned_be64(atomic64_read(&flows_observed), ptr); break;
+		case selectorIDTotalFlowsSelected: put_unaligned_be64(atomic64_read(&flows_selected), ptr); break;
+		case selectorIdTotalPktsObserved:  put_unaligned_be64(st->pkts_observed, ptr); break;
+		case selectorIdTotalPktsSelected:  put_unaligned_be64(st->pkts_selected, ptr); break;
+#endif
+		default:
+			WARN_ONCE(1, "NETFLOW: Unknown Element id %d\n", type);
+		}
 		ptr += tpl->fields[i++];
 	}
 
 	pdu_data_records++;
 	pdu_flowset->length = htons(ntohs(pdu_flowset->length) + tpl->rec_size);
 
-	pdu_packets += nf->nr_packets;
-	pdu_traf    += nf->nr_bytes;
-
-	ipt_netflow_free(nf);
 	pdu_ts_mod = jiffies;
 }
 
+static inline void export_stat_ts(const unsigned int tpl_mask, struct duration *ts)
+{
+	export_stat_st_ts(tpl_mask, NULL, ts);
+}
+
+static inline void export_stat_st(const unsigned int tpl_mask, struct ipt_netflow_stat *st)
+{
+	export_stat_st_ts(tpl_mask, st, NULL);
+}
+
+static inline void export_stat(const unsigned int tpl_mask)
+{
+	export_stat_st(tpl_mask, NULL);
+}
+
+#ifndef min_not_zero
+#define min_not_zero(x, y) ({			\
+	typeof(x) __x = (x);			\
+	typeof(y) __y = (y);			\
+	__x == 0 ? __y : ((__y == 0) ? __x : min(__x, __y)); })
+#endif
+
+static void netflow_export_stats(void)
+{
+	struct ipt_netflow_stat t = { 0 };
+	int cpu;
+
+	if (unlikely(!ts_sysinf_last) ||
+	    time_is_before_jiffies(ts_sysinf_last + SYSINFO_INTERVAL * HZ)) {
+		start_ts.last = ktime_get_real();
+		export_stat_ts(OTPL_SYSITIME, &start_ts);
+		ts_sysinf_last = jiffies;
+		pdu_needs_export++;
+	}
+
+	if (unlikely(!ts_stat_last))
+		ts_stat_last = jiffies;
+	if (likely(time_is_after_jiffies(ts_stat_last + STAT_INTERVAL * HZ)))
+		return;
+
+	for_each_present_cpu(cpu) {
+		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+
+		t.notfound	+= st->notfound; // observedFlowTotalCount
+		t.exported_pkt	+= st->exported_pkt;  // exportedMessageTotalCount
+		t.exported_traf	+= st->exported_traf; // exportedOctetTotalCount
+		t.exported_flow	+= st->exported_flow; // exportedFlowRecordTotalCount
+		t.pkt_drop	+= st->pkt_drop;  // ignoredPacketTotalCount
+		t.traf_drop	+= st->traf_drop; // ignoredOctetTotalCount
+		t.flow_lost	+= st->flow_lost; // notSentFlowTotalCount
+		t.pkt_lost	+= st->pkt_lost;  // notSentPacketTotalCount
+		t.traf_lost	+= st->traf_lost; // notSentOctetTotalCount
+#ifdef ENABLE_SAMPLER
+		t.pkts_selected	+= st->pkts_selected;
+		t.pkts_observed	+= st->pkts_observed;
+#endif
+		t.drop.first.tv64 = min_not_zero(t.drop.first.tv64, st->drop.first.tv64);
+		t.drop.last.tv64  = max(t.drop.last.tv64, st->drop.last.tv64);
+		t.lost.first.tv64 = min_not_zero(t.lost.first.tv64, st->lost.first.tv64);
+		t.lost.last.tv64  = max(t.lost.last.tv64, st->lost.last.tv64);
+	}
+
+	export_stat_st(OTPL_MPSTAT, &t);
+	if (t.pkt_drop)
+		export_stat_st_ts(OTPL_MPRSTAT, &t, &t.drop);
+	if (t.pkt_lost)
+		export_stat_st_ts(OTPL_EPRSTAT, &t, &t.lost);
+#ifdef ENABLE_SAMPLER
+	if (protocol == 10) {
+		sampling_ts.last = ktime_get_real();
+		switch (get_sampler_mode()) {
+		case SAMPLER_HASH:
+			export_stat_st_ts(OTPL_SEL_STATH, &t, &sampling_ts);
+			break;
+		case SAMPLER_DETERMINISTIC:
+		case SAMPLER_RANDOM:
+			export_stat_st_ts(OTPL_SEL_STAT, &t, &sampling_ts);
+		}
+	}
+#endif
+
+	ts_stat_last = jiffies;
+	pdu_needs_export++;
+}
+
+#ifdef ENABLE_SAMPLER
+static void export_sampler_parameters(void)
+{
+	if (get_sampler_mode() &&
+	    (unlikely(!ts_sampler_last) ||
+	     time_is_before_jiffies(ts_sampler_last + SAMPLER_INFO_INTERVAL * HZ))) {
+		if (protocol == 9)
+			export_stat(OTPL_SAMPLER);
+		else {
+			const unsigned char mode = get_sampler_mode();
+
+			if (mode == SAMPLER_DETERMINISTIC)
+				export_stat(OTPL_SEL_COUNT);
+			else
+				export_stat(OTPL_SEL_RAND);
+		}
+		ts_sampler_last = jiffies;
+	}
+}
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,2,0)
+int __ethtool_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+{
+	ASSERT_RTNL();
+
+	if (!dev->ethtool_ops->get_settings)
+		return -EOPNOTSUPP;
+
+	memset(cmd, 0, sizeof(struct ethtool_cmd));
+	cmd->cmd = ETHTOOL_GSET;
+	return dev->ethtool_ops->get_settings(dev, cmd);
+}
+#endif
+
+static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *dev)
+{
+	struct ethtool_drvinfo info = { 0 };
+	const struct ethtool_ops *ops = dev->ethtool_ops;
+	struct ethtool_cmd ecmd;
+	int len = size;
+	int n;
+
+	if (len <= 0 || !ops)
+		return 0;
+	if (ops->begin) {
+		/* was not called before __ethtool_get_settings() though */
+		if (ops->begin(dev) < 0);
+		return 0;
+	}
+
+	/* driver name */
+	if (ops->get_drvinfo)
+		ops->get_drvinfo(dev, &info);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,37)
+	else if (dev->dev.parent && dev->dev.parent->driver) {
+		strlcpy(info.driver, dev->dev.parent->driver->name, sizeof(info.driver));
+	}
+#endif
+	n = scnprintf(ptr, len, "%s", info.driver);
+	ptr += n;
+	len -= n;
+	if (!n || len <= 1) /* have room for separator too */
+		goto ret;
+
+	/* append basic parameters: speed and port */
+	if (!__ethtool_get_settings(dev, &ecmd)) {
+		char *s, *p;
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
+#define ethtool_cmd_speed(x) (x)->speed
+#endif
+		switch (ethtool_cmd_speed(&ecmd)) {
+		case SPEED_10000: s = "10Gb"; break;
+		case SPEED_2500:  s = "2.5Gb"; break;
+		case SPEED_1000:  s = "1Gb"; break;
+		case SPEED_100:   s = "100Mb"; break;
+		case SPEED_10:    s = "10Mb"; break;
+		default:          s = "";
+		}
+		switch (ecmd.port) {
+		case PORT_TP:     p = "tp"; break;
+		case PORT_AUI:    p = "aui"; break;
+		case PORT_MII:    p = "mii"; break;
+		case PORT_FIBRE:  p = "fb"; break;
+		case PORT_BNC:    p = "bnc"; break;
+#ifdef PORT_DA
+		case PORT_DA:     p = "da"; break;
+#endif
+		default:          p = "";
+		}
+		n = scnprintf(ptr, len, ",%s,%s", s, p);
+		len -= n;
+	}
+ret:
+	if (ops->complete)
+		ops->complete(dev);
+	return size - len;
+}
+
+#ifndef ARPHRD_PHONET
+#define ARPHRD_PHONET		820
+#define ARPHRD_PHONET_PIPE	821
+#endif
+#ifndef ARPHRD_IEEE802154
+#define ARPHRD_IEEE802154	804
+#endif
+
+static const unsigned short netdev_type[] =
+{ARPHRD_NETROM, ARPHRD_ETHER, ARPHRD_AX25,
+	ARPHRD_IEEE802, ARPHRD_ARCNET,
+	ARPHRD_DLCI, ARPHRD_ATM, ARPHRD_METRICOM,
+	ARPHRD_IEEE1394, ARPHRD_EUI64, ARPHRD_INFINIBAND,
+	ARPHRD_SLIP, ARPHRD_CSLIP, ARPHRD_SLIP6, ARPHRD_CSLIP6,
+	ARPHRD_ROSE, ARPHRD_X25, ARPHRD_HWX25,
+	ARPHRD_PPP, ARPHRD_CISCO, ARPHRD_LAPB, ARPHRD_DDCMP,
+	ARPHRD_RAWHDLC, ARPHRD_TUNNEL, ARPHRD_TUNNEL6, ARPHRD_FRAD,
+	ARPHRD_LOOPBACK, ARPHRD_LOCALTLK, ARPHRD_FDDI,
+	ARPHRD_SIT, ARPHRD_IPDDP, ARPHRD_IPGRE,
+	ARPHRD_PIMREG, ARPHRD_HIPPI, ARPHRD_IRDA,
+	ARPHRD_IEEE80211, ARPHRD_IEEE80211_PRISM,
+	ARPHRD_IEEE80211_RADIOTAP, ARPHRD_PHONET, ARPHRD_PHONET_PIPE,
+	ARPHRD_IEEE802154, ARPHRD_VOID, ARPHRD_NONE};
+
+static const char *const netdev_type_name[] =
+{"NET/ROM", "Ethernet", "AX.25 Level 2",
+	"IEEE 802.2 Ethernet", "ARCnet",
+	"Frame Relay DLCI", "ATM", "Metricom STRIP",
+	"IEEE 1394 IPv4", "EUI-64", "InfiniBand",
+	"SLIP", "CSLIP", "SLIP6", "CSLIP6",
+	"ROSE", "X.25", "HW X.25",
+	"PPP", "Cisco HDLC", "LAPB", "DDCMP",
+	"Raw HDLC", "IPIP Tunnel", "IP6IP6 Tunnel", "FRAD",
+	"Loopback", "Localtalk", "FDDI",
+	"SIT Tunnel", "IP over DDP", "GRE over IP",
+	"PISM Register", "HIPPI", "IrDA",
+	"IEEE 802.11", "IEEE 802.11 Prism2",
+	"IEEE 802.11 Radiotap", "PhoNet", "PhoNet pipe",
+	"IEEE 802.15.4", "void", "none"};
+
+static const char *dev_type(int dev_type)
+{
+	int i;
+
+	BUG_ON(ARRAY_SIZE(netdev_type) != ARRAY_SIZE(netdev_type_name));
+	for (i = 0; i < ARRAY_SIZE(netdev_type); i++)
+		if (netdev_type[i] == dev_type)
+			return netdev_type_name[i];
+	return "";
+}
+
+static void export_dev(struct net_device *dev)
+{
+	unsigned char *ptr;
+	struct data_template *tpl;
+	int i;
+
+	ptr = alloc_record_key(OTPL_IFNAMES, &tpl);
+	if (unlikely(!ptr))
+		return;
+
+	/* encode all fields */
+	for (i = 0; ; ) {
+		int type = tpl->fields[i++];
+		int size = tpl->fields[i++];
+		int n;
+
+		if (!type)
+			break;
+		switch (type) {
+		case observationDomainId:
+			put_unaligned_be32(engine_id, ptr);
+			break;
+		case IF_NAME:
+			n = scnprintf(ptr, size, "%s", dev->name);
+			memset(ptr + n, 0, size - n);
+			break;
+		case IF_DESC:
+			/* manual dev 'alias' setting is a first priority,
+			 * then ethtool driver name with basic info,
+			 * finally net_device.type is a last resort */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,28)
+			if (dev->ifalias)
+				n = scnprintf(ptr, size, "%s", dev->ifalias);
+			else
+#endif
+				n = ethtool_drvinfo(ptr, size, dev);
+			if (!n)
+				n = scnprintf(ptr, size, "%s", dev_type(dev->type));
+			memset(ptr + n, 0, size - n);
+			break;
+		case INPUT_SNMP:
+#ifdef SNMP_RULES
+			rcu_read_lock();
+			put_unaligned_be16(resolve_snmp(dev), ptr);
+			rcu_read_unlock();
+#else
+			put_unaligned_be16(dev->ifindex, ptr);
+#endif
+			break;
+		default:
+			WARN_ONCE(1, "NETFLOW: Unknown Element id %d\n", type);
+		}
+		ptr += size;
+	}
+
+	pdu_data_records++;
+	pdu_flowset->length = htons(ntohs(pdu_flowset->length) + tpl->rec_size);
+
+	pdu_ts_mod = jiffies;
+}
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
+#define for_each_netdev_ns(net, dev) for (dev = dev_base; dev; dev = dev->next)
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
+#define for_each_netdev_ns(net, d) for_each_netdev(d)
+#else
+#define for_each_netdev_ns(net, d) for_each_netdev(net, d)
+#endif
+static void export_ifnames(void)
+{
+	struct net_device *dev;
+
+	if (likely(ts_ifnames_last) &&
+	    time_is_after_jiffies(ts_ifnames_last + SYSINFO_INTERVAL * HZ))
+		return;
+
+	rtnl_lock();
+	for_each_netdev_ns(&init_net, dev) {
+		export_dev(dev);
+	}
+	rtnl_unlock();
+	ts_ifnames_last = jiffies;
+}
+
+/* under pause_scan_worker() */
 static void netflow_switch_version(const int ver)
 {
 	protocol = ver;
 	if (protocol == 5) {
 		memset(&pdu, 0, sizeof(pdu));
+		pdu_data_used	    = NULL;
+		pdu_high_wm	    = NULL;
 		netflow_export_flow = &netflow_export_flow_v5;
-		netflow_export_pdu = &netflow_export_pdu_v5;
+		netflow_export_pdu  = &netflow_export_pdu_v5;
 	} else if (protocol == 9) {
-		pdu_data_used = pdu.v9.data;
-		pdu_max_size = sizeof(pdu.v9);
-		pdu_high_wm = (unsigned char *)&pdu + pdu_max_size;
+		pdu_data_used	    = pdu.v9.data;
+		pdu_high_wm	    = (unsigned char *)&pdu + sizeof(pdu.v9);
 		netflow_export_flow = &netflow_export_flow_tpl;
-		netflow_export_pdu = &netflow_export_pdu_v9;
+		netflow_export_pdu  = &netflow_export_pdu_v9;
 	} else { /* IPFIX */
-		pdu_data_used = pdu.ipfix.data;
-		pdu_max_size = sizeof(pdu.ipfix);
-		pdu_high_wm = (unsigned char *)&pdu + pdu_max_size;
+		pdu_data_used	    = pdu.ipfix.data;
+		pdu_high_wm	    = (unsigned char *)&pdu + sizeof(pdu.ipfix);
 		netflow_export_flow = &netflow_export_flow_tpl;
-		netflow_export_pdu = &netflow_export_pdu_ipfix;
+		netflow_export_pdu  = &netflow_export_pdu_ipfix;
 	}
-	if (protocol != 5)
-		free_templates();
-	pdu_data_records = pdu_tpl_records = 0;
+	pdu.version = htons(protocol);
+	free_templates();
+	pdu_flow_records = pdu_data_records = pdu_tpl_records = 0;
 	pdu_flowset = NULL;
 	printk(KERN_INFO "ipt_NETFLOW protocol version %d (%s) enabled.\n",
 	    protocol, protocol == 10? "IPFIX" : "NetFlow");
@@ -1930,7 +3965,7 @@ static void export_nat_event(struct nat_event *nel)
 	nf.nat = nel; /* this is also flag of dummy flow */
 	nf.tcp_flags = (nel->nat_event == NAT_DESTROY)? TCP_FIN_RST : TCP_SYN_ACK;
 	if (protocol >= 9) {
-		nf.ts_obs = nel->ts_ktime;
+		nf.nf_ts_obs = nel->ts_ktime;
 		nf.tuple.src.ip = nel->pre.s_addr;
 		nf.tuple.dst.ip = nel->pre.d_addr;
 		nf.tuple.s_port = nel->pre.s_port;
@@ -1949,8 +3984,8 @@ static void export_nat_event(struct nat_event *nel)
 		nf.tuple.dst.ip = nel->post.d_addr;
 		nf.tuple.d_port = nel->post.d_port;
 
-		nf.ts_first = nel->ts_jiffies;
-		nf.ts_last = nel->ts_jiffies;
+		nf.nf_ts_first = nel->ts_jiffies;
+		nf.nf_ts_last = nel->ts_jiffies;
 		if (nel->pre.s_addr != nel->post.s_addr ||
 		    nel->pre.s_port != nel->post.s_port) {
 			nf.nh.ip = nel->post.s_addr;
@@ -1970,69 +4005,123 @@ static void export_nat_event(struct nat_event *nel)
 }
 #endif /* CONFIG_NF_NAT_NEEDED */
 
-static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout)
+static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout, const unsigned long jiff)
 {
 	/* active too long, finishing, or having too much bytes */
-	return ((jiffies - nf->ts_first) > a_timeout) ||
+	return ((jiff - nf->nf_ts_first) > a_timeout) ||
 		(nf->tuple.protocol == IPPROTO_TCP &&
 		 (nf->tcp_flags & TCP_FIN_RST) &&
-		 (jiffies - nf->ts_last) > (1 * HZ)) ||
+		 (jiff - nf->nf_ts_last) > (1 * HZ)) ||
 		nf->nr_bytes >= FLOW_FULL_WATERMARK;
 }
 
 /* could be called with zero to flush cache and pdu */
 /* this function is guaranteed to be called non-concurrently */
-/* return -1 is trylockfailed, 0 if nothin gexported, >=1 if exported something */
+/* return number of pdus sent */
 static int netflow_scan_and_export(const int flush)
 {
 	long i_timeout = inactive_timeout * HZ;
+#ifdef HAVE_LLIST
+	struct llist_node *node;
+#else
 	long a_timeout = active_timeout * HZ;
-	int trylock_failed = 0;
+#endif
 	int pdu_c = pdu_count;
+	LIST_HEAD(export_list);
+	struct ipt_netflow *nf, *tmp;
+	int i;
+#ifdef ENABLE_SAMPLER
+	unsigned char mode;
+#endif
 
 	if (flush)
 		i_timeout = 0;
 
-	local_bh_disable();
-	spin_lock(&hlist_lock);
-	/* This is different order of locking than elsewhere,
-	 * so we trylock&break to avoid deadlock. */
-
-	while (likely(!list_empty(&ipt_netflow_list))) {
-		struct ipt_netflow *nf;
-
-		/* Last entry, which is usually oldest. */
-		nf = list_entry(ipt_netflow_list.prev, struct ipt_netflow, list);
-		if (!spin_trylock(nf->lock)) {
-			trylock_failed = 1;
-			break;
-		}
-		/* Note: i_timeout checked with >= to allow specifying zero timeout
-		 * to purge all flows on module unload */
-		if (((jiffies - nf->ts_last) >= i_timeout) ||
-		    active_needs_export(nf, a_timeout)) {
-			hlist_del(&nf->hlist);
-			spin_unlock(nf->lock);
-
-			list_del(&nf->list);
-			spin_unlock(&hlist_lock);
-			local_bh_enable();
-
-			NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
-			NETFLOW_STAT_ADD(traf_out, nf->nr_bytes);
-			netflow_export_flow(nf);
-
-			local_bh_disable();
-			spin_lock(&hlist_lock);
-		} else {
-			spin_unlock(nf->lock);
-			/* all flows which need to be exported is always at the tail
-			 * so if no more exportable flows we can break */
-			break;
-		}
+	if (protocol >= 9) {
+		netflow_export_stats();
+#ifdef ENABLE_SAMPLER
+		export_sampler_parameters();
+#endif
+		export_ifnames();
 	}
-	spin_unlock(&hlist_lock);
-	local_bh_enable();
+
+	read_lock_bh(&htable_rwlock);
+	for (i = 0; i < LOCK_COUNT; i++) {
+		struct stripe_entry *stripe = &htable_stripes[i];
+
+		if (!spin_trylock(&stripe->lock)) {
+			++wk_trylock;
+			continue;
+		}
+		list_for_each_entry_safe_reverse(nf, tmp, &stripe->list, flows_list) {
+			++wk_count;
+			if (((jiffies - nf->nf_ts_last) >= i_timeout)
+#ifdef HAVE_LLIST
+			    /* exportable actives already go into export_llist,
+			     * thus this check is redundant. */
+#else
+			    || active_needs_export(nf, a_timeout, jiffies)
+#endif
+			   ) {
+				hlist_del(&nf->hlist);
+				list_del(&nf->flows_list);
+				list_add(&nf->flows_list, &export_list);
+			} else {
+				/* all flows which need to be exported is always at the tail
+				 * so if no more exportable flows we can break */
+				break;
+			}
+		}
+		spin_unlock(&stripe->lock);
+	}
+	read_unlock_bh(&htable_rwlock);
+
+#ifdef HAVE_LLIST
+	node = llist_del_all(&export_llist);
+	while (node) {
+		struct llist_node *next = node->next;
+		nf = llist_entry(node, struct ipt_netflow, flows_llnode);
+		++wk_llist;
+		list_add(&nf->flows_list, &export_list);
+		node = next;
+	}
+#endif
+
+#ifdef ENABLE_SAMPLER
+	mode = get_sampler_mode();
+#endif
+	set_jiffies_base();
+	list_for_each_entry_safe(nf, tmp, &export_list, flows_list) {
+		NETFLOW_STAT_ADD(pkt_out, nf->nr_packets);
+		NETFLOW_STAT_ADD(traf_out, nf->nr_bytes);
+		list_del(&nf->flows_list);
+#ifdef ENABLE_SAMPLER
+		if (mode) {
+			const unsigned int interval = get_sampler_interval();
+			unsigned int val; /* [0..interval) */
+
+			atomic64_inc(&flows_observed);
+			NETFLOW_STAT_ADD_ATOMIC(pkts_observed, nf->nr_packets);
+			switch (mode) {
+			case SAMPLER_DETERMINISTIC:
+				val = nf->sampler_count % interval;
+				break;
+			case SAMPLER_RANDOM:
+				val = prandom_u32_max(interval);
+				break;
+			default: /* SAMPLER_HASH */
+				val = 0;
+			}
+			if (val) {
+				ipt_netflow_free(nf);
+				continue;
+			}
+			atomic64_inc(&flows_selected);
+			NETFLOW_STAT_ADD_ATOMIC(pkts_selected, nf->nr_packets);
+		}
+#endif
+		netflow_export_flow(nf);
+	}
 
 #ifdef CONFIG_NF_NAT_NEEDED
 	spin_lock_bh(&nat_lock);
@@ -2049,10 +4138,12 @@ static int netflow_scan_and_export(const int flush)
 #endif
 	/* flush flows stored in pdu if there no new flows for too long */
 	/* Note: using >= to allow flow purge on zero timeout */
-	if ((jiffies - pdu_ts_mod) >= i_timeout)
+	if ((jiffies - pdu_ts_mod) >= i_timeout || pdu_needs_export) {
 		netflow_export_pdu();
+		pdu_needs_export = 0;
+	}
 
-	return trylock_failed? -1 : pdu_count - pdu_c;
+	return pdu_count - pdu_c;
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
@@ -2061,10 +4152,18 @@ static void netflow_work_fn(void *dummy)
 static void netflow_work_fn(struct work_struct *dummy)
 #endif
 {
-	int status;
+	int pdus;
 
-	status = netflow_scan_and_export(DONT_FLUSH);
-	_schedule_scan_worker(status);
+	wk_count = 0;
+	wk_trylock = 0;
+	wk_llist = 0;
+	wk_cpu = smp_processor_id();
+	wk_start = jiffies;
+
+	pdus = netflow_scan_and_export(DONT_FLUSH);
+
+	_schedule_scan_worker(pdus);
+	wk_busy = jiffies - wk_start;
 }
 
 #define RATESHIFT 2
@@ -2072,7 +4171,10 @@ static void netflow_work_fn(struct work_struct *dummy)
 #define NUMSAMPLES(minutes) (minutes * 60 / SAMPLERATE)
 #define _A(v, m) (v) * (1024 * 2 / (NUMSAMPLES(m) + 1)) >> 10
 // x * (1024 / y) >> 10 is because I can not just divide long long integer
+
+// Note that CALC_RATE arguments should never be unsigned.
 #define CALC_RATE(ewma, cur, minutes) ewma += _A(cur - ewma, minutes)
+
 // calculate EWMA throughput rate for whole module
 static void rate_timer_calc(unsigned long dummy)
 {
@@ -2084,19 +4186,35 @@ static void rate_timer_calc(unsigned long dummy)
 	u64 searched = 0;
 	u64 found = 0;
 	u64 notfound = 0;
-	unsigned int dsrch, dfnd, dnfnd;
+	int dsrch, dfnd, dnfnd;
 	u64 pkt_total = 0;
 	u64 traf_total = 0;
 	int cpu;
 
 	for_each_present_cpu(cpu) {
+		int metrt;
 		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+		u64 pkt_t = st->pkt_total;
 
-		pkt_total += st->pkt_total;
+		pkt_total += pkt_t;
+		st->pkt_total_rate = (pkt_t - st->pkt_total_prev) >> RATESHIFT;
+		st->pkt_total_prev = pkt_t;
 		traf_total += st->traf_total;
 		searched += st->searched;
 		found += st->found;
 		notfound += st->notfound;
+		st->exported_rate = (st->exported_traf - st->exported_trafo) >> RATESHIFT;
+		st->exported_trafo = st->exported_traf;
+		/* calculate hash metric per cpu */
+		dsrch = st->searched - st->old_searched;
+		dfnd  = st->found - st->old_found;
+		dnfnd = st->notfound - st->old_notfound;
+		/* zero values are not accounted, becasue only usage is interesting, not nonusage */
+		metrt = (dfnd + dnfnd)? 100 * (dsrch + dfnd + dnfnd) / (dfnd + dnfnd) : st->metric;
+		CALC_RATE(st->metric, metrt, 1);
+		st->old_searched = st->searched;
+		st->old_found    = st->found;
+		st->old_notfound = st->notfound;
 	}
 
 	sec_prate = (pkt_total - old_pkt_total) >> RATESHIFT;
@@ -2109,18 +4227,20 @@ static void rate_timer_calc(unsigned long dummy)
 	CALC_RATE(min_brate, sec_brate, 1);
 	old_traf_total = traf_total;
 
+	/* hash stat */
 	dsrch = searched - old_searched;
-	dfnd = found - old_found;
+	dfnd  = found - old_found;
 	dnfnd = notfound - old_notfound;
 	old_searched = searched;
-	old_found = found;
+	old_found    = found;
 	old_notfound = notfound;
 	/* if there is no access to hash keep rate steady */
 	metric = (dfnd + dnfnd)? 100 * (dsrch + dfnd + dnfnd) / (dfnd + dnfnd) : metric;
-	CALC_RATE(min15_metric, (unsigned long long)metric, 15);
-	CALC_RATE(min5_metric, (unsigned long long)metric, 5);
-	CALC_RATE(min_metric, (unsigned long long)metric, 1);
+	CALC_RATE(min15_metric, metric, 15);
+	CALC_RATE(min5_metric, metric, 5);
+	CALC_RATE(min_metric, metric, 1);
 
+	/* yes, timer delay is not accounted, but this stat is just estimational */
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
 }
 
@@ -2284,7 +4404,7 @@ static inline __u16 observed_hdrs(const __u8 currenthdr)
 
 /* http://www.iana.org/assignments/ip-parameters/ip-parameters.xhtml */
 static const __u8 ip4_opt_table[] = {
-	[7]	= 0,	/* RR */ /* parsed manually becasue of 0 */
+	[7]	= 0,	/* RR */ /* parsed manually because of 0 */
 	[134]	= 1,	/* CIPSO */
 	[133]	= 2,	/* E-SEC */
 	[68]	= 3,	/* TS */
@@ -2380,6 +4500,71 @@ static inline __u32 tcp_options(const struct sk_buff *skb, const unsigned int pt
 	}
 	return ret;
 }
+
+#ifdef ENABLE_VLAN
+/* double tagged header */
+struct vlan_ethhdr2 {
+	unsigned char   h_dest[ETH_ALEN];
+	unsigned char   h_source[ETH_ALEN];
+	__be16          h_vlan_proto;
+	__be16          h_vlan_TCI;
+	__be16          h2_vlan_proto;
+	__be16          h2_vlan_TCI;
+	__be16          h2_vlan_encapsulated_proto;
+};
+static inline struct vlan_ethhdr2 *vlan_eth_hdr2(const struct sk_buff *skb)
+{
+	return (struct vlan_ethhdr2 *)skb_mac_header(skb);
+}
+#define VLAN_ETH_H2LEN	(VLAN_ETH_HLEN + 4)
+#ifndef ETH_P_8021AD
+#define ETH_P_8021AD	0x88A8	/* 802.1ad Service VLAN */
+#endif
+#ifndef ETH_P_QINQ1
+#define ETH_P_QINQ1	0x9100	/* deprecated QinQ VLAN */
+#define ETH_P_QINQ2	0x9200	/* deprecated QinQ VLAN */
+#define ETH_P_QINQ3	0x9300	/* deprecated QinQ VLAN */
+#endif
+/* http://tools.ietf.org/html/rfc7133 */
+static inline __u16 parse_vlan_tags(const struct sk_buff *skb, struct ipt_netflow_tuple *tuple)
+{
+	/* no even untagged ethernet header */
+	if (skb_mac_header(skb) < skb->head ||
+	    skb_mac_header(skb) + ETH_HLEN > skb->data)
+		return 0;
+
+	switch (eth_hdr(skb)->h_proto) {
+		case htons(ETH_P_QINQ1):
+		case htons(ETH_P_QINQ2):
+		case htons(ETH_P_QINQ3):
+		case htons(ETH_P_8021AD): /* S-TAG or B-TAG */
+		case htons(ETH_P_8021Q):  /* C-TAG */
+			/* tagged and have full vlan header */
+			if (skb_mac_header(skb) + VLAN_ETH_HLEN <= skb->data)
+				break;
+			/* FALLTHROUGH */
+		default:
+			return eth_hdr(skb)->h_proto;
+	}
+
+	/* outer tag */
+	tuple->tag1 = vlan_eth_hdr(skb)->h_vlan_TCI;
+
+	switch (vlan_eth_hdr(skb)->h_vlan_encapsulated_proto) {
+		case htons(ETH_P_8021Q):  /* C-TAG */
+			if (skb_mac_header(skb) + VLAN_ETH_H2LEN <= skb->data)
+				break;
+			/* FALLTHROUGH */
+		default:
+			return vlan_eth_hdr(skb)->h_vlan_encapsulated_proto;
+	}
+
+	/* second tag */
+	tuple->tag2 = vlan_eth_hdr2(skb)->h2_vlan_TCI;
+	return vlan_eth_hdr2(skb)->h2_vlan_encapsulated_proto;
+}
+#endif /* ENABLE_VLAN */
+
 /* packet receiver */
 static unsigned int netflow_target(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
@@ -2391,21 +4576,21 @@ static unsigned int netflow_target(
 			   const struct net_device *if_in,
 			   const struct net_device *if_out,
 			   unsigned int hooknum,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,17)
+# if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,17)
 			   const struct xt_target *target,
-#endif
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
+# endif
+# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
 			   const void *targinfo,
 			   void *userinfo
-#else
+# else
 			   const void *targinfo
-#endif
+# endif
 #else /* since 2.6.28 */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
+# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
 			   const struct xt_target_param *par
-#else
+# else
 			   const struct xt_action_param *par
-#endif
+# endif
 #endif
 		)
 {
@@ -2416,30 +4601,50 @@ static unsigned int netflow_target(
 		struct iphdr ip;
 		struct ipv6hdr ip6;
 	} _iph, *iph;
-	unsigned int hash;
+	u_int32_t hash;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 	const int family = target->family;
 #else
+#ifdef ENABLE_DIRECTION
+	const int hooknum = par->hooknum;
+#endif
 	const int family = par->family;
 #endif
 	struct ipt_netflow_tuple tuple;
 	struct ipt_netflow *nf;
 	__u8 tcp_flags;
+#ifdef ENABLE_AGGR
 	struct netflow_aggr_n *aggr_n;
 	struct netflow_aggr_p *aggr_p;
+#endif
 	__u8 s_mask, d_mask;
 	unsigned int ptr;
 	int fragment;
 	size_t pkt_len;
 	int options = 0;
 	int tcpoptions = 0;
+	struct stripe_entry *stripe;
+#if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
+	__be16 ethernetType = 0;
+#endif
 
 	iph = skb_header_pointer(skb, 0, (likely(family == AF_INET))? sizeof(_iph.ip) : sizeof(_iph.ip6), &iph);
 	if (unlikely(iph == NULL)) {
 		NETFLOW_STAT_INC(truncated);
 		NETFLOW_STAT_INC(pkt_drop);
+		NETFLOW_STAT_TS(drop);
 		return IPT_CONTINUE;
 	}
+
+#ifdef ENABLE_DEBUGFS
+	if (atomic_read(&freeze)) {
+		NETFLOW_STAT_INC(freeze_err);
+		NETFLOW_STAT_INC(pkt_drop);
+		NETFLOW_STAT_ADD(traf_drop, pkt_len);
+		NETFLOW_STAT_TS(drop);
+		return IPT_CONTINUE;
+	}
+#endif
 
 	tuple.l3proto	= family;
 	tuple.s_port	= 0;
@@ -2452,6 +4657,23 @@ static unsigned int netflow_target(
 	tcp_flags	= 0; /* Cisco sometimes have TCP ACK for non TCP packets, don't get it */
 	s_mask		= 0;
 	d_mask		= 0;
+#ifdef ENABLE_MAC
+	if (skb_mac_header(skb) >= skb->head &&
+	    skb_mac_header(skb) + ETH_HLEN <= skb->data) {
+		memcpy(&tuple.h_dst, eth_hdr(skb)->h_dest, ETH_ALEN);
+		memcpy(&tuple.h_src, eth_hdr(skb)->h_source, ETH_ALEN);
+#ifndef ENABLE_VLAN
+		ethernetType = eth_hdr(skb)->h_proto;
+#endif
+	} else {
+		memset(&tuple.h_dst, 0, ETH_ALEN);
+		memset(&tuple.h_src, 0, ETH_ALEN);
+	}
+#endif
+#ifdef ENABLE_VLAN
+	tuple.tag2 = tuple.tag1 = 0;
+	ethernetType = parse_vlan_tags(skb, &tuple);
+#endif
 
 	if (likely(family == AF_INET)) {
 		tuple.src	= (union nf_inet_addr){ .ip = iph->ip.saddr };
@@ -2472,7 +4694,7 @@ static unsigned int netflow_target(
 			if (likely(op))
 				options = ip4_options(op, optsize);
 		}
-	} else {
+	} else { /* AF_INET6 */
 		__u8 currenthdr;
 
 		tuple.src.in6	= iph->ip6.saddr;
@@ -2517,15 +4739,17 @@ static unsigned int netflow_target(
 				break;
 			}
 			case IPPROTO_AH: {
-				struct ip_auth_hdr _hdr, *hp;
+				struct ip_auth_hdr _ahdr, *ap;
 
-				if (likely(hp = skb_header_pointer(skb, ptr, 8, &_hdr))) {
-					tuple.s_port = hp->spi >> 16;
-					tuple.d_port = hp->spi;
-				}
-				hdrlen = (hp->hdrlen + 2) << 2;
+				if (likely(ap = skb_header_pointer(skb, ptr, 8, &_ahdr)))
+					SAVE_SPI(tuple, ap->spi);
+				hdrlen = (ap->hdrlen + 2) << 2;
 				break;
 			}
+			case IPPROTO_ESP:
+				/* After this header everything is encrypted. */
+				tuple.protocol = currenthdr;
+				goto do_protocols;
 			default:
 				hdrlen = ipv6_optlen(hp);
 			}
@@ -2575,43 +4799,43 @@ do_protocols:
 			break;
 		    }
 		    case IPPROTO_ICMPV6: {
-			    struct icmp6hdr _icmp6h, *ic;
+			struct icmp6hdr _icmp6h, *ic;
 
-			    if (likely(family == AF_INET6 &&
-					(ic = skb_header_pointer(skb, ptr, 2, &_icmp6h))))
-				    tuple.d_port = htons((ic->icmp6_type << 8) | ic->icmp6_code);
-			    break;
+			if (likely(family == AF_INET6 &&
+				    (ic = skb_header_pointer(skb, ptr, 2, &_icmp6h))))
+				tuple.d_port = htons((ic->icmp6_type << 8) | ic->icmp6_code);
+			break;
 		    }
 		    case IPPROTO_IGMP: {
 			struct igmphdr _hdr, *hp;
 
 			if (likely(hp = skb_header_pointer(skb, ptr, 1, &_hdr)))
 				tuple.d_port = hp->type;
-			}
 			break;
+		    }
 		    case IPPROTO_AH: { /* IPSEC */
 			struct ip_auth_hdr _hdr, *hp;
 
-			if (likely(family == AF_INET && /* For IPv6 it's parsed above. */
-				    (hp = skb_header_pointer(skb, ptr, 8, &_hdr)))) {
-				tuple.s_port = hp->spi >> 16;
-				tuple.d_port = hp->spi;
-			}
+			/* This is for IPv4 only. IPv6 it's parsed above. */
+			if (likely(family == AF_INET &&
+				    (hp = skb_header_pointer(skb, ptr, 8, &_hdr))))
+				SAVE_SPI(tuple, hp->spi);
 			break;
 		    }
 		    case IPPROTO_ESP: {
 			struct ip_esp_hdr _hdr, *hp;
 
+			/* This is for both IPv4 and IPv6. */
 			if (likely(hp = skb_header_pointer(skb, ptr, 4, &_hdr)))
-				tuple.s_port = hp->spi >> 16;
-				tuple.d_port = hp->spi;
-			}
+				SAVE_SPI(tuple, hp->spi);
 			break;
+		    }
 	       	}
 	} /* not fragmented */
 
+#ifdef ENABLE_AGGR
 	/* aggregate networks */
-	read_lock_bh(&aggr_lock);
+	read_lock(&aggr_lock);
 	if (family == AF_INET) {
 		list_for_each_entry(aggr_n, &aggr_n_list, list)
 			if (unlikely((ntohl(tuple.src.ip) & aggr_n->mask) == aggr_n->addr)) {
@@ -2650,11 +4874,28 @@ do_protocols:
 				break;
 			}
 	}
-	read_unlock_bh(&aggr_lock);
+	read_unlock(&aggr_lock);
+#endif
 
+#ifdef SAMPLING_HASH
+	hash = __hash_netflow(&tuple);
+	{
+		struct sampling hs = samp;
+
+		if (hs.mode == SAMPLER_HASH) {
+			NETFLOW_STAT_INC(pkts_observed);
+			if ((u32)(((u64)hash * hs.interval) >> 32))
+				return IPT_CONTINUE;
+			NETFLOW_STAT_INC(pkts_selected);
+		}
+	}
+	hash %= htable_size;
+#else /* !SAMPLING_HASH */
 	hash = hash_netflow(&tuple);
-	read_lock_bh(&htable_rwlock);
-	spin_lock(&htable_locks[hash & LOCK_COUNT_MASK]);
+#endif
+	read_lock(&htable_rwlock);
+	stripe = &htable_stripes[hash & LOCK_COUNT_MASK];
+	spin_lock(&stripe->lock);
 	/* record */
 	nf = ipt_netflow_find(&tuple, hash);
 	if (unlikely(!nf)) {
@@ -2665,26 +4906,50 @@ do_protocols:
 			NETFLOW_STAT_INC(maxflows_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, pkt_len);
+			NETFLOW_STAT_TS(drop);
 			goto unlock_return;
 		}
 
-		nf = init_netflow(&tuple, skb, hash);
+		nf = ipt_netflow_alloc(&tuple);
 		if (unlikely(!nf || IS_ERR(nf))) {
 			NETFLOW_STAT_INC(alloc_err);
 			NETFLOW_STAT_INC(pkt_drop);
 			NETFLOW_STAT_ADD(traf_drop, pkt_len);
+			NETFLOW_STAT_TS(drop);
 			goto unlock_return;
 		}
+		hlist_add_head(&nf->hlist, &htable[hash]);
 
-		nf->ts_first = jiffies;
+#ifdef ENABLE_SAMPLER
+		/* I only increment if deterministic sampler is enabled to
+		 * avoid cache conflict by default. */
+		if (get_sampler_mode() == SAMPLER_DETERMINISTIC)
+			nf->sampler_count = atomic_inc_return(&flow_count);
+#endif
+		nf->nf_ts_first = jiffies;
 		nf->tcp_flags = tcp_flags;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 		nf->o_ifc = if_out? if_out->ifindex : -1;
 #else
 		nf->o_ifc = par->out? par->out->ifindex : -1;
 #endif
+#ifdef SNMP_RULES
+		rcu_read_lock();
+# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
+		nf->o_ifcr = resolve_snmp(if_out);
+		nf->i_ifcr = resolve_snmp(if_in);
+# else
+		nf->o_ifcr = resolve_snmp(par->out);
+		nf->i_ifcr = resolve_snmp(par->in);
+# endif
+		rcu_read_unlock();
+#endif
 		nf->s_mask = s_mask;
 		nf->d_mask = d_mask;
+
+#if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
+		nf->ethernetType = ethernetType;
+#endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)
 		rt = (struct rtable *)skb->dst;
@@ -2694,6 +4959,9 @@ do_protocols:
 #else /* since 2.6.31 */
 		rt = skb_rtable(skb);
 #endif
+#endif
+#ifdef ENABLE_DIRECTION
+		nf->hooknumx = hooknum + 1;
 #endif
 		if (likely(family == AF_INET)) {
 			if (rt)
@@ -2709,31 +4977,14 @@ do_protocols:
 			printk(KERN_INFO "ipt_NETFLOW: new (%u) %hd:%hd SRC=%u.%u.%u.%u:%u DST=%u.%u.%u.%u:%u\n",
 			       atomic_read(&ipt_netflow_count),
 			       tuple.i_ifc, nf->o_ifc,
-			       NIPQUAD(tuple.s_addr), ntohs(tuple.s_port),
-			       NIPQUAD(tuple.d_addr), ntohs(tuple.d_port));
+			       NIPQUAD(tuple.src.ip), ntohs(tuple.s_port),
+			       NIPQUAD(tuple.dst.ip), ntohs(tuple.d_port));
 #endif
-	} else {
-		/* ipt_netflow_list is sorted by access time:
-		 * most recently accessed flows are at head, old flows remain at tail
-		 * this function bubble up flow to the head */
-		spin_lock(&hlist_lock);
-		list_move(&nf->list, &ipt_netflow_list);
-		spin_unlock(&hlist_lock);
 	}
-
-#ifdef CONFIG_NF_CONNTRACK_MARK
-	{
-		struct nf_conn *ct;
-		enum ip_conntrack_info ctinfo;
-		ct = nf_ct_get(skb, &ctinfo);
-		if (ct)
-			nf->mark = ct->mark;
-	}
-#endif
 
 	nf->nr_packets++;
 	nf->nr_bytes += pkt_len;
-	nf->ts_last = jiffies;
+	nf->nf_ts_last = jiffies;
 	nf->tcp_flags |= tcp_flags;
 	nf->options |= options;
 	if (tuple.protocol == IPPROTO_TCP)
@@ -2742,23 +4993,39 @@ do_protocols:
 	NETFLOW_STAT_INC(pkt_total);
 	NETFLOW_STAT_ADD(traf_total, pkt_len);
 
-	if (likely(active_needs_export(nf, active_timeout * HZ))) {
-		/* ok, if this active flow to be exported
-		 * bubble it to the tail */
-		spin_lock(&hlist_lock);
-		list_move_tail(&nf->list, &ipt_netflow_list);
-		spin_unlock(&hlist_lock);
+#define LIST_IS_NULL(name) (!(name)->next)
 
+	if (likely(active_needs_export(nf, active_timeout * HZ, jiffies))) {
+		/* ok, if this is active flow to be exported */
+#ifdef HAVE_LLIST
+		/* delete from hash and add to the export llist */
+		hlist_del(&nf->hlist);
+		if (!LIST_IS_NULL(&nf->flows_list))
+			list_del(&nf->flows_list);
+		llist_add(&nf->flows_llnode, &export_llist);
+#else
+		/* bubble it to the tail */
+		if (LIST_IS_NULL(&nf->flows_list))
+			list_add_tail(&nf->flows_list, &stripe->list);
+		else
+			list_move_tail(&nf->flows_list, &stripe->list);
+#endif
 		/* Blog: I thought about forcing timer to wake up sooner if we have
 		 * enough exportable flows, but in fact this doesn't have much sense,
-		 * becasue this would only move flow data from one memory to another
+		 * because this would only move flow data from one memory to another
 		 * (from our buffers to socket buffers, and socket buffers even have
 		 * limited size). But yes, this is disputable. */
+	} else {
+		/* most recently accessed flows go to the head, old flows remain at the tail */
+		if (LIST_IS_NULL(&nf->flows_list))
+			list_add(&nf->flows_list, &stripe->list);
+		else
+			list_move(&nf->flows_list, &stripe->list);
 	}
 
 unlock_return:
-	spin_unlock(&htable_locks[hash & LOCK_COUNT_MASK]);
-	read_unlock_bh(&htable_rwlock);
+	spin_unlock(&stripe->lock);
+	read_unlock(&htable_rwlock);
 
 	return IPT_CONTINUE;
 }
@@ -2946,15 +5213,48 @@ static struct ipt_target ipt_netflow_reg[] __read_mostly = {
 	},
 };
 
+#ifdef CONFIG_PROC_FS
+static int register_stat(const char *name, struct file_operations *fops)
+{
+	struct proc_dir_entry *proc_stat;
+
+	printk(KERN_INFO "netflow: registering: /proc/net/stat/%s\n", name);
+
+# if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
+	proc_stat = create_proc_entry(name, S_IRUGO, INIT_NET(proc_net_stat));
+# else
+	proc_stat = proc_create(name, S_IRUGO, INIT_NET(proc_net_stat), fops);
+# endif
+	if (!proc_stat) {
+		printk(KERN_ERR "Unable to create /proc/net/stat/%s entry\n", name);
+		return 0;
+	}
+# if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
+	proc_stat->proc_fops = fops;
+# endif
+# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30)
+	proc_stat->owner = THIS_MODULE;
+# endif
+	printk(KERN_INFO "netflow: registered: /proc/net/stat/%s\n", name);
+	return 1;
+}
+#else
+# define register_stat(x, y) 1
+#endif
+
 static int __init ipt_netflow_init(void)
 {
-#ifdef CONFIG_PROC_FS
-	struct proc_dir_entry *proc_stat;
-#endif
+	int i;
+
 	printk(KERN_INFO "ipt_NETFLOW version %s, srcversion %s\n",
 		IPT_NETFLOW_VERSION, THIS_MODULE->srcversion);
 
-	get_random_bytes(&ipt_netflow_hash_rnd, 4);
+	version_string_size = scnprintf(version_string, sizeof(version_string),
+		    "ipt_NETFLOW " IPT_NETFLOW_VERSION " %s", THIS_MODULE->srcversion);
+	tpl_element_sizes[observationDomainName] = version_string_size + 1;
+
+	start_ts.first = ktime_get_real();
+	clear_ipt_netflow_stat();
 
 	/* determine hash size (idea from nf_conntrack_core.c) */
 	if (!hashsize) {
@@ -2966,15 +5266,20 @@ static int __init ipt_netflow_init(void)
 		if (num_physpages > (1024 * 1024 * 1024 / PAGE_SIZE))
 			hashsize = 8192;
 	}
-	if (hashsize < 16)
-		hashsize = 16;
+	if (hashsize < LOCK_COUNT)
+		hashsize = LOCK_COUNT;
 	printk(KERN_INFO "ipt_NETFLOW: hashsize %u\n", hashsize);
 
-	ipt_netflow_hash_size = hashsize;
-	ipt_netflow_hash = alloc_hashtable(ipt_netflow_hash_size);
-	if (!ipt_netflow_hash) {
+	htable_size = hashsize;
+	htable = alloc_hashtable(htable_size);
+	if (!htable) {
 		printk(KERN_ERR "Unable to create ipt_neflow_hash\n");
 		goto err;
+	}
+
+	for (i = 0; i < LOCK_COUNT; i++) {
+		spin_lock_init(&htable_stripes[i].lock);
+		INIT_LIST_HEAD(&htable_stripes[i].list);
 	}
 
 	ipt_netflow_cachep = kmem_cache_create("ipt_netflow",
@@ -2989,26 +5294,17 @@ static int __init ipt_netflow_init(void)
 		goto err_free_hash;
 	}
 
-#ifdef CONFIG_PROC_FS
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
-	proc_stat = create_proc_entry("ipt_netflow", S_IRUGO, INIT_NET(proc_net_stat));
-#else
-	proc_stat = proc_create("ipt_netflow", S_IRUGO, INIT_NET(proc_net_stat), &nf_seq_fops);
-#endif
-	if (!proc_stat) {
-		printk(KERN_ERR "Unable to create /proc/net/stat/ipt_netflow entry\n");
+	if (!register_stat("ipt_netflow", &nf_seq_fops))
 		goto err_free_netflow_slab;
-	}
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
-	proc_stat->proc_fops = &nf_seq_fops;
-#endif
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30)
-	proc_stat->owner = THIS_MODULE;
-#endif
-	printk(KERN_INFO "netflow: registered: /proc/net/stat/ipt_netflow\n");
+	if (!register_stat("ipt_netflow_snmp", &snmp_seq_fops))
+		goto err_free_proc_stat1;
+
+#ifdef ENABLE_DEBUGFS
+	flows_dump_d = debugfs_create_file("netflow_dump", S_IRUGO, NULL, NULL, &flows_dump_fops);
 #endif
 
 #ifdef CONFIG_SYSCTL
+	ctl_table_renumber(netflow_sysctl_table);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
 	netflow_sysctl_header = register_sysctl_table(netflow_net_table
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,21)
@@ -3020,13 +5316,13 @@ static int __init ipt_netflow_init(void)
 #endif
 	if (!netflow_sysctl_header) {
 		printk(KERN_ERR "netflow: can't register to sysctl\n");
-		goto err_free_proc_stat;
+		goto err_free_proc_stat2;
 	} else
 		printk(KERN_INFO "netflow: registered: sysctl net.netflow\n");
 #endif
 
 	if (!destination)
-		destination = aggregation_buf;
+		destination = destination_buf;
 	if (destination != destination_buf) {
 		strlcpy(destination_buf, destination, sizeof(destination_buf));
 		destination = destination_buf;
@@ -3034,6 +5330,7 @@ static int __init ipt_netflow_init(void)
 	if (add_destinations(destination) < 0)
 		goto err_free_sysctl;
 
+#ifdef ENABLE_AGGR
 	if (!aggregation)
 		aggregation = aggregation_buf;
 	if (aggregation != aggregation_buf) {
@@ -3041,6 +5338,34 @@ static int __init ipt_netflow_init(void)
 		aggregation = aggregation_buf;
 	}
 	add_aggregation(aggregation);
+#endif
+
+#ifdef ENABLE_SAMPLER
+	if (!sampler)
+		sampler = sampler_buf;
+	if (sampler != sampler_buf) {
+		strlcpy(sampler_buf, sampler, sizeof(sampler_buf));
+		sampler = sampler_buf;
+	}
+	parse_sampler(sampler);
+#ifdef SAMPLING_HASH
+	hash_seed = prandom_u32();
+#endif
+#endif
+
+#ifdef SNMP_RULES
+	if (!snmp_rules)
+		snmp_rules = snmp_rules_buf;
+	if (snmp_rules != snmp_rules_buf) {
+		strlcpy(snmp_rules_buf, snmp_rules, sizeof(snmp_rules_buf));
+		snmp_rules = snmp_rules_buf;
+	}
+	add_snmp_rules(snmp_rules);
+#endif
+
+#ifdef ENABLE_PROMISC
+	switch_promisc(promisc);
+#endif
 
 	netflow_switch_version(protocol);
 	_schedule_scan_worker(0);
@@ -3065,20 +5390,27 @@ err_stop_timer:
 	del_timer_sync(&rate_timer);
 	free_templates();
 	destination_removeall();
+#ifdef ENABLE_AGGR
 	aggregation_remove(&aggr_n_list);
 	aggregation_remove(&aggr_p_list);
+#endif
 err_free_sysctl:
 #ifdef CONFIG_SYSCTL
 	unregister_sysctl_table(netflow_sysctl_header);
-err_free_proc_stat:
+err_free_proc_stat2:
+#endif
+#ifdef ENABLE_DEBUGFS
+	debugfs_remove(flows_dump_d);
 #endif
 #ifdef CONFIG_PROC_FS
+	remove_proc_entry("ipt_netflow_snmp", INIT_NET(proc_net_stat));
+err_free_proc_stat1:
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
 err_free_netflow_slab:
 #endif
 	kmem_cache_destroy(ipt_netflow_cachep);
 err_free_hash:
-	vfree(ipt_netflow_hash);
+	vfree(htable);
 err:
 	printk(KERN_INFO "ipt_NETFLOW is not loaded.\n");
 	return -ENOMEM;
@@ -3091,8 +5423,15 @@ static void __exit ipt_netflow_fini(void)
 #ifdef CONFIG_SYSCTL
 	unregister_sysctl_table(netflow_sysctl_header);
 #endif
+#ifdef ENABLE_DEBUGFS
+	debugfs_remove(flows_dump_d);
+#endif
 #ifdef CONFIG_PROC_FS
+	remove_proc_entry("ipt_netflow_snmp", INIT_NET(proc_net_stat));
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
+#endif
+#ifdef ENABLE_PROMISC
+	switch_promisc(0);
 #endif
 	xt_unregister_targets(ipt_netflow_reg, ARRAY_SIZE(ipt_netflow_reg));
 #ifdef CONFIG_NF_NAT_NEEDED
@@ -3107,11 +5446,16 @@ static void __exit ipt_netflow_fini(void)
 
 	free_templates();
 	destination_removeall();
+#ifdef ENABLE_AGGR
 	aggregation_remove(&aggr_n_list);
 	aggregation_remove(&aggr_p_list);
+#endif
+#ifdef SNMP_RULES
+	kfree(snmp_ruleset);
+#endif
 
 	kmem_cache_destroy(ipt_netflow_cachep);
-	vfree(ipt_netflow_hash);
+	vfree(htable);
 
 	printk(KERN_INFO "ipt_NETFLOW unloaded.\n");
 }

@@ -3,17 +3,26 @@
 KVERSION = @KVERSION@
 KDIR = @KDIR@
 KINSTDIR = $(shell dirname @KDIR@)
+KOPTS = @KOPTS@
 IPTABLES_CFLAGS = @IPTABLES_CFLAGS@
 IPTABLES_MODULES = @IPTABLES_MODULES@
+DEPMOD = depmod -a
+CARGS = @CARGS@
+SNMPTGSO = /usr/lib/snmp/dlmod/snmp_NETFLOW.so
+SNMPCONF = /etc/snmp/snmpd.conf
+SNMPLINE = dlmod netflow $(SNMPTGSO)
+CC = gcc
 
 # https://www.kernel.org/doc/Documentation/kbuild/modules.txt
 # https://www.kernel.org/doc/Documentation/kbuild/makefiles.txt
 obj-m = ipt_NETFLOW.o
+ccflags-y = @KOPTS@
 
-all: ipt_NETFLOW.ko libipt_NETFLOW.so libip6t_NETFLOW.so
+all: ipt_NETFLOW.ko libipt_NETFLOW.so libip6t_NETFLOW.so @SNMPTARGET@
+
 ipt_NETFLOW.ko: version.h ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	@echo Compiling for kernel $(KVERSION)
-	make -C $(KDIR) M=$(CURDIR) modules
+	make -C $(KDIR) M=$(CURDIR) modules CONFIG_DEBUG_INFO=y
 	@touch $@
 sparse: | version.h ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	@rm -f ipt_NETFLOW.ko ipt_NETFLOW.o
@@ -21,14 +30,35 @@ sparse: | version.h ipt_NETFLOW.c ipt_NETFLOW.h Makefile
 	make -C $(KDIR) M=$(CURDIR) modules C=1
 	@touch ipt_NETFLOW.ko
 minstall: | ipt_NETFLOW.ko
+	@echo " *"
 	make -C $(KDIR) M=$(CURDIR) modules_install INSTALL_MOD_PATH=$(DESTDIR)
-	depmod -a
+	$(DEPMOD)
 mclean:
 	make -C $(KDIR) M=$(CURDIR) clean
 lclean:
 	-rm -f *.so *_sh.o
 clean: mclean lclean
 	-rm -f *.so *.o modules.order version.h
+
+snmp_NETFLOW.so: snmp_NETFLOW.c
+	$(CC) `net-snmp-config --cflags` -fPIC -shared -o $@ $< `net-snmp-config --libs`
+
+sinstall: | snmp_NETFLOW.so IPT-NETFLOW-MIB.my
+	@echo " *"
+	install -D IPT-NETFLOW-MIB.my $(DESTDIR)/usr/share/snmp/mibs/IPT-NETFLOW-MIB.my
+	install -D snmp_NETFLOW.so $(DESTDIR)$(SNMPTGSO)
+	@if ! egrep -qs "^ *$(SNMPLINE)" $(SNMPCONF); then \
+	echo " *"; \
+	echo " *  Add this line to $(SNMPCONF) to enable IPT-NETFLOW-MIB:"; \
+	echo " *"; \
+	echo " *     $(SNMPLINE)"; \
+	echo " *"; \
+	fi
+	@if killall -0 snmpd >/dev/null 2>&1; then \
+	  echo " *  (snmpd needs restart for changes to take effect.)"; \
+	else \
+	  echo " *  (snmpd is not started.)"; \
+	fi
 
 %_sh.o: libipt_NETFLOW.c
 	$(CC) -O2 -Wall -Wunused $(IPTABLES_CFLAGS) -fPIC -o $@ -c libipt_NETFLOW.c
@@ -37,23 +67,36 @@ clean: mclean lclean
 	$(CC) -shared -o $@ $<
 
 version.h: ipt_NETFLOW.c ipt_NETFLOW.h Makefile
-	@if [ -d .git ] && type git >/dev/null 2>&1; then \
-		 echo "#define GITVERSION \"`git describe --dirty`\""; \
-	fi > version.h
+	@./version.sh --define > version.h
 
 linstall: | libipt_NETFLOW.so libip6t_NETFLOW.so
+	@echo " *"
 	install -D libipt_NETFLOW.so $(DESTDIR)$(IPTABLES_MODULES)/libipt_NETFLOW.so
 	install -D libip6t_NETFLOW.so $(DESTDIR)$(IPTABLES_MODULES)/libip6t_NETFLOW.so
 
-install: minstall linstall
+dinstall:
+	@echo " *"
+	@./install-dkms.sh --install
+
+install: minstall linstall @DKMSINSTALL@ @SNMPINSTALL@
 
 uninstall:
 	-rm -f $(DESTDIR)$(IPTABLES_MODULES)/libipt_NETFLOW.so
 	-rm -f $(DESTDIR)$(IPTABLES_MODULES)/libip6t_NETFLOW.so
+	-rm -f $(DESTDIR)/usr/share/snmp/mibs/IPT-NETFLOW-MIB.my
+	-rm -f $(DESTDIR)$(SNMPTGSO)
+	@if egrep -qs "^ *$(SNMPLINE)" $(SNMPCONF); then \
+	echo " *"; \
+	echo " *  Remove this line from $(SNMPCONF):"; \
+	echo " *"; \
+	echo " *     "`egrep "^ *$(SNMPLINE)" $(SNMPCONF)`; \
+	echo " *"; \
+	fi
+	@if [ "@DKMSINSTALL@" = dinstall ]; then ./install-dkms.sh --uninstall; fi
 	-rm -f $(DESTDIR)$(KINSTDIR)/extra/ipt_NETFLOW.ko
 
 Makefile: Makefile.in configure
-	./configure --make
+	./configure --make ${CARGS}
 
 load: all
 	-insmod ipt_NETFLOW.ko active_timeout=5 protocol=9

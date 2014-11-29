@@ -49,7 +49,7 @@ get_lib_from_lib() {
   LIB=`strings $XLIB | grep ^/.*lib.*tables`
   if [ "$LIB" ]; then
     IPTLIB=$LIB
-    echo "$IPTLIB (from library)"
+    echo "$IPTLIB (from iptables binary)"
     return 0
   fi
   return 1
@@ -58,7 +58,6 @@ get_lib_from_lib() {
 iptables_inc() {
   echo -n "Iptables include flags: "
   if [ "$IPTINC" ]; then
-    IPTINC="-I$IPTINC"
     echo "$IPTINC (user specified)"
   elif [ "$PKGVER" ]; then
     IPTINC="$PKGINC"
@@ -143,14 +142,25 @@ iptables_find_version() {
 }
 
 compile_libitp_test() {
+  local FLAGS MSG
   echo -n "Checking for presence of $@... "
+  if [ "$IPTINC" ]; then
+    FLAGS=$IPTINC
+    MSG="(using ipt-inc)"
+  elif [ "$PKGINC" ]; then
+    FLAGS=$PKGINC
+    MSG="(using pkg-config)"
+  else
+    FLAGS=
+    MSG=
+  fi
   echo "
 #define __EXPORTED_HEADERS__
 #include <$*>" > test.c
-  gcc -c test.c  >/dev/null 2>&1
+  gcc -c test.c $FLAGS >/dev/null 2>&1
   RET=$?
   if [ $RET = 0 ]; then
-    echo Yes;
+    echo Yes $MSG;
   else
     echo No;
   fi
@@ -174,6 +184,7 @@ iptables_try_pkgconfig() {
       else
 	echo "No"
       fi
+      PKGVER=
     fi
   fi
   if [ "$PKGVER" ]; then
@@ -181,7 +192,8 @@ iptables_try_pkgconfig() {
     PKGVER=`pkg-config --modversion xtables 2>/dev/null`
     PKGINC=`pkg-config --cflags xtables`
     PKGLIB=`pkg-config --variable=xtlibdir xtables`
-  else
+  elif [[ "$IPTVER" =~ ^1\.3 ]]; then
+    echo "! This version of iptables ($IPTVER) will be treated as old version."
     # Newer versions of iptables should not have -I/kernel/include!
     # So I assume that newer version will have correct pkg-config set up
     # and if not, then it's older who need it.
@@ -238,9 +250,23 @@ show_help() {
   echo "  --ipt-inc=..  directory for iptable headers (ex.: /usr/include)"
   echo "  --kver=..     kernel version (ex.: 2.6.30-std-def-alt15)"
   echo "  --kdir=..     directory for kernel source (ex.: /usr/src/kernel)"
+  echo "  --enable-natevents     enables natevents support"
+  echo "  --enable-debugfs       enables debugfs support for flow lists"
+  echo "  --enable-snmp-rules    enables SNMP-index conversion rules"
+  echo "  --enable-macaddress    enables MAC address for v9/IPFIX"
+  echo "  --enable-vlan          enables VLAN Ids for v9/IPFIX"
+  echo "  --enable-direction     enables flowDirection(61) Element"
+  echo "  --enable-sampler       enables Flow Sampling"
+  echo "  --enable-sampler=hash  enables Hash sampler"
+  echo "  --enable-aggregation   enables aggregation rules"
+  echo "  --enable-promisc       enables promisc hack"
+  echo "  --disable-snmp-agent   disables net-snmp agent"
+  echo "  --disable-dkms         disables DKMS support completely"
+  echo "  --disable-dkms-install  no DKMS install but still create dkms.conf"
   exit 0
 }
 
+CARGS="$@"
 for ac_option
 do
   case "$ac_option" in
@@ -253,11 +279,26 @@ do
     --ipt-lib=*) IPTLIB="$ac_optarg" ;;
     --ipt-src=*) IPTSRC="$ac_optarg" ;;
     --ipt-ver=*) IPTVER="$ac_optarg" ;;
-    --ipt-inc=*) IPTINC="$ac_optarg" ;;
+    --ipt-inc=*) IPTINC="-I$ac_optarg" ;;
     --kver=*)  KVERSION="$ac_optarg" ;;
     --kdir=*)      KDIR="$ac_optarg" ;;
-    --make) echo called from make ;;
-    --help) show_help ;;
+    --enable-nat*)   KOPTS="$KOPTS -DENABLE_NAT" ;;
+    --enable-debug*) KOPTS="$KOPTS -DENABLE_DEBUGFS" ;;
+    --enable-mac*)   KOPTS="$KOPTS -DENABLE_MAC" ;;
+    --enable-vlan*)  KOPTS="$KOPTS -DENABLE_VLAN" ;;
+    --enable-direc*) KOPTS="$KOPTS -DENABLE_DIRECTION" ;;
+    --enable-sampl*hash) KOPTS="$KOPTS -DENABLE_SAMPLER -DSAMPLING_HASH" ;;
+    --enable-sampl*) KOPTS="$KOPTS -DENABLE_SAMPLER" ;;
+    --enable-aggr*)  KOPTS="$KOPTS -DENABLE_AGGR" ;;
+    --enable-promi*) KOPTS="$KOPTS -DENABLE_PROMISC" ;;
+    --enable-snmp-r*)  KOPTS="$KOPTS -DENABLE_SNMP" ;;
+    --disable-snmp-a*)   SKIPSNMP=1 ;;
+    --disable-net-snmp*) SKIPSNMP=1 ;;
+    --disable-dkms-install) SKIPDKMS=install ;;
+    --disable-dkms)         SKIPDKMS=full ;;
+    --make) echo called from make; CARGS=`echo $CARGS | sed s/--make//g` ;;
+    -Werror) KOPTS="$KOPTS -Werror" ;;
+    --help|-h) show_help ;;
     -*) echo Invalid option: $ac_option; exit 1 ;;
 #    *) ni="$ni $ac_option" ;;
   esac
@@ -291,14 +332,21 @@ kernel_check_src() {
   return 1
 }
 
+kernel_check_src2() {
+  if kernel_check_src $1/source; then
+    KSRC=$KDIR
+  fi
+  kernel_check_src $1/build
+}
+
 kernel_find_source() {
   KSHOW=requested
   test "$KDIR" && return 0
   KSHOW=found
-  kernel_check_src /lib/modules/$KLIBMOD/build && return 0
-  kernel_check_src /lib/modules/$KVERSION/build && return 0
-  kernel_check_src /usr/src/kernels/$KVERSION && return 0
-  kernel_check_src /usr/src/linux-$KVERSION && return 0
+  kernel_check_src2 /lib/modules/$KLIBMOD  && return 0
+  kernel_check_src2 /lib/modules/$KVERSION && return 0
+  kernel_check_src  /usr/src/kernels/$KVERSION && return 0
+  kernel_check_src  /usr/src/linux-$KVERSION && return 0
   echo "! Linux source not found. Don't panic. You may specify kernel source"
   echo "! directory with --kdir=..., or try to install kernel-devel package,"
   echo "! or just raw sources for linux-$KVERSION from kernel.org."
@@ -348,9 +396,123 @@ kernel_check_config() {
   kconfig CONFIG_PROC_FS		"proc interface"
   kconfig CONFIG_NF_NAT_NEEDED		"natevents"
   kconfig CONFIG_NF_CONNTRACK_EVENTS	"natevents"
-  kconfig CONFIG_NF_CONNTRACK_MARK	"connmark tracking"
   kconfig CONFIG_IPV6			"IPv6"
   kconfig CONFIG_IP6_NF_IPTABLES	"ip6tables target"
+}
+
+kernel_check_include() {
+  echo -n "Checking for presence of $1... "
+  if [ "$KSRC" -a -e $KSRC/$1 ]; then
+    echo Yes
+    KOPTS="$KOPTS $2"
+  elif [ -e $KDIR/$1 ]; then
+    echo Yes
+    KOPTS="$KOPTS $2"
+  else
+    echo No
+  fi
+}
+
+kernel_check_features() {
+  kernel_check_include include/linux/llist.h -DHAVE_LLIST
+}
+
+snmp_check() {
+  SNMPTARGET=
+  SNMPINSTALL=
+  test "$SKIPSNMP" && return
+
+  echo -n "Searching for net-snmp-config... "
+  if type -p net-snmp-config > /dev/null; then
+    echo Yes `type -p net-snmp-config`
+  else
+    echo No.
+    SNMPCONFIG=no
+  fi
+
+  echo -n "Searching for net-snmp agent... "
+  if [ -s /etc/redhat-release ]; then
+    if ! rpm --quiet -q net-snmp; then
+      echo No.
+      SNMPADD="do:  yum install net-snmp"
+      if [ "$SNMPCONFIG" ]; then
+	SNMPADD="$SNMPADD net-snmp-devel"
+      fi
+    else
+      echo Yes.
+    fi
+    if [ "$SNMPCONFIG" ]; then
+      SNMPCONFIG="run:  yum install net-snmp-devel"
+    fi
+  elif [ -s /etc/debian_version ]; then
+    if ! dpkg -s snmpd >/dev/null 2>&1; then
+      echo No.
+      SNMPADD="do:  apt-get install snmpd"
+      if [ "$SNMPCONFIG" ]; then
+	SNMPADD="$SNMPADD libsnmp-dev"
+      fi
+    else
+      echo Yes.
+    fi
+    if [ "$SNMPCONFIG" ]; then
+      SNMPCONFIG="run:  apt-get install libsnmp-dev"
+    fi
+  elif [ -s /etc/snmp/snmpd.conf ]; then
+    echo Yes.
+  else
+    echo No.
+    SNMPADD="install net-snmp (www.net-snmp.org)"
+    SNMPCONFIG="reinstall net-snmp with agent support."
+  fi
+
+  if [ "$SNMPADD" ]; then
+    echo " Assuming you don't want net-snmp agent support".
+    echo " Otherwise $SNMPADD"
+    return
+  elif [ "$SNMPCONFIG" ]; then
+    echo "! You have net-snmp agent but not development package."
+    echo "! net-snmp agent will not be built, to fix:"
+    echo "!   $SNMPCONFIG"
+    return
+  fi
+
+  SNMPTARGET=snmp_NETFLOW.so
+  SNMPINSTALL=sinstall
+}
+
+dkms_check() {
+  DKMSINSTALL=
+  MVERSION=`./version.sh`
+  test "$SKIPDKMS" && return
+
+  echo -n "Checking for DKMS... "
+  if ! which dkms >/dev/null 2>&1; then
+    echo "No. (It may be useful to install it.)"
+    echo "! "
+    echo "! DKMS is method of installing kernel modules, that will"
+    echo "! automatically recompile module after kernel upgrade."
+    if [ -s /etc/debian_version ]; then
+      echo "! "
+      echo "! To install it under Debian simply run this:"
+      echo "!   root# apt-get install dkms"
+      echo "! "
+    elif [ -s /etc/redhat-release ]; then
+      echo "! "
+      echo "! To install it under Centos enable EPEL or RPMforge repository,"
+      echo "! then run this:"
+      echo "!   root# yum install dkms"
+      echo "! "
+    fi
+    return
+  fi
+  echo Yes.
+  if dkms status | grep ^ipt-netflow, >/dev/null; then
+    echo "! You are already have module installed via DKMS"
+    echo "!   it will be uninstalled on 'make install' and"
+    echo "!   current version of module installed afterwards."
+    echo "! Use --disable-dkms option if don't want this."
+  fi
+  DKMSINSTALL=dinstall
 }
 
 kernel_find_version	#KVERSION
@@ -360,6 +522,7 @@ kernel_find_source	#KDIR
 echo "Kernel sources: $KDIR ($KSHOW)"
 kernel_check_consistency
 kernel_check_config
+kernel_check_features
 
 test "$IPTBIN" || IPTBIN=`which iptables`
 
@@ -370,17 +533,32 @@ iptables_src_version	#check that IPTSRC match to IPTVER
 iptables_inc		#IPTINC
 iptables_modules	#IPTLIB
 
+snmp_check
+dkms_check
+
 REPLACE="\
+s!@CARGS@!$CARGS!;\
 s!@KVERSION@!$KVERSION!;\
+s!@MVERSION@!$MVERSION!;\
 s!@KDIR@!$KDIR!;\
+s!@KOPTS@!$KOPTS!;\
+s!@SNMPTARGET@!$SNMPTARGET!;\
+s!@SNMPINSTALL@!$SNMPINSTALL!;\
+s!@DKMSINSTALL@!$DKMSINSTALL!;\
 s!@IPTABLES_VERSION@!$IPTVER!;\
 s!@IPTABLES_CFLAGS@!$IPTCFLAGS $IPTINC!;\
 s!@IPTABLES_MODULES@!$IPTLIB!"
 
 echo -n "Creating Makefile.. "
-sed "$REPLACE" Makefile.in > Makefile
-echo done.
+ sed "$REPLACE" Makefile.in > Makefile
+ echo done.
+ if [ "$SKIPDKMS" != full ]; then
+   echo -n "Creating dkms.conf.. "
+   sed "$REPLACE" dkms.conf.in > dkms.conf
+   echo done.
+ fi
 echo
+echo "  If you need some options enabled run ./configure --help"
 echo "  Now run: make all install"
 echo
 
