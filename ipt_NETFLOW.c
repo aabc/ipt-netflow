@@ -982,7 +982,7 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 	struct ipt_netflow *nf = list_entry(v, struct ipt_netflow, flows_list);
 	long i_timeout = inactive_timeout * HZ;
 	long a_timeout = active_timeout * HZ;
-	int inactive = (jiffies - nf->ts_last) >= i_timeout;
+	int inactive = (jiffies - nf->nf_ts_last) >= i_timeout;
 	int active = active_needs_export(nf, a_timeout, dump_start);
 	u_int32_t hash = hash_netflow(&nf->tuple);
 
@@ -4632,6 +4632,7 @@ static unsigned int netflow_target(
 	if (unlikely(iph == NULL)) {
 		NETFLOW_STAT_INC(truncated);
 		NETFLOW_STAT_INC(pkt_drop);
+		NETFLOW_STAT_ADD(traf_drop, skb->len);
 		NETFLOW_STAT_TS(drop);
 		return IPT_CONTINUE;
 	}
@@ -4640,7 +4641,7 @@ static unsigned int netflow_target(
 	if (atomic_read(&freeze)) {
 		NETFLOW_STAT_INC(freeze_err);
 		NETFLOW_STAT_INC(pkt_drop);
-		NETFLOW_STAT_ADD(traf_drop, pkt_len);
+		NETFLOW_STAT_ADD(traf_drop, skb->len);
 		NETFLOW_STAT_TS(drop);
 		return IPT_CONTINUE;
 	}
