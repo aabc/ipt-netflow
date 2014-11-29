@@ -27,7 +27,7 @@ contains() { for e in "${@:2}"; do [[ "$e" = "$1" ]] && return 0; done; return 1
 
 D=() # to be list of installed versions
 OLDIFS="$IFS"
-IFS=$'\n' A=(`dkms status`)
+IFS=$'\n' A=(`dkms status | grep ^ipt-netflow`)
 IFS="$OLDIFS"
 
 for i in "${A[@]}"; do
