@@ -96,6 +96,9 @@ rm -rf /usr/src/ipt-netflow-$MVERSION
 
 mkdir -p /usr/src/ipt-netflow-$MVERSION
 cp -p *.[ch] Make* READ* conf* irq* *.sh *.conf /usr/src/ipt-netflow-$MVERSION/
+if [ -d .git ]; then
+  cp -pr .git /usr/src/ipt-netflow-$MVERSION/
+fi
 touch /usr/src/ipt-netflow-$MVERSION/.automatic
 
 dkms add -m ipt-netflow -v $MVERSION

@@ -294,8 +294,7 @@ do
     --enable-snmp-r*)  KOPTS="$KOPTS -DENABLE_SNMP" ;;
     --disable-snmp-a*)   SKIPSNMP=1 ;;
     --disable-net-snmp*) SKIPSNMP=1 ;;
-    --disable-dkms-install) SKIPDKMS=install ;;
-    --disable-dkms)         SKIPDKMS=full ;;
+    --disable-dkms*)     SKIPDKMS=1 ;;
     --make) echo called from make; CARGS=`echo $CARGS | sed s/--make//g` ;;
     -Werror) KOPTS="$KOPTS -Werror" ;;
     --help|-h) show_help ;;
@@ -482,7 +481,6 @@ snmp_check() {
 
 dkms_check() {
   DKMSINSTALL=
-  MVERSION=`./version.sh`
   test "$SKIPDKMS" && return
 
   echo -n "Checking for DKMS... "
@@ -539,7 +537,6 @@ dkms_check
 REPLACE="\
 s!@CARGS@!$CARGS!;\
 s!@KVERSION@!$KVERSION!;\
-s!@MVERSION@!$MVERSION!;\
 s!@KDIR@!$KDIR!;\
 s!@KOPTS@!$KOPTS!;\
 s!@SNMPTARGET@!$SNMPTARGET!;\
@@ -552,11 +549,6 @@ s!@IPTABLES_MODULES@!$IPTLIB!"
 echo -n "Creating Makefile.. "
  sed "$REPLACE" Makefile.in > Makefile
  echo done.
- if [ "$SKIPDKMS" != full ]; then
-   echo -n "Creating dkms.conf.. "
-   sed "$REPLACE" dkms.conf.in > dkms.conf
-   echo done.
- fi
 echo
 echo "  If you need some options enabled run ./configure --help"
 echo "  Now run: make all install"
