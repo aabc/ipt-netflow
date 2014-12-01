@@ -2,13 +2,16 @@
 
 PATH=$PATH:/bin:/usr/bin:/usr/sbin:/sbin:/usr/local/sbin
 
-if [ "$1" = --from-dkms-conf ]; then
-  # restore options from existing Makefile, if present
-  if [ -e Makefile ]; then
-    set -- `sed -n 's/^CARGS = \(.*\)/\1/p' Makefile`
-    FROMDKMSCONF=1
-  fi
-fi
+case "$1" in
+  --from-dkms-conf*)
+    KDKMS=`echo "$1" | sed 's/[^=]*.//'`
+    # restore options from existing Makefile, if present
+    if [ -e Makefile ]; then
+      set -- `sed -n 's/^CARGS = \(.*\)/\1/p' Makefile`
+      FROMDKMSCONF=1
+    fi
+    ;;
+esac
 
 error() {
   printf "! Error: $*\n"
@@ -349,6 +352,12 @@ kernel_check_src2() {
 }
 
 kernel_find_source() {
+  if [ "$KDKMS" ]; then
+    # dkms args is highest priority
+    KDIR=$KDKMS
+    KSHOW=dkms
+    return 0
+  fi
   KSHOW=requested
   test "$KDIR" && return 0
   KSHOW=found
