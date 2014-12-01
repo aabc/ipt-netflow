@@ -6,11 +6,12 @@ if [ "$1" = --from-dkms-conf ]; then
   # restore options from existing Makefile, if present
   if [ -e Makefile ]; then
     set -- `sed -n 's/^CARGS = \(.*\)/\1/p' Makefile`
+    FROMDKMSCONF=1
   fi
 fi
 
 error() {
-  printf "! Error: $@\n"
+  printf "! Error: $*\n"
   exit 1
 }
 
@@ -374,15 +375,18 @@ kernel_find_source() {
 }
 
 kernel_check_consistency() {
-  if test -s $KDIR/include/config/kernel.release; then
+  if [ -s $KDIR/include/config/kernel.release ]; then
     SRCVER=`cat $KDIR/include/config/kernel.release`
-    test "$KVERSION" != "$SRCVER" && error "$KHOW kernel version ($KVERSION) and $KSHOW version of kernel source ($SRCVER) doesn't match!\n!" \
-      "You may try to specify only kernel source tree with --kdir=$KDIR\n!" \
-      "and configure will pick up version properly."
-  else
-    test -e "$KDIR/.config" || error ".config in kernel source not found, run  make menuconfig  in $KDIR"
-    test -d "$KDIR/include/config" || error "kernel is not prepared, run  make prepare modules_prepare  in $KDIR"
+    if [ "$KVERSION" != "$SRCVER" ]; then
+      echo "! Warning: $KHOW kernel version ($KVERSION) and $KSHOW version of kernel source ($SRCVER) doesn't match!"
+      echo "!   You may try to specify only kernel source tree with --kdir=$KDIR"
+      echo "!   and configure will pick up version properly."
+      echo "! Assuming you want to build for $SRCVER"
+      KVERSION=$SRCVER
+    fi
   fi
+  test -e "$KDIR/.config" || error ".config in kernel source not found, run  make menuconfig  in $KDIR"
+  test -d "$KDIR/include/config" || error "kernel is not prepared, run  make prepare modules_prepare  in $KDIR"
 }
 
 kconfig() {
@@ -431,8 +435,8 @@ snmp_check() {
   test "$SKIPSNMP" && return
 
   echo -n "Searching for net-snmp-config... "
-  if type -p net-snmp-config > /dev/null; then
-    echo Yes `type -p net-snmp-config`
+  if which net-snmp-config >/dev/null 2>&1; then
+    echo Yes `which net-snmp-config`
   else
     echo No.
     SNMPCONFIG=no
@@ -513,13 +517,14 @@ dkms_check() {
     return
   fi
   echo Yes.
+  DKMSINSTALL=dinstall
+  test "$FROMDKMSCONF" && return
   if dkms status | grep ^ipt-netflow, >/dev/null; then
     echo "! You are already have module installed via DKMS"
     echo "!   it will be uninstalled on 'make install' and"
     echo "!   current version of module installed afterwards."
     echo "! Use --disable-dkms option if don't want this."
   fi
-  DKMSINSTALL=dinstall
 }
 
 kernel_find_version	#KVERSION
