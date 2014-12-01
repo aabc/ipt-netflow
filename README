@@ -161,12 +161,6 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2014.
      c) If you have sources in non-standard places or configure isn't able to
      find something run ./configure --help to see how to specify paths manually.
 
-     d) On Debian:
-       `gcc: error: unrecognized command line option `-fstack-protector-strong''
-       `Makefile:43: recipe for target 'snmp_NETFLOW.so' failed'
-     Solution is to install gcc-4.9: apt-get install gcc-4.9
-       then compile with: make CC=gcc-4.9
-
 ** 5. After this point you should be able to load module and
      use -j NETFLOW target in your iptables. See next section.
 
