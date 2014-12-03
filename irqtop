@@ -131,11 +131,17 @@ end
 
 def calc_cpu
   dt = @ts - @hts
-  @c = Hash.new(0)
+  @cBusy = Hash.new(0)
+  @cHIrq  = Hash.new(0)
+  @cSIrq  = Hash.new(0)
+  # user, nice, system, [3] idle, [4] iowait, irq, softirq, etc.
   @cstat.each do |c, d|
     d = d.zip(@hcstat[c]).map {|a, b| a - b}
+    c = c.upcase
     sum = d.reduce(:+)
-    @c[c.upcase] = 100 - d[3].to_f / sum * 100
+    @cBusy[c] = 100 - (d[3] + d[4]).to_f / sum * 100
+    @cHIrq[c] = (d[5]).to_f / sum * 100
+    @cSIrq[c] = (d[6]).to_f / sum * 100
   end
 end
 
@@ -161,8 +167,16 @@ def show_interrupts
 
   # load
   print "%*s: " % [maxlen + 2, "cpuUtil"]
-  @icpus.each { |c| print " %6.1f" % @c[c] }
+  @icpus.each { |c| print " %6.1f" % @cBusy[c] }
   puts "   total CPU utilization %"
+  #
+  print "%*s: " % [maxlen + 2, "%irq"]
+  @icpus.each { |c| print " %6.1f" % @cHIrq[c] }
+  puts "   hardware IRQ CPU util%"
+  print "%*s: " % [maxlen + 2, "%sirq"]
+  @icpus.each { |c| print " %6.1f" % @cSIrq[c] }
+  puts "   software IRQ CPU util%"
+
 
   # total
   print "%*s: " % [maxlen + 2, "irqTotal"]
