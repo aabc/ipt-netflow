@@ -167,16 +167,14 @@ def e_dev_stat(dev, k, ks)
   "%s:%d" % [ks, r]
 end
 
-def e_queue_stat_err(dev, qnr)
+def e_queue_stat_err(dev, qdir, qnr)
   r = []
-  ['rx', 'tx'].each do |qdir|
-    ek = @est[dev][qdir][qnr].keys.reject{|e| e =~ /^(bytes|packets)$/}
-    ek.each do |k|
-      n = @est[dev][qdir][qnr][k]
-      o = @esto[dev][qdir][qnr][k]
-      d = n - o
-      r << "%s_%s:%d" % [qdir, k, d] if d.to_i > 0
-    end
+  ek = @est[dev][qdir][qnr].keys.reject{|e| e =~ /^(bytes|packets)$/}
+  ek.each do |k|
+    n = @est[dev][qdir][qnr][k]
+    o = @esto[dev][qdir][qnr][k]
+    d = n - o
+    r << "%s_%s:%d" % [qdir, k, d] if d.to_i > 0
   end
   r
 end
@@ -195,16 +193,25 @@ def e_dev_stat_sum(dev, rk, ks)
 end
 
 def print_ethstat(desc)
-  return unless @esto && @est && !@devlist.empty?
+  return if @devlist.empty?
   dev = desc[/\b(#{@devre})\b/, 1]
   return unless dev
+  unless @esto && @est
+    print ' []'
+    return
+  end
   t = []
   if desc =~ /-(tx|rx)+-\d+/i
     qnr = desc[/-(\d+)\s*$/, 1]
     if qnr
-      t << e_queue_stat(dev, "rx", qnr, "packets") if desc =~ /rx/i
-      t << e_queue_stat(dev, "tx", qnr, "packets") if desc =~ /tx/i
-      t += e_queue_stat_err(dev, qnr)
+      if desc =~ /rx/i
+	t << e_queue_stat(dev, "rx", qnr, "packets")
+	t += e_queue_stat_err(dev, "rx", qnr)
+      end
+      if desc =~ /tx/i
+	t << e_queue_stat(dev, "tx", qnr, "packets")
+	t += e_queue_stat_err(dev, "tx", qnr)
+      end
     end
   else
     t << e_dev_stat(dev, "rx_packets", 'rx')
