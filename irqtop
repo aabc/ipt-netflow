@@ -7,7 +7,6 @@ require 'getoptlong'
 require 'curses'
 require 'stringio'
 
-delay = 5
 @imode = :both
 @omode = :table
 @color = true
@@ -45,7 +44,7 @@ GetoptLong.new(
     @batch = true
     @reverse = !@reverse if @omode == :top
   when '--delay'
-    delay = arg.to_i
+    @delay = arg.to_i
   when '--top'
     @omode = :top
   when '--table'
@@ -56,6 +55,12 @@ GetoptLong.new(
     @imode = :soft
   end
 end
+if !@delay && ARGV[0].to_f > 0
+  @delay = ARGV.shift.to_f
+else
+  @delay = 5
+end
+@count = ARGV.shift.to_f if ARGV[0].to_i > 0
 
 def read_table(tag, file)
   @cpus = []
@@ -251,18 +256,80 @@ def show_help
   puts "Press any key to continue."
 end
 
+hostname = `hostname`.strip
 #
 grab_stat
 sleep 0.5
 
+COLOR_GREEN  = "\033[0;32m"
+COLOR_YELLOW = "\033[0;33m"
+COLOR_CYAN   = "\033[0;36m"
+COLOR_RED    = "\033[0;31m"
+COLOR_OFF    = "\033[m"
+def tty_printline(t)
+  latr = nil # line color
+  if t =~ /-rx-/
+    latr = COLOR_GREEN
+  elsif t =~ /-tx-/
+    latr = COLOR_YELLOW
+  elsif t =~ /\beth/
+    latr = COLOR_CYAN
+  end
+  print latr if latr
+
+  if t =~ /cpuUtil:|irq:|sirq:/
+    # colorize percentage values
+    t.scan(/\s+\S+/) do |e|
+      eatr = nil
+      if e =~ /^\s*[\d.]+$/
+        if e.to_i >= 90
+          eatr = COLOR_RED
+        elsif e.to_i <= 10
+          eatr = COLOR_GREEN
+        else
+          eatr = COLOR_YELLOW
+        end
+      end
+      print eatr if eatr
+      print e
+      print (latr)? latr : COLOR_OFF if eatr
+    end
+  else
+    print t
+  end
+
+  print COLOR_OFF if latr
+  puts
+end
+def tty_output
+  $stdout = StringIO.new
+  yield
+  $stdout.rewind
+  txt = $stdout.read
+  $stdout = STDOUT
+
+  if @color
+    txt.split("\n", -1).each do |li|
+      tty_printline(li)
+    end
+  else
+    puts txt
+  end
+end
+
 if @batch
+  @color = @color && $stdout.tty?
   loop do
     grab_stat
     calc_speed
     calc_cpu
-    select_output
+    puts "#{hostname} - irqtop - #{Time.now}"
+    tty_output {
+      select_output
+    }
     $stdout.flush
-    sleep delay
+    break if @count && (@count -= 1) == 0
+    sleep @delay
   end
   exit 0
 end
@@ -278,7 +345,6 @@ Curses.init_pair(3, Curses::COLOR_CYAN,   Curses::COLOR_BLACK);
 Curses.init_pair(4, Curses::COLOR_RED,    Curses::COLOR_BLACK);
 $stdscr = Curses.stdscr
 $stdscr.keypad(true)
-hostname = `hostname`.strip
 
 def curses_printline(t)
   latr = nil # line color
@@ -360,7 +426,7 @@ loop do
    select_output
   }
 
-  Curses.timeout = delay * 1000
+  Curses.timeout = @delay * 1000
   ch = Curses.getch.chr rescue nil
   case ch
   when "\f"
@@ -383,7 +449,7 @@ loop do
     @showall = !@showall
   when 'd'
     d = curses_enter("Enter display interval: ")
-    delay = d.to_f if d.to_f > 0
+    @delay = d.to_f if d.to_f > 0
   when 'h', '?'
     curses_output { show_help }
     Curses.timeout = -1
