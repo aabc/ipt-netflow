@@ -280,6 +280,41 @@ $stdscr = Curses.stdscr
 $stdscr.keypad(true)
 hostname = `hostname`.strip
 
+def curses_printline(t)
+  latr = nil # line color
+  if t =~ /-rx-/
+    latr = Curses.color_pair(1)
+  elsif t =~ /-tx-/
+    latr = Curses.color_pair(2)
+  elsif t =~ /\beth/
+    latr = Curses.color_pair(3)
+  end
+  $stdscr.attron(latr)  if latr
+
+  if t =~ /cpuUtil:|irq:|sirq:/
+    # colorize percentage values
+    t.scan(/\s+\S+/) do |e|
+      eatr = nil
+      if e =~ /^\s*[\d.]+$/
+	if e.to_i >= 90
+	  eatr = Curses.color_pair(4)
+	elsif e.to_i <= 10
+	  eatr = Curses.color_pair(1)
+	else
+	  eatr = Curses.color_pair(2)
+	end
+      end
+      $stdscr.attron(eatr)  if eatr
+      $stdscr.addstr("#{e}")
+      $stdscr.attroff(eatr) if eatr
+    end
+  else
+    $stdscr.addstr("#{t}\n")
+  end
+
+  $stdscr.attroff(latr) if latr
+end
+
 def curses_output
   $stdout = StringIO.new
   yield
@@ -290,17 +325,7 @@ def curses_output
   if @color
     txt.split("\n", -1).each_with_index do |li, i|
       $stdscr.setpos(i, 0)
-      atr = nil
-      if li =~ /-rx-/
-	atr = Curses.color_pair(1)
-      elsif li =~ /-tx-/
-	atr = Curses.color_pair(2)
-      elsif li =~ /\beth/
-	atr = Curses.color_pair(3)
-      end
-      $stdscr.attron(atr) if atr
-      $stdscr.addstr("#{li}\n")
-      $stdscr.attroff(atr) if atr
+      curses_printline(li)
     end
   else
     $stdscr.setpos(0, 0)
