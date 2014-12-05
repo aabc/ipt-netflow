@@ -23,7 +23,8 @@ GetoptLong.new(
     ["--irq",      "-i", GetoptLong::NO_ARGUMENT],
     ["--irqs",           GetoptLong::NO_ARGUMENT],
     ["--reverse",  "-r", GetoptLong::NO_ARGUMENT],
-    ["--pps",      "-p", GetoptLong::NO_ARGUMENT]
+    ["--nocolor",  "-C", GetoptLong::NO_ARGUMENT],
+    ["--pps", "--eth", "-p", GetoptLong::NO_ARGUMENT]
 ).each do |opt, arg|
   case opt
   when '--help'
@@ -32,7 +33,7 @@ GetoptLong.new(
     puts "    -d  --delay=n  refresh interval"
     puts "    -s  --softirq  select softirqs only"
     puts "    -i  --irq      select hardware irqs only"
-    puts "    -p  --pps      show pps stat (from ethtool)"
+    puts "    -p  --pps      show eth stats (from ethtool)"
     puts "    -x  --table    output in table mode (default)"
     puts "    -t  --top      output in flat top mode"
     puts "    -b  --batch    output non-interactively"
@@ -57,6 +58,8 @@ GetoptLong.new(
     @imode = :soft
   when /--pps/
     @pps = true
+  when /--nocolor/
+    @color = false
   end
 end
 if !@delay && ARGV[0].to_f > 0
@@ -152,8 +155,8 @@ end
 def e_queue_stat(dev, qdir, qnr, k)
   n = @est[dev][qdir][qnr][k]
   o = @esto[dev][qdir][qnr][k]
-  r = (n - o) / @edt
-  "%s:%d" % [qdir, r]
+  d = (n - o) / @edt
+  "%s:%d" % [qdir, d]
 end
 
 def e_dev_stat(dev, k, ks)
@@ -164,6 +167,33 @@ def e_dev_stat(dev, k, ks)
   "%s:%d" % [ks, r]
 end
 
+def e_queue_stat_err(dev, qnr)
+  r = []
+  ['rx', 'tx'].each do |qdir|
+    ek = @est[dev][qdir][qnr].keys.reject{|e| e =~ /^(bytes|packets)$/}
+    ek.each do |k|
+      n = @est[dev][qdir][qnr][k]
+      o = @esto[dev][qdir][qnr][k]
+      d = n - o
+      r << "%s_%s:%d" % [qdir, k, d] if d.to_i > 0
+    end
+  end
+  r
+end
+
+# this is not rate
+def e_dev_stat_sum(dev, rk, ks)
+  ek = @est[dev].keys.reject{|ek| !(ek =~ rk)}
+  n = ek.inject(0) {|sum,k| sum += @est[dev][k].to_i}
+  o = ek.inject(0) {|sum,k| sum += @esto[dev][k].to_i rescue 0}
+  r = (n - o)
+  if r > 0
+    "%s:%d" % [ks, r]
+  else
+    nil
+  end
+end
+
 def print_ethstat(desc)
   return unless @esto && @est && !@devlist.empty?
   dev = desc[/\b(#{@devre})\b/, 1]
@@ -172,14 +202,17 @@ def print_ethstat(desc)
   if desc =~ /-(tx|rx)+-\d+/i
     qnr = desc[/-(\d+)\s*$/, 1]
     if qnr
-      k = "packets"
-      t << e_queue_stat(dev, "rx", qnr, k) if desc =~ /rx/i
-      t << e_queue_stat(dev, "tx", qnr, k) if desc =~ /tx/i
+      t << e_queue_stat(dev, "rx", qnr, "packets") if desc =~ /rx/i
+      t << e_queue_stat(dev, "tx", qnr, "packets") if desc =~ /tx/i
+      t += e_queue_stat_err(dev, qnr)
     end
   else
     t << e_dev_stat(dev, "rx_packets", 'rx')
     t << e_dev_stat(dev, "tx_packets", 'tx')
+    t << e_dev_stat_sum(dev, /_err/, 'err')
+    t << e_dev_stat_sum(dev, /_drop/, 'drop')
   end
+  t.delete(nil)
   print ' [' + t.join(' ') + ']'
 end
 
@@ -383,6 +416,28 @@ def tty_printline(t)
       print e
       print (latr)? latr : COLOR_OFF if eatr
     end
+  elsif latr && t =~ / \[[^\]]+\]$/
+    # colorize eth stats
+    print $`
+    print COLOR_OFF if latr
+    $&.scan(/(.*?)(\w+)(:)(\d+)/) do |e|
+      eatr = nil
+      case e[1]
+      when 'rx'
+	eatr = COLOR_GREEN
+      when 'tx'
+	eatr = COLOR_YELLOW
+      else
+	eatr = COLOR_RED
+      end
+      eatr = nil if e[3].to_i == 0
+
+      print e[0]
+      print eatr if eatr
+      print e[1..-1].join
+      print (latr)? latr : COLOR_OFF if eatr
+    end
+    print $'
   else
     print t
   end
@@ -391,18 +446,18 @@ def tty_printline(t)
   puts
 end
 def tty_output
-  $stdout = StringIO.new
-  yield
-  $stdout.rewind
-  txt = $stdout.read
-  $stdout = STDOUT
-
   if @color
+    $stdout = StringIO.new
+    yield
+    $stdout.rewind
+    txt = $stdout.read
+    $stdout = STDOUT
+
     txt.split("\n", -1).each do |li|
       tty_printline(li)
     end
   else
-    puts txt
+    yield
   end
 end
 
@@ -463,6 +518,28 @@ def curses_printline(t)
       $stdscr.addstr("#{e}")
       $stdscr.attroff(eatr) if eatr
     end
+  elsif latr && t =~ / \[[^\]]+\]$/
+    # colorize eth stats
+    $stdscr.addstr($`)
+    $stdscr.attroff(latr) if latr
+    $&.scan(/(.*?)(\w+)(:)(\d+)/) do |e|
+      eatr = nil
+      case e[1]
+      when 'rx'
+	eatr = Curses.color_pair(1)
+      when 'tx'
+	eatr = Curses.color_pair(2)
+      else
+	eatr = Curses.color_pair(4)
+      end
+      eatr = nil if e[3].to_i == 0
+
+      $stdscr.addstr(e[0])
+      $stdscr.attron(eatr)  if eatr
+      $stdscr.addstr(e[1..-1].join)
+      $stdscr.attroff(eatr) if eatr
+    end
+    $stdscr.addstr($' + "\n")
   else
     $stdscr.addstr("#{t}\n")
   end
