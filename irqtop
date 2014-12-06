@@ -10,6 +10,7 @@ require 'stringio'
 @imode = :both
 @omode = :table
 @color = true
+@showrps = false
 
 GetoptLong.new(
     ["--help",     "-h", GetoptLong::NO_ARGUMENT],
@@ -24,20 +25,27 @@ GetoptLong.new(
     ["--irqs",           GetoptLong::NO_ARGUMENT],
     ["--reverse",  "-r", GetoptLong::NO_ARGUMENT],
     ["--nocolor",  "-C", GetoptLong::NO_ARGUMENT],
-    ["--pps", "--eth", "-p", GetoptLong::NO_ARGUMENT]
+    ["--eth",      "-e", "--pps", GetoptLong::NO_ARGUMENT],
+    ["--rps",      "-R", "--xps", GetoptLong::NO_ARGUMENT]
 ).each do |opt, arg|
   case opt
   when '--help'
     puts " Shows interrupt rates (per second) per cpu."
-    puts " Usage: #{$0} [-h] [-d #{delay}] [-b] [-t|-x] [-i|-s] [-r]"
+    puts " Also shows irq affinity ('.' for disabled cpus),"
+    puts " and rps/xps affinity ('+' rx, '-' tx, '*' tx/rx)."
+    puts " Can show packet rate per eth queue."
+    puts
+    puts " Usage: #{$0} [-h] [-d #{@delay}] [-b] [-t|-x] [-i|-s] [-r]"
     puts "    -d  --delay=n  refresh interval"
     puts "    -s  --softirq  select softirqs only"
     puts "    -i  --irq      select hardware irqs only"
-    puts "    -p  --pps      show eth stats (from ethtool)"
+    puts "    -e  --eth      show extra eth stats (from ethtool)"
+    puts "    -R  --rps      enable display of rps/xps"
     puts "    -x  --table    output in table mode (default)"
     puts "    -t  --top      output in flat top mode"
     puts "    -b  --batch    output non-interactively"
     puts "    -r  --reverse  reverse sort order"
+    puts "    -C  --nocolor  disable colors"
     puts
     puts " Rates marked as '.' is forbidden by smp_affinity mask."
     exit 0
@@ -60,6 +68,8 @@ GetoptLong.new(
     @pps = true
   when /--nocolor/
     @color = false
+  when /--rps/
+    @showrps = !@showrps
   end
 end
 if !@delay && ARGV[0].to_f > 0
@@ -116,6 +126,31 @@ def net_devices_pci
   end.map {|f| File.basename(f)}
 end
 
+@devlist = net_devices_pci
+@devre = Regexp.union(@devlist)
+def get_rps(desc)
+  @rps = @xps = 0
+  return unless @showrps
+  return if @devlist.empty?
+  dev = desc[/\b(#{@devre})\b/, 1]
+  return unless dev
+  return unless desc =~ /-(tx|rx)+-\d+/i
+  qnr = desc[/-(\d+)\s*$/, 1]
+  return unless qnr
+  begin
+    @rps = IO.read("/sys/class/net/#{dev}/queues/rx-#{qnr}/rps_cpus").hex if desc =~ /rx/i
+    @xps = IO.read("/sys/class/net/#{dev}/queues/tx-#{qnr}/xps_cpus").hex if desc =~ /tx/i
+  rescue
+  end
+end
+
+def calc_rps(cpu)
+  m = 0
+  m |= 1 if @rps & (1 << cpu) != 0
+  m |= 2 if @xps & (1 << cpu) != 0
+  " +-*".slice(m, 1)
+end
+
 # ethtool -S eth0
 def ethtool_grab_stat(dev = nil)
   unless dev
@@ -156,7 +191,11 @@ def e_queue_stat(dev, qdir, qnr, k)
   n = @est[dev][qdir][qnr][k]
   o = @esto[dev][qdir][qnr][k]
   d = (n - o) / @edt
-  "%s:%d" % [qdir, d]
+  if d > 0
+    "%s:%d" % [qdir, d]
+  else
+    nil
+  end
 end
 
 def e_dev_stat(dev, k, ks)
@@ -262,7 +301,7 @@ def calc_speed
 end
 
 def calc_cpu
-  @cBusy = Hash.new(0)
+  @cBusy  = Hash.new(0)
   @cHIrq  = Hash.new(0)
   @cSIrq  = Hash.new(0)
   # user, nice, system, [3] idle, [4] iowait, irq, softirq, etc.
@@ -284,7 +323,11 @@ def show_top
   rej = 'i' if @imode == :soft
   @s.each do |s, v, t, i, c, d|
     next if t == rej
-    puts "%9.1f  %s  %s  %s  %s" % [s, c.downcase, t, i, d] if s > 0
+    if s > 0
+      print "%9.1f  %s  %s  <%s>  %s" % [s, c.downcase, t, i, d]
+      print_ethstat(d) if @pps
+      puts
+    end
   end
 end
 
@@ -325,17 +368,19 @@ def show_interrupts
       @ifilter[[t, i]] = true
     end
 
-    print "%s %*s: " % [t.to_s, maxlen, i.slice(0, maxlen)]
+    print "%s %*s:  " % [t.to_s, maxlen, i.slice(0, maxlen)]
+    rps = get_rps(desc)
     @icpus.each do |c|
       cpu = c[/\d+/].to_i
       aff = @aff[i.to_i]
       off = ((aff & 1 << cpu) ==0)? true : false if aff
+      fla = calc_rps(cpu)
       begin
 	v = @h[[t, i, c]]
 	if v > 0 || !off
-	  print " %6d" % v
+	  print "%6d%c" % [v, fla]
 	elsif aff
-	  print " %6s" % "."
+	  print "%6s%c" % [".", fla]
 	end
       rescue
       end
@@ -371,12 +416,14 @@ def show_help
   puts "  Interactive keys:"
   puts "    i     Toggle (hardware) irqs view"
   puts "    s     Toggle software irqs (softirqs) view"
-  puts "    p     Show eth stat per queue"
+  puts "    e     Show eth stat per queue"
+  puts "    R     Show rps/xps affinity"
   puts "    t     Flat top display mode"
   puts "    x     Table display mode"
   puts "    r     Reverse rows order"
   puts "    c     Toggle colors (for eth)"
   puts "    a     Show lines with zero rate (all)"
+  puts "    A     Clear lines with zero rates"
   puts "    .     Pause screen updating"
   puts "    h,?   This help screen"
   puts "    q     Quit."
@@ -614,14 +661,19 @@ loop do
     @omode = (@omode == :top)? :table : :top
   when 'x'
     @omode = (@omode == :table)? :top : :table
-  when 'p'
+  when 'e', 'p'
     @pps = !@pps
   when 'r'
     @reverse = !@reverse
   when 'c'
     @color = !@color
+  when 'A'
+    @ifilter = {}
   when 'a'
+    @ifilter = {}
     @showall = !@showall
+  when 'R'
+    @showrps = !@showrps
   when '.'
     curses_enter("Pause, press enter to to continue: ", false)
   when 'd'
