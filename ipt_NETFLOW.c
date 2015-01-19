@@ -655,6 +655,44 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	    inactive_timeout,
 	    maxflows);
 
+	for_each_present_cpu(cpu) {
+		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
+
+		t.searched	+= st->searched;
+		t.found		+= st->found;
+		t.notfound	+= st->notfound;
+		t.pkt_total	+= st->pkt_total;
+		t.traf_total	+= st->traf_total;
+#ifdef ENABLE_PROMISC
+		t.pkt_promisc	+= st->pkt_promisc;
+		t.pkt_promisc_drop += st->pkt_promisc_drop;
+#endif
+		t.truncated	+= st->truncated;
+		t.frags		+= st->frags;
+		t.maxflows_err	+= st->maxflows_err;
+		t.alloc_err	+= st->alloc_err;
+		t.send_failed	+= st->send_failed;
+		t.sock_cberr	+= st->sock_cberr;
+
+		t.exported_rate	+= st->exported_rate;
+		t.exported_pkt	+= st->exported_pkt;
+		t.exported_flow	+= st->exported_flow;
+		t.exported_traf	+= st->exported_traf;
+
+		t.pkt_total_rate += st->pkt_total_rate;
+		t.pkt_drop	+= st->pkt_drop;
+		t.traf_drop	+= st->traf_drop;
+		t.pkt_lost	+= st->pkt_lost;
+		t.traf_lost	+= st->traf_lost;
+		t.flow_lost	+= st->flow_lost;
+		t.pkt_out	+= st->pkt_out;
+		t.traf_out	+= st->traf_out;
+#ifdef ENABLE_SAMPLER
+		t.pkts_observed	+= st->pkts_observed;
+		t.pkts_selected	+= st->pkts_selected;
+#endif
+	}
+
 #ifdef ENABLE_SAMPLER
 	if (get_sampler_mode()) {
 		seq_printf(seq, "Flow sampling mode %s one-out-of %u.",
@@ -706,44 +744,6 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		   wk_llist,
 #endif
 		   wk_cpu);
-
-	for_each_present_cpu(cpu) {
-		struct ipt_netflow_stat *st = &per_cpu(ipt_netflow_stat, cpu);
-
-		t.searched	+= st->searched;
-		t.found		+= st->found;
-		t.notfound	+= st->notfound;
-		t.pkt_total	+= st->pkt_total;
-		t.traf_total	+= st->traf_total;
-#ifdef ENABLE_PROMISC
-		t.pkt_promisc	+= st->pkt_promisc;
-		t.pkt_promisc_drop += st->pkt_promisc_drop;
-#endif
-		t.truncated	+= st->truncated;
-		t.frags		+= st->frags;
-		t.maxflows_err	+= st->maxflows_err;
-		t.alloc_err	+= st->alloc_err;
-		t.send_failed	+= st->send_failed;
-		t.sock_cberr	+= st->sock_cberr;
-
-		t.exported_rate	+= st->exported_rate;
-		t.exported_pkt	+= st->exported_pkt;
-		t.exported_flow	+= st->exported_flow;
-		t.exported_traf	+= st->exported_traf;
-
-		t.pkt_total_rate += st->pkt_total_rate;
-		t.pkt_drop	+= st->pkt_drop;
-		t.traf_drop	+= st->traf_drop;
-		t.pkt_lost	+= st->pkt_lost;
-		t.traf_lost	+= st->traf_lost;
-		t.flow_lost	+= st->flow_lost;
-		t.pkt_out	+= st->pkt_out;
-		t.traf_out	+= st->traf_out;
-#ifdef ENABLE_SAMPLER
-		t.pkts_observed	+= st->pkts_observed;
-		t.pkts_selected	+= st->pkts_selected;
-#endif
-	}
 
 	seq_printf(seq, "Hash: size %u (mem %uK), metric %d.%02d [%d.%02d, %d.%02d, %d.%02d]."
 	    " InHash: %llu pkt, %llu K, InPDU %llu, %llu.\n",
