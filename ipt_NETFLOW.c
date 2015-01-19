@@ -1270,6 +1270,7 @@ static struct packet_type promisc6_packet_type __read_mostly = {
 	.func = promisc6_rcv,
 };
 
+/* should not have promisc passed as parameter */
 static int switch_promisc(int newpromisc)
 {
 	newpromisc = !!newpromisc;
@@ -5365,7 +5366,12 @@ static int __init ipt_netflow_init(void)
 #endif
 
 #ifdef ENABLE_PROMISC
-	switch_promisc(promisc);
+	{
+		int newpromisc = promisc;
+
+		promisc = 0;
+		switch_promisc(newpromisc);
+	}
 #endif
 
 	netflow_switch_version(protocol);
