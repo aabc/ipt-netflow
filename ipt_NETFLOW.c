@@ -1753,7 +1753,7 @@ static void sk_error_report(struct sock *sk)
 	return;
 }
 
-static struct socket *_usock_alloc(const __be32 ipaddr, const unsigned short port, void *u)
+static struct socket *usock_open_sock(const __be32 ipaddr, const unsigned short port, void *u)
 {
 	struct sockaddr_in sin;
 	struct socket *sock;
@@ -1788,7 +1788,7 @@ static struct socket *_usock_alloc(const __be32 ipaddr, const unsigned short por
 
 static void usock_connect(struct ipt_netflow_sock *usock, const int sendmsg)
 {
-	usock->sock = _usock_alloc(usock->ipaddr, usock->port, usock);
+	usock->sock = usock_open_sock(usock->ipaddr, usock->port, usock);
 	if (usock->sock) {
 		if (sendmsg || debug)
 			printk(KERN_INFO "ipt_NETFLOW: connected %u.%u.%u.%u:%u\n",
@@ -1805,6 +1805,13 @@ static void usock_connect(struct ipt_netflow_sock *usock, const int sendmsg)
 	atomic_set(&usock->wmem_peak, 0);
 	usock->err_full = 0;
 	usock->err_other = 0;
+}
+
+static void usock_close(struct ipt_netflow_sock *usock)
+{
+	if (usock->sock)
+		sock_release(usock->sock);
+	usock->sock = NULL;
 }
 
 ktime_t ktime_get_real(void);
@@ -1845,10 +1852,15 @@ static void netflow_sendmsg(void *buffer, const int len)
 			if (ret == -EAGAIN) {
 				usock->err_full++;
 				suggestion = ": increase sndbuf!";
-			} else if (ret == -ENETUNREACH) {
-				suggestion = ": network is unreachable.";
-			} else
+			} else {
 				usock->err_other++;
+				if (ret == -ENETUNREACH) {
+					suggestion = ": network is unreachable.";
+				} else if (ret == -EINVAL) {
+					usock_close(usock);
+					suggestion = ": will reconnect.";
+				}
+			}
 			printk(KERN_ERR "ipt_NETFLOW: sendmsg[%d] error %d: data loss %llu pkt, %llu bytes%s\n",
 			       snum, ret, pdu_packets, pdu_traf, suggestion);
 		} else {
@@ -1879,9 +1891,7 @@ static void usock_close_free(struct ipt_netflow_sock *usock)
 	printk(KERN_INFO "ipt_NETFLOW: removed destination %u.%u.%u.%u:%u\n",
 	       HIPQUAD(usock->ipaddr),
 	       usock->port);
-	if (usock->sock)
-		sock_release(usock->sock);
-	usock->sock = NULL;
+	usock_close(usock);
 	vfree(usock);
 }
 
