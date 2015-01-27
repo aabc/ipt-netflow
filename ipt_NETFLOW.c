@@ -5282,25 +5282,27 @@ static int __init ipt_netflow_init(void)
 		IPT_NETFLOW_VERSION, THIS_MODULE->srcversion);
 
 	version_string_size = scnprintf(version_string, sizeof(version_string),
-		    "ipt_NETFLOW " IPT_NETFLOW_VERSION " %s", THIS_MODULE->srcversion);
+		"ipt_NETFLOW " IPT_NETFLOW_VERSION " %s", THIS_MODULE->srcversion);
 	tpl_element_sizes[observationDomainName] = version_string_size + 1;
 
 	start_ts.first = ktime_get_real();
 	clear_ipt_netflow_stat();
 
-	/* determine hash size (idea from nf_conntrack_core.c) */
 	if (!hashsize) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,11,0)
 #define num_physpages totalram_pages
 #endif
-		hashsize = (((num_physpages << PAGE_SHIFT) / 16384)
-					 / sizeof(struct hlist_head));
-		if (num_physpages > (1024 * 1024 * 1024 / PAGE_SIZE))
-			hashsize = 8192;
+		/* use 1/1024 of memory, 1M for hash table on 1G box */
+		unsigned long memksize = (num_physpages << PAGE_SHIFT) / 1024;
+
+		if (memksize > (5 * 1024 * 1024))
+			memksize = 5 * 1024 * 1024;
+		hashsize = memksize / sizeof(struct hlist_head);
 	}
 	if (hashsize < LOCK_COUNT)
 		hashsize = LOCK_COUNT;
-	printk(KERN_INFO "ipt_NETFLOW: hashsize %u\n", hashsize);
+	printk(KERN_INFO "ipt_NETFLOW: hashsize %u (%luK)\n", hashsize,
+		hashsize * sizeof(struct hlist_head) / 1024);
 
 	htable_size = hashsize;
 	htable = alloc_hashtable(htable_size);
