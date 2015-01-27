@@ -2567,22 +2567,24 @@ struct base_template {
 #define BTPL_MASK4	0x00000008	/* Aggregated */
 #define BTPL_PORTS	0x00000010	/* UDP&TCP */
 #define BTPL_IP6	0x00000020	/* IPv6 */
-#define BTPL_ICMP	0x00000040	/* ICMP */
-#define BTPL_IGMP	0x00000080	/* IGMP */
-#define BTPL_IPSEC	0x00000100	/* AH&ESP */
-#define BTPL_NAT4	0x00000200	/* NAT IPv4 */
-#define BTPL_LABEL6	0x00000400	/* IPv6 flow label */
-#define BTPL_IP4OPTIONS	0x00000800	/* IPv4 Options */
-#define BTPL_IP6OPTIONS	0x00001000	/* IPv6 Options */
-#define BTPL_TCPOPTIONS	0x00002000	/* TCP Options */
-#define BTPL_MAC	0x00004000	/* MAC addresses */
-#define BTPL_VLAN9	0x00008000	/* outer VLAN for v9 */
-#define BTPL_VLANX	0x00010000	/* outer VLAN for IPFIX */
-#define BTPL_VLANI	0x00020000	/* inner VLAN (IPFIX) */
-#define BTPL_ETHERTYPE	0x00040000	/* ethernetType */
-#define BTPL_DIRECTION	0x00080000	/* flowDirection */
-#define BTPL_SAMPLERID	0x00100000	/* samplerId (v9) */
-#define BTPL_SELECTORID	0x00200000	/* selectorId (IPFIX) */
+#define BTPL_ICMP9	0x00000040	/* ICMP (for V9) */
+#define BTPL_ICMPX4	0x00000080	/* ICMP IPv4 (for IPFIX) */
+#define BTPL_ICMPX6	0x00000100	/* ICMP IPv6 (for IPFIX) */
+#define BTPL_IGMP	0x00000200	/* IGMP */
+#define BTPL_IPSEC	0x00000400	/* AH&ESP */
+#define BTPL_NAT4	0x00000800	/* NAT IPv4 */
+#define BTPL_LABEL6	0x00001000	/* IPv6 flow label */
+#define BTPL_IP4OPTIONS	0x00002000	/* IPv4 Options */
+#define BTPL_IP6OPTIONS	0x00004000	/* IPv6 Options */
+#define BTPL_TCPOPTIONS	0x00008000	/* TCP Options */
+#define BTPL_MAC	0x00010000	/* MAC addresses */
+#define BTPL_VLAN9	0x00020000	/* outer VLAN for v9 */
+#define BTPL_VLANX	0x00040000	/* outer VLAN for IPFIX */
+#define BTPL_VLANI	0x00080000	/* inner VLAN (IPFIX) */
+#define BTPL_ETHERTYPE	0x00100000	/* ethernetType */
+#define BTPL_DIRECTION	0x00200000	/* flowDirection */
+#define BTPL_SAMPLERID	0x00400000	/* samplerId (v9) */
+#define BTPL_SELECTORID	0x00800000	/* selectorId (IPFIX) */
 #define BTPL_OPTION	0x80000000	/* Options Template */
 #define BTPL_MAX	32
 /* Options Templates */
@@ -2706,8 +2708,15 @@ static struct base_template template_ports = {
 		0
 	}
 };
-static struct base_template template_icmp = {
-	.types = { ICMP_TYPE, 0 }
+static struct base_template template_icmp_v9 = {
+	/* it's turned out that nobody is supporting ICMP_TYPE(32) */
+	.types = { L4_DST_PORT, 0 }
+};
+static struct base_template template_icmp_ipv4 = {
+	.types = { icmpTypeCodeIPv4, 0 }
+};
+static struct base_template template_icmp_ipv6 = {
+	.types = { icmpTypeCodeIPv6, 0 }
 };
 static struct base_template template_igmp = {
 	.types = { MUL_IGMP_TYPE, 0 }
@@ -2925,7 +2934,7 @@ static struct data_template *get_template(const unsigned int tmask)
 
 	tnum = 0;
 	/* assemble array of base_templates from template key */
-	/* NB: this should not have protocol dependent checks */
+	/* NB: this should not have exporting protocol dependent checks */
 	if (tmask & BTPL_OPTION) {
 		switch (tmask) {
 		case OTPL_SYSITIME:
@@ -2968,24 +2977,28 @@ static struct data_template *get_template(const unsigned int tmask)
 				tlist[tnum++] = &template_options4;
 			if (tmask & BTPL_MASK4)
 				tlist[tnum++] = &template_ipv4_mask;
+			if (tmask & BTPL_ICMPX4)
+				tlist[tnum++] = &template_icmp_ipv4;
 		} else if (tmask & BTPL_IP6) {
 			tlist[tnum++] = &template_ipv6;
 			if (tmask & BTPL_LABEL6)
 				tlist[tnum++] = &template_label6;
 			if (tmask & BTPL_IP6OPTIONS)
 				tlist[tnum++] = &template_options6;
+			if (tmask & BTPL_ICMPX6)
+				tlist[tnum++] = &template_icmp_ipv6;
 		} else if (tmask & BTPL_NAT4)
 			tlist[tnum++] = &template_nat4;
 		if (tmask & BTPL_PORTS)
 			tlist[tnum++] = &template_ports;
+		else if (tmask & BTPL_ICMP9)
+			tlist[tnum++] = &template_icmp_v9;
 		if (tmask & BTPL_BASE9)
 			tlist[tnum++] = &template_base_9;
 		else if (tmask & BTPL_BASEIPFIX)
 			tlist[tnum++] = &template_base_ipfix;
 		if (tmask & BTPL_TCPOPTIONS)
 			tlist[tnum++] = &template_tcpoptions;
-		if (tmask & BTPL_ICMP)
-			tlist[tnum++] = &template_icmp;
 		if (tmask & BTPL_IGMP)
 			tlist[tnum++] = &template_igmp;
 		if (tmask & BTPL_IPSEC)
@@ -3297,10 +3310,11 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 	case tcpOptions:      put_unaligned_be32(nf->tcpoptions, ptr); break;
 	case ipv4Options:     put_unaligned_be32(nf->options, ptr); break;
 	case IPV6_OPTION_HEADERS:
-			     put_unaligned_be16(nf->options, ptr); break;
+			      put_unaligned_be16(nf->options, ptr); break;
 	case SRC_MASK:	               *ptr = nf->s_mask; break;
 	case DST_MASK:	               *ptr = nf->d_mask; break;
-	case ICMP_TYPE:	     put_unaligned(nf->tuple.d_port, (__be16 *)ptr); break;
+	case icmpTypeCodeIPv4:	/*FALLTHROUGH*/
+	case icmpTypeCodeIPv6:	put_unaligned(nf->tuple.d_port, (__be16 *)ptr); break;
 	case MUL_IGMP_TYPE:            *ptr = nf->tuple.d_port; break;
 #ifdef CONFIG_NF_NAT_NEEDED
 	case postNATSourceIPv4Address:	       put_unaligned(nf->nat->post.s_addr, (__be32 *)ptr); break;
@@ -3459,9 +3473,15 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 		    nf->tuple.protocol == IPPROTO_SCTP ||
 		    nf->tuple.protocol == IPPROTO_UDPLITE))
 		tpl_mask |= BTPL_PORTS;
-	else if (nf->tuple.protocol == IPPROTO_ICMP)
-		tpl_mask |= BTPL_ICMP;
-	else if (nf->tuple.protocol == IPPROTO_IGMP)
+	else if (nf->tuple.protocol == IPPROTO_ICMP ||
+		 nf->tuple.protocol == IPPROTO_ICMPV6) {
+		if (protocol == 9)
+			tpl_mask |= BTPL_ICMP9;
+		else if (likely(nf->tuple.l3proto == AF_INET))
+			tpl_mask |= BTPL_ICMPX4;
+		else
+			tpl_mask |= BTPL_ICMPX6;
+	} else if (nf->tuple.protocol == IPPROTO_IGMP)
 		tpl_mask |= BTPL_IGMP;
         else if (nf->tuple.protocol == IPPROTO_AH ||
                     nf->tuple.protocol == IPPROTO_ESP)

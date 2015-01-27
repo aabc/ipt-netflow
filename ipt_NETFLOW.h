@@ -117,6 +117,7 @@ struct netflow5_pdu {
 	two(82,  IF_NAME, interfaceName, IF_NAME_SZ) \
 	two(83,  IF_DESC, interfaceDescription, IF_DESC_SZ) \
 	one(138, observationPointId, 4) \
+	one(139, icmpTypeCodeIPv6, 2) \
 	one(141, LineCardId, 4) \
 	one(142, portId, 4) \
 	one(143, meteringProcessId, 4) \
