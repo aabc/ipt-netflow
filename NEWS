@@ -1,0 +1,61 @@
+ipt-netflow NEWS
+================
+
+2.0.1 (2014-09-04)
+
+    * Minor fixes for 2.0 release.
+
+2.0 (2014-08-07)
+
+    * This is major release with a lot of new features and improvements, such
+      as:
+	- Support of NetFlow v9 and IPFIX.
+	- IPv6 support.
+	- NAT translation events (NEL).
+	- Additional options is SNMP-index translation rules, Ethernet Type,
+	  VLAN, and MAC addresses exporting.
+        - Performance improvements (tested to work well on 10Gbit load).
+	- Stability improvements and bug fixes.
+
+1.8 (2012-07-02)
+
+    * This is minor bug fix release with small improvements.
+
+1.7.1 (2011-04-04)
+
+    * This is minor release with improved compilation compatibility and small
+      improvements.
+
+1.7 (2011-01-30)
+
+    * This version have improved compilation compatibility with latest Linux
+      kernels (2.6.36.3 and 2.6.27) and bunch of small improvements.
+
+    * Since version 1.7 ipt-netflow's repository moved to Git SCM. Use of CVS
+      repository is deprecated.
+
+1.5.1 (2009-03-14)
+
+    * This version have improved compliance to NetFlow standard and
+      compatibility with iptables/xtables 1.4.x. Added options to configure
+      script for manual customization.
+
+1.4 (2008-12-23)
+
+    * This version have restored compatibility with popular kernel 2.6.18,
+      added configure script, statistics improvements, some fixes for 64-bit
+      platforms, and minor performance tune up.
+
+1.2 (2008-11-15)
+
+    * This version have stability enhancements, documentation improvements, IP
+      frag support, better statistics.
+
+1.1 (2008-08-06)
+
+    * This version updated compatibility with latest (2.6.26) Linux kernel, have
+      more support for promisc patch, and minor fixes.
+
+1.0 (2008-07-12)
+
+    * First release tested in production environment.
