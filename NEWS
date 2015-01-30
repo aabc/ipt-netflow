@@ -1,6 +1,21 @@
 ipt-netflow NEWS
 ================
 
+2.1 (TBA)
+
+    * Options Templates support (V9 and IPFIX). Which let to implement:
+       - Flow Sampling (random, deterministic, and hash modes) for all types
+	 of NetFlow protocols (V5, V9, IPFIX).
+       - Export Statistics (metering, exporting, sampling) and Configuration.
+       - Export Interface list (ifName, ifDescr).
+    * Promisc hack (no need to patch kernel anymore).
+    * SNMP monitoring interface and agent (via net-snmp dlmod).
+    * More compilation compatibility with recent kernels, grsecurity kernels,
+      Gentoo, Debian, Centos. DKMS install support.
+    * Minor features: IPSec flows, Direction Element. Removed support for
+      CONNMARK. Bug fixes and improvements.
+    * irqtop tool (ruby).
+
 2.0.1 (2014-09-04)
 
     * Minor fixes for 2.0 release.
