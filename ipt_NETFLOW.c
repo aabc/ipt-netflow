@@ -2709,8 +2709,13 @@ static struct base_template template_ports = {
 	}
 };
 static struct base_template template_icmp_v9 = {
-	/* it's turned out that nobody is supporting ICMP_TYPE(32) */
-	.types = { L4_DST_PORT, 0 }
+	.types = {
+		L4_SRC_PORT,	/* dummy (required by some collector(s) to
+				   recognize ICMP flows) */
+		L4_DST_PORT,	/* actually used in V9 world instead of
+				   ICMP_TYPE(32), disregarding docs */
+		0
+	}
 };
 static struct base_template template_icmp_ipv4 = {
 	.types = { icmpTypeCodeIPv4, 0 }
