@@ -4709,6 +4709,8 @@ static unsigned int netflow_target(
 #endif
 #ifdef ENABLE_VLAN
 	tuple.tag2 = tuple.tag1 = 0;
+	if (vlan_tx_tag_present(skb))
+		tuple.tag1 = htons(vlan_tx_tag_get(skb));
 	ethernetType = parse_vlan_tags(skb, &tuple);
 #endif
 
