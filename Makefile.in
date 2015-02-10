@@ -113,3 +113,8 @@ unload:
 	-rmmod ipt_NETFLOW.ko
 
 reload: unload load
+
+ChangeLog:
+	gitlog-to-changelog > ChangeLog
+.PHONY: ChangeLog
+
