@@ -252,6 +252,7 @@ union nf_inet_addr {
 #define EXTRACT_SPI(tuple)	((tuple.s_port << 16) | tuple.d_port)
 #define SAVE_SPI(tuple, spi)	{ tuple.s_port = spi >> 16; \
 				  tuple.d_port = spi; }
+#define MAX_VLAN_TAGS	2
 
 /* hashed data which identify unique flow */
 /* 16+16 + 2+2 + 2+1+1+1 = 41 */
@@ -262,8 +263,7 @@ struct ipt_netflow_tuple {
 	__be16		d_port; // -"-
 	__u16		i_ifc;	// Host byte order
 #ifdef ENABLE_VLAN
-	__be16		tag1;	// Network byte order (outer tag)
-	__be16		tag2;	// -"-
+	__be16		tag[MAX_VLAN_TAGS]; // Network byte order (outer tag first)
 #endif
 	__u8		protocol;
 	__u8		tos;

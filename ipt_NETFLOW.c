@@ -1013,10 +1013,10 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, " %pM,%pM", &nf->tuple.h_src, &nf->tuple.h_dst);
 #endif
 #ifdef ENABLE_VLAN
-	if (nf->tuple.tag1 || nf->tuple.tag2) {
-		seq_printf(seq, ",%d", ntohs(nf->tuple.tag1));
-		if (nf->tuple.tag2)
-			seq_printf(seq, ",%d", ntohs(nf->tuple.tag2));
+	if (nf->tuple.tag[0] || nf->tuple.tag[1]) {
+		seq_printf(seq, ",%d", ntohs(nf->tuple.tag[0]));
+		if (nf->tuple.tag[1])
+			seq_printf(seq, ",%d", ntohs(nf->tuple.tag[1]));
 	}
 #endif
 #if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
@@ -3357,11 +3357,11 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 #ifdef ENABLE_VLAN
 #define EXTRACT_VLAN_PRIO(tag) ((ntohs(tag) & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT)
 	case SRC_VLAN:
-	case dot1qVlanId:    put_unaligned(nf->tuple.tag1 & htons(VLAN_VID_MASK), (__be16 *)ptr); break;
-	case dot1qPriority:            *ptr = EXTRACT_VLAN_PRIO(nf->tuple.tag1); break;
+	case dot1qVlanId:    put_unaligned(nf->tuple.tag[0] & htons(VLAN_VID_MASK), (__be16 *)ptr); break;
+	case dot1qPriority:            *ptr = EXTRACT_VLAN_PRIO(nf->tuple.tag[0]); break;
 	case dot1qCustomerVlanId:
-			     put_unaligned(nf->tuple.tag2 & htons(VLAN_VID_MASK), (__be16 *)ptr); break;
-	case dot1qCustomerPriority:    *ptr = EXTRACT_VLAN_PRIO(nf->tuple.tag2); break;
+			     put_unaligned(nf->tuple.tag[1] & htons(VLAN_VID_MASK), (__be16 *)ptr); break;
+	case dot1qCustomerPriority:    *ptr = EXTRACT_VLAN_PRIO(nf->tuple.tag[1]); break;
 #endif
 #if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
 	case ethernetType:   put_unaligned(nf->ethernetType, (__be16 *)ptr); break;
@@ -3565,12 +3565,12 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 		tpl_mask |= BTPL_MAC;
 #endif
 #ifdef ENABLE_VLAN
-	if (nf->tuple.tag1) {
+	if (nf->tuple.tag[0]) {
 		if (protocol == 9)
 			tpl_mask |= BTPL_VLAN9;
 		else {
 			tpl_mask |= BTPL_VLANX;
-			if (nf->tuple.tag2)
+			if (nf->tuple.tag[1])
 				tpl_mask |= BTPL_VLANI;
 		}
 	}
@@ -4629,12 +4629,16 @@ static inline struct vlan_ethhdr2 *vlan_eth_hdr2(const struct sk_buff *skb)
 /* http://tools.ietf.org/html/rfc7133 */
 static inline __u16 parse_vlan_tags(const struct sk_buff *skb, struct ipt_netflow_tuple *tuple)
 {
+	int tn;
+	__be16 proto;
+
 	/* no even untagged ethernet header */
 	if (skb_mac_header(skb) < skb->head ||
 	    skb_mac_header(skb) + ETH_HLEN > skb->data)
 		return 0;
 
-	switch (eth_hdr(skb)->h_proto) {
+	proto = eth_hdr(skb)->h_proto;
+	switch (proto) {
 		case htons(ETH_P_QINQ1):
 		case htons(ETH_P_QINQ2):
 		case htons(ETH_P_QINQ3):
@@ -4645,23 +4649,32 @@ static inline __u16 parse_vlan_tags(const struct sk_buff *skb, struct ipt_netflo
 				break;
 			/* FALLTHROUGH */
 		default:
-			return eth_hdr(skb)->h_proto;
+			return proto;
 	}
 
-	/* outer tag */
-	tuple->tag1 = vlan_eth_hdr(skb)->h_vlan_TCI;
+	/* if there is already tag[0] I assume it's from skb->vlan_tci, and
+	 * it isn't present in the frame (that's how vlan_untag() doing it),
+	 * thus, tag we see first is actually second tag. */
+	tn = tuple->tag[0]? 1 : 0;
 
-	switch (vlan_eth_hdr(skb)->h_vlan_encapsulated_proto) {
+	/* outer tag */
+	tuple->tag[tn++] = vlan_eth_hdr(skb)->h_vlan_TCI;
+	proto = vlan_eth_hdr(skb)->h_vlan_encapsulated_proto;
+
+	if (tn >= MAX_VLAN_TAGS)
+		return proto;
+
+	switch (proto) {
 		case htons(ETH_P_8021Q):  /* C-TAG */
 			if (skb_mac_header(skb) + VLAN_ETH_H2LEN <= skb->data)
 				break;
 			/* FALLTHROUGH */
 		default:
-			return vlan_eth_hdr(skb)->h_vlan_encapsulated_proto;
+			return proto;
 	}
 
 	/* second tag */
-	tuple->tag2 = vlan_eth_hdr2(skb)->h2_vlan_TCI;
+	tuple->tag[tn] = vlan_eth_hdr2(skb)->h2_vlan_TCI;
 	return vlan_eth_hdr2(skb)->h2_vlan_encapsulated_proto;
 }
 #endif /* ENABLE_VLAN */
@@ -4773,9 +4786,9 @@ static unsigned int netflow_target(
 	}
 #endif
 #ifdef ENABLE_VLAN
-	tuple.tag2 = tuple.tag1 = 0;
+	tuple.tag[1] = tuple.tag[0] = 0;
 	if (vlan_tx_tag_present(skb))
-		tuple.tag1 = htons(vlan_tx_tag_get(skb));
+		tuple.tag[0] = htons(vlan_tx_tag_get(skb));
 	ethernetType = parse_vlan_tags(skb, &tuple);
 #endif
 
