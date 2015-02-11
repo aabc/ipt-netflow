@@ -4635,7 +4635,7 @@ static inline __u16 parse_vlan_tags(const struct sk_buff *skb, struct ipt_netflo
 	/* no even untagged ethernet header */
 	if (skb_mac_header(skb) < skb->head ||
 	    skb_mac_header(skb) + ETH_HLEN > skb->data)
-		return 0;
+		return skb->protocol;
 
 	proto = eth_hdr(skb)->h_proto;
 	switch (proto) {
