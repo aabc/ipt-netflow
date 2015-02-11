@@ -1244,6 +1244,53 @@ drop:
 	return NET_RX_DROP;
 }
 
+#ifndef ETH_P_8021AD
+#define ETH_P_8021AD	0x88A8	/* 802.1ad Service VLAN */
+#endif
+
+/* source is skb_network_protocol() and __vlan_get_protocol() */
+static __be16 __skb_network_protocol(struct sk_buff *skb, int *depth)
+{
+	__be16 type = skb->protocol;
+	unsigned int vlan_depth;
+
+	if (type == htons(ETH_P_TEB)) {
+		struct ethhdr *eth;
+
+		if (unlikely(!pskb_may_pull(skb, sizeof(struct ethhdr))))
+			return 0;
+
+		eth = (struct ethhdr *)skb_mac_header(skb);
+		type = eth->h_proto;
+	}
+
+	vlan_depth = skb->mac_len;
+	if (type == htons(ETH_P_8021Q) || type == htons(ETH_P_8021AD)) {
+		if (vlan_depth) {
+			if (WARN_ON(vlan_depth < VLAN_HLEN))
+				return 0;
+			vlan_depth -= VLAN_HLEN;
+		} else {
+			vlan_depth = ETH_HLEN;
+		}
+		do {
+			struct vlan_hdr *vh;
+
+			if (unlikely(!pskb_may_pull(skb, vlan_depth + VLAN_HLEN)))
+				return 0;
+
+			vh = (struct vlan_hdr *)(skb->data + vlan_depth);
+			type = vh->h_vlan_encapsulated_proto;
+			vlan_depth += VLAN_HLEN;
+		} while (type == htons(ETH_P_8021Q) ||
+			 type == htons(ETH_P_8021AD));
+	}
+
+	*depth = vlan_depth;
+
+	return type;
+}
+
 static int promisc_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, struct net_device *orig_dev)
 {
 	/* what is not PACKET_OTHERHOST will be processed normally */
@@ -1254,6 +1301,26 @@ static int promisc_rcv(struct sk_buff *skb, struct net_device *dev, struct packe
 
 	if ((skb = skb_share_check(skb, GFP_ATOMIC)) == NULL)
 		goto drop;
+
+	/* Note about vlans:
+	 * - older kernels will pass raw packet;
+	 * - newer kernes (since 3.0) will have one vlan tag
+	 * physically stripped out of the packet, and it will
+	 * be saved into skb->vlan_tci. skb->protocol will be
+	 * untagged etherType. */
+
+	if (skb->protocol == cpu_to_be16(ETH_P_8021Q) ||
+	    skb->protocol == cpu_to_be16(ETH_P_8021AD)) {
+		int vlan_depth = skb->mac_len;
+
+		skb_push(skb, skb->data - skb_mac_header(skb));
+		skb->protocol = __skb_network_protocol(skb, &vlan_depth);
+		skb_pull(skb, vlan_depth);
+
+		skb_reset_network_header(skb);
+		skb_reset_transport_header(skb);
+		skb_reset_mac_len(skb);
+	}
 
 	switch (skb->protocol) {
 	case htons(ETH_P_IP):
@@ -4554,9 +4621,6 @@ static inline struct vlan_ethhdr2 *vlan_eth_hdr2(const struct sk_buff *skb)
 	return (struct vlan_ethhdr2 *)skb_mac_header(skb);
 }
 #define VLAN_ETH_H2LEN	(VLAN_ETH_HLEN + 4)
-#ifndef ETH_P_8021AD
-#define ETH_P_8021AD	0x88A8	/* 802.1ad Service VLAN */
-#endif
 #ifndef ETH_P_QINQ1
 #define ETH_P_QINQ1	0x9100	/* deprecated QinQ VLAN */
 #define ETH_P_QINQ2	0x9200	/* deprecated QinQ VLAN */
