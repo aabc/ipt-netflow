@@ -1145,16 +1145,8 @@ static int promisc4_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 	const struct iphdr *iph;
 	u32 len;
 
-	/* what is not PACKET_OTHERHOST will be parsed at ip_rcv() */
-	if (skb->pkt_type != PACKET_OTHERHOST)
-		goto out;
-
-	NETFLOW_STAT_INC(pkt_promisc);
-
 	/* clone skb and do basic IPv4 sanity checking and preparations
 	 * for L3, this is quick and dirty version of ip_rcv() */
-	if ((skb = skb_share_check(skb, GFP_ATOMIC)) == NULL)
-		goto drop;
 	if (!pskb_may_pull(skb, sizeof(struct iphdr)))
 		goto drop;
 	iph = ip_hdr(skb);
@@ -1179,7 +1171,6 @@ static int promisc4_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 	return NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING, skb, dev, NULL, promisc_finish);
 drop:
 	NETFLOW_STAT_INC(pkt_promisc_drop);
-out:
 	kfree_skb(skb);
 	return NET_RX_DROP;
 }
@@ -1190,18 +1181,11 @@ static int promisc6_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 	u32 pkt_len;
 	struct inet6_dev *idev;
 
-	/* what is not PACKET_OTHERHOST will be parsed at ipv6_rcv() */
-	if (skb->pkt_type != PACKET_OTHERHOST)
-		goto out;
-
-	NETFLOW_STAT_INC(pkt_promisc);
-
 	/* quick and dirty version of ipv6_rcv(), basic sanity checking
 	 * and preparation of skb for later processing */
 	rcu_read_lock();
 	idev = __in6_dev_get(skb->dev);
-	if ((skb = skb_share_check(skb, GFP_ATOMIC)) == NULL ||
-	    !idev || unlikely(idev->cnf.disable_ipv6))
+	if (!idev || unlikely(idev->cnf.disable_ipv6))
 		goto drop;
 	memset(IP6CB(skb), 0, sizeof(struct inet6_skb_parm));
 	IP6CB(skb)->iif = skb_dst(skb) ? ip6_dst_idev(skb_dst(skb))->dev->ifindex : dev->ifindex;
@@ -1256,18 +1240,38 @@ static int promisc6_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 drop:
 	rcu_read_unlock();
 	NETFLOW_STAT_INC(pkt_promisc_drop);
-out:
 	kfree_skb(skb);
 	return NET_RX_DROP;
 }
 
-static struct packet_type promisc4_packet_type __read_mostly = {
-	.type = htons(ETH_P_IP),
-	.func = promisc4_rcv,
-};
-static struct packet_type promisc6_packet_type __read_mostly = {
-	.type = htons(ETH_P_IPV6),
-	.func = promisc6_rcv,
+static int promisc_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, struct net_device *orig_dev)
+{
+	/* what is not PACKET_OTHERHOST will be processed normally */
+	if (skb->pkt_type != PACKET_OTHERHOST)
+		goto out;
+
+	NETFLOW_STAT_INC(pkt_promisc);
+
+	if ((skb = skb_share_check(skb, GFP_ATOMIC)) == NULL)
+		goto drop;
+
+	switch (skb->protocol) {
+	case htons(ETH_P_IP):
+		return promisc4_rcv(skb, dev, pt, orig_dev);
+	case htons(ETH_P_IPV6):
+		return promisc6_rcv(skb, dev, pt, orig_dev);
+	}
+
+drop:
+	NETFLOW_STAT_INC(pkt_promisc_drop);
+out:
+	kfree_skb(skb);
+	return 0;
+}
+
+static struct packet_type promisc_packet_type __read_mostly = {
+	.type = htons(ETH_P_ALL),
+	.func = promisc_rcv,
 };
 
 /* should not have promisc passed as parameter */
@@ -1277,13 +1281,10 @@ static int switch_promisc(int newpromisc)
 	mutex_lock(&promisc_lock);
 	if (newpromisc == promisc)
 		goto unlock;
-	if (newpromisc) {
-		dev_add_pack(&promisc4_packet_type);
-		dev_add_pack(&promisc6_packet_type);
-	} else {
-		dev_remove_pack(&promisc4_packet_type);
-		dev_remove_pack(&promisc6_packet_type);
-	}
+	if (newpromisc)
+		dev_add_pack(&promisc_packet_type);
+	else
+		dev_remove_pack(&promisc_packet_type);
 	printk(KERN_INFO "ipt_NETFLOW: promisc hack is %s\n",
 	    newpromisc? "enabled" : "disabled");
 	promisc = newpromisc;
