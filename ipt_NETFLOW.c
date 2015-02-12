@@ -905,7 +905,10 @@ static struct file_operations snmp_seq_fops = {
 #endif /* CONFIG_PROC_FS */
 
 #ifdef ENABLE_DEBUGFS
-static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout, const unsigned long jiff);
+static inline int inactive_needs_export(const struct ipt_netflow *nf, const long i_timeout,
+    const unsigned long jiff);
+static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout,
+    const unsigned long jiff);
 static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple);
 
 static int seq_stripe = -1;
@@ -984,7 +987,7 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 	struct ipt_netflow *nf = list_entry(v, struct ipt_netflow, flows_list);
 	long i_timeout = inactive_timeout * HZ;
 	long a_timeout = active_timeout * HZ;
-	int inactive = (jiffies - nf->nf_ts_last) >= i_timeout;
+	int inactive = !!inactive_needs_export(nf, i_timeout, dump_start);
 	int active = active_needs_export(nf, a_timeout, dump_start);
 	u_int32_t hash = hash_netflow(&nf->tuple);
 
@@ -2702,6 +2705,7 @@ static struct base_template template_base_ipfix = {
 		flowEndMilliseconds,
 		protocolIdentifier,
 		ipClassOfService,
+		flowEndReason,
 		0
 	}
 };
@@ -3400,6 +3404,7 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 	case icmpTypeCodeIPv4:	/*FALLTHROUGH*/
 	case icmpTypeCodeIPv6:	put_unaligned(nf->tuple.d_port, (__be16 *)ptr); break;
 	case MUL_IGMP_TYPE:            *ptr = nf->tuple.d_port; break;
+	case flowEndReason: 	       *ptr = nf->flowEndReason; break;
 #ifdef CONFIG_NF_NAT_NEEDED
 	case postNATSourceIPv4Address:	       put_unaligned(nf->nat->post.s_addr, (__be32 *)ptr); break;
 	case postNATDestinationIPv4Address:    put_unaligned(nf->nat->post.d_addr, (__be32 *)ptr); break;
@@ -4120,14 +4125,40 @@ static void export_nat_event(struct nat_event *nel)
 }
 #endif /* CONFIG_NF_NAT_NEEDED */
 
-static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout, const unsigned long jiff)
+static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout,
+    const unsigned long j)
 {
-	/* active too long, finishing, or having too much bytes */
-	return ((jiff - nf->nf_ts_first) > a_timeout) ||
-		(nf->tuple.protocol == IPPROTO_TCP &&
-		 (nf->tcp_flags & TCP_FIN_RST) &&
-		 (jiff - nf->nf_ts_last) > (1 * HZ)) ||
-		nf->nr_bytes >= FLOW_FULL_WATERMARK;
+	return ((j - nf->nf_ts_first) > a_timeout) ||
+	    nf->nr_bytes >= FLOW_FULL_WATERMARK;
+}
+
+/* return flowEndReason (rfc5102) */
+/* i_timeout == 0 is flush */
+static inline int inactive_needs_export(const struct ipt_netflow *nf, const long i_timeout,
+    const unsigned long j)
+{
+	if (likely(i_timeout)) {
+		if (unlikely((j - nf->nf_ts_last) > i_timeout)) {
+			if (nf->tuple.protocol == IPPROTO_TCP &&
+			    (nf->tcp_flags & TCP_FIN_RST))
+				return 0x03; /* end of Flow detected */
+			else
+				return 0x01; /* idle timeout */
+		} else
+			return 0;
+	} else
+		return 0x04; /* forced end */
+}
+
+/* helper which also record to nf->flowEndReason */
+static inline int needs_export_rec(struct ipt_netflow *nf, const long i_timeout,
+    const long a_timeout, const unsigned long j)
+{
+	int reason = inactive_needs_export(nf, i_timeout, j);
+
+	if (!reason && active_needs_export(nf, a_timeout, j))
+		reason = 0x02; /* active timeout or just active flow */
+	return (nf->flowEndReason = reason);
 }
 
 /* could be called with zero to flush cache and pdu */
@@ -4135,22 +4166,18 @@ static inline int active_needs_export(const struct ipt_netflow *nf, const long a
 /* return number of pdus sent */
 static int netflow_scan_and_export(const int flush)
 {
-	long i_timeout = inactive_timeout * HZ;
+	const long i_timeout = flush? 0 : inactive_timeout * HZ;
+	const long a_timeout = active_timeout * HZ;
 #ifdef HAVE_LLIST
 	struct llist_node *node;
-#else
-	long a_timeout = active_timeout * HZ;
 #endif
-	int pdu_c = pdu_count;
+	const int pdu_c = pdu_count;
 	LIST_HEAD(export_list);
 	struct ipt_netflow *nf, *tmp;
 	int i;
 #ifdef ENABLE_SAMPLER
 	unsigned char mode;
 #endif
-
-	if (flush)
-		i_timeout = 0;
 
 	if (protocol >= 9) {
 		netflow_export_stats();
@@ -4170,14 +4197,7 @@ static int netflow_scan_and_export(const int flush)
 		}
 		list_for_each_entry_safe_reverse(nf, tmp, &stripe->list, flows_list) {
 			++wk_count;
-			if (((jiffies - nf->nf_ts_last) >= i_timeout)
-#ifdef HAVE_LLIST
-			    /* exportable actives already go into export_llist,
-			     * thus this check is redundant. */
-#else
-			    || active_needs_export(nf, a_timeout, jiffies)
-#endif
-			   ) {
+			if (needs_export_rec(nf, i_timeout, a_timeout, jiffies)) {
 				hlist_del(&nf->hlist);
 				list_del(&nf->flows_list);
 				list_add(&nf->flows_list, &export_list);
@@ -5123,7 +5143,7 @@ do_protocols:
 
 #define LIST_IS_NULL(name) (!(name)->next)
 
-	if (likely(active_needs_export(nf, active_timeout * HZ, jiffies))) {
+	if (unlikely(active_needs_export(nf, active_timeout * HZ, jiffies))) {
 		/* ok, if this is active flow to be exported */
 #ifdef HAVE_LLIST
 		/* delete from hash and add to the export llist */

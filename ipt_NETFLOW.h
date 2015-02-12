@@ -116,6 +116,7 @@ struct netflow5_pdu {
 	one(80,  destinationMacAddress, 6) \
 	two(82,  IF_NAME, interfaceName, IF_NAME_SZ) \
 	two(83,  IF_DESC, interfaceDescription, IF_DESC_SZ) \
+	one(136, flowEndReason, 1) \
 	one(138, observationPointId, 4) \
 	one(139, icmpTypeCodeIPv6, 2) \
 	one(141, LineCardId, 4) \
@@ -294,6 +295,7 @@ struct ipt_netflow {
 	__u8		s_mask;
 	__u8		d_mask;
 	__u8		tcp_flags; /* `OR' of all tcp flags */
+	__u8		flowEndReason;
 #ifdef ENABLE_DIRECTION
 	__u8		hooknumx; /* hooknum + 1 */
 #endif
