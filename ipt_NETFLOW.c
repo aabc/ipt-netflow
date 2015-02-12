@@ -939,6 +939,8 @@ static struct list_head *nf_get_next(struct list_head *head)
 	return nf_get_first(seq_stripe + 1);
 }
 
+/* seq interface is very slow (contrary to belief), these cached values
+ * significantly speed it up */
 static int seq_pcache;
 static void *seq_vcache;
 static void *flows_dump_seq_start(struct seq_file *seq, loff_t *pos)
@@ -1078,6 +1080,12 @@ static int flows_dump_open(struct inode *inode, struct file *file)
 	int ret;
 	char *buf;
 
+	/* 'netflow_dump' is designed to pause (freeze) all in/out processing
+	 * and dump state of hash table.  Note, that this is not transparent
+	 * view of hash at any time - it will cause packet drops, it is
+	 * deliberately made so, it's debug interface. */
+
+	/* make netflow target drop packets */
 	if (atomic_inc_return(&freeze) > 1) {
 		/* do not let concurrent dumps. */
 		atomic_dec(&freeze);
@@ -1088,9 +1096,11 @@ static int flows_dump_open(struct inode *inode, struct file *file)
 		atomic_dec(&freeze);
 		return -ENOMEM;
 	}
+	/* no export */
 	pause_scan_worker();
 	synchronize_sched();
 	/* write_lock to be sure that softirq is finished */
+	/* and forbid hash resize */
 	write_lock(&htable_rwlock);
 
 	dump_start = jiffies;
@@ -1104,6 +1114,7 @@ static int flows_dump_open(struct inode *inode, struct file *file)
 		atomic_dec(&freeze);
 		return ret;
 	}
+	/* speed up seq interface with big buffer */
 	((struct seq_file *)file->private_data)->buf = buf;
 	((struct seq_file *)file->private_data)->size = KMALLOC_MAX_SIZE;
 	return 0;
