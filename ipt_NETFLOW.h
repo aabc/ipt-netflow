@@ -289,7 +289,7 @@ struct ipt_netflow {
 #endif
 	__u16		o_ifc;
 #ifdef SNMP_RULES
-	__u16		i_ifcr;
+	__u16		i_ifcr;	/* translated interface numbers*/
 	__u16		o_ifcr;
 #endif
 	__u8		s_mask;
@@ -448,9 +448,6 @@ struct ipt_netflow_stat {
 	unsigned int frags;		// packets stat (drop)
 	unsigned int maxflows_err;	// maxflows reached (drop)
 	unsigned int alloc_err;		// failed to allocate memory (drop & lost)
-#ifdef ENABLE_DEBUGFS
-	unsigned int freeze_err;	// freeze errors (drop)
-#endif
 	struct duration drop;
 	unsigned int send_success;	// sendmsg() ok
 	unsigned int send_failed;	// sendmsg() failed

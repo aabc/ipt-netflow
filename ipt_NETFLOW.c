@@ -78,13 +78,6 @@
 #ifdef CONFIG_SYSCTL
 #include <linux/sysctl.h>
 #endif
-#ifdef ENABLE_DEBUGFS
-# ifdef CONFIG_DEBUG_FS
-# include <linux/debugfs.h>
-# else
-# undef ENABLE_DEBUGFS
-# endif
-#endif
 #ifndef CONFIG_NF_CONNTRACK_EVENTS
 /* No conntrack events in the kernel imply no natevents. */
 #undef CONFIG_NF_NAT_NEEDED
@@ -351,10 +344,6 @@ static int tpl_count = 0; /* how much active templates */
 static unsigned long ts_stat_last = 0; /* (jiffies) */
 static unsigned long ts_sysinf_last = 0; /* (jiffies) */
 static unsigned long ts_ifnames_last = 0; /* (jiffies) */
-#ifdef ENABLE_DEBUGFS
-static atomic_t freeze = ATOMIC_INIT(0);
-static struct dentry *flows_dump_d;
-#endif
 
 static inline __be32 bits2mask(int bits) {
 	return (bits? 0xffffffff << (32 - bits) : 0);
@@ -605,9 +594,6 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "ipt_NETFLOW " IPT_NETFLOW_VERSION ", srcversion %s;"
 #ifdef ENABLE_AGGR
 	    " aggr"
-#endif
-#ifdef ENABLE_DEBUGFS
-	    " debugfs"
 #endif
 #ifdef ENABLE_DIRECTION
 	    " dir"
@@ -902,115 +888,168 @@ static struct file_operations snmp_seq_fops = {
 	.llseek	 = seq_lseek,
 	.release = single_release,
 };
-#endif /* CONFIG_PROC_FS */
 
-#ifdef ENABLE_DEBUGFS
 static inline int inactive_needs_export(const struct ipt_netflow *nf, const long i_timeout,
     const unsigned long jiff);
 static inline int active_needs_export(const struct ipt_netflow *nf, const long a_timeout,
     const unsigned long jiff);
 static inline u_int32_t hash_netflow(const struct ipt_netflow_tuple *tuple);
 
-static int seq_stripe = -1;
+struct flows_dump_private {
+	int pcache;	/* pos */
+	void *vcache;	/* corresponding pointer for pos */
+	int stripe;	/* current stripe */
+	struct list_head list; /* copy of stripe */
+	int alloc_errors;
+};
 
-/* get first & next ipt_netflow list entry and lock it */
-static struct list_head *nf_get_first(int nstripe)
+/* deallocate copied stripe */
+static void nf_free_stripe(struct list_head *list)
 {
-	/* no locking here since it's under global rwlock */
+	struct ipt_netflow *cf, *tmp;
+
+	list_for_each_entry_safe(cf, tmp, list, flows_list) {
+		kmem_cache_free(ipt_netflow_cachep, cf);
+	}
+	INIT_LIST_HEAD(list);
+}
+
+/* quickly clone stripe into flows_dump_private then it can be walked slowly
+ * and lockless */
+static void __nf_copy_stripe(struct flows_dump_private *st, const struct list_head *list)
+{
+	const struct ipt_netflow *nf;
+	struct ipt_netflow *cf;
+
+	nf_free_stripe(&st->list);
+	list_for_each_entry(nf, list, flows_list) {
+		cf = kmem_cache_alloc(ipt_netflow_cachep, GFP_ATOMIC);
+		if (!cf) {
+			st->alloc_errors++;
+			continue;
+		}
+		memcpy(cf, nf, sizeof(*cf));
+		list_add(&cf->flows_list, &st->list);
+	}
+}
+
+/* nstripe is desired stripe, in st->stripe will be recorded actual stripe used
+ * (with empty stripes skipped), -1 is there is no valid stripes anymore,
+ * return first element in stripe list or NULL */
+static struct list_head *nf_get_stripe(struct flows_dump_private *st, int nstripe)
+{
+	read_lock_bh(&htable_rwlock);
 	for (; nstripe < LOCK_COUNT; nstripe++) {
 		struct stripe_entry *stripe = &htable_stripes[nstripe];
 
+		spin_lock(&stripe->lock);
 		if (!list_empty(&stripe->list)) {
-			seq_stripe = nstripe;
-			return stripe->list.next;
+			st->stripe = nstripe;
+			__nf_copy_stripe(st, &stripe->list);
+			spin_unlock(&stripe->lock);
+			read_unlock_bh(&htable_rwlock);
+			return st->list.next;
 		}
+		spin_unlock(&stripe->lock);
 	}
-	seq_stripe = -1;
+	read_unlock_bh(&htable_rwlock);
+	st->stripe = -1;
 	return NULL;
 }
 
-static struct list_head *nf_get_next(struct list_head *head)
+/* simply next element in flows list or NULL */
+static struct list_head *nf_get_next(struct flows_dump_private *st, struct list_head *head)
 {
-	struct stripe_entry *stripe;
-
-	if (seq_stripe < 0)
+	if (st->stripe < 0)
 		return NULL;
-	stripe = &htable_stripes[seq_stripe];
-	head = head->next;
-	if (head != &stripe->list)
-		return head;
-	return nf_get_first(seq_stripe + 1);
+	/* next element */
+	if (!list_is_last(head, &st->list))
+		return head->next;
+	/* next bucket */
+	return nf_get_stripe(st, st->stripe + 1);
 }
 
-/* seq interface is very slow (contrary to belief), these cached values
- * significantly speed it up */
-static int seq_pcache;
-static void *seq_vcache;
+/* seq_file could arbitrarily start/stop iteration as it feels need,
+ * so, I try to cache things to (significantly) speed it up. */
 static void *flows_dump_seq_start(struct seq_file *seq, loff_t *pos)
 {
+	struct flows_dump_private *st = seq->private;
 	int ppos = *pos;
 	struct list_head *lh;
 
 	if (!ppos) {
-		seq_pcache = 0;
-		seq_vcache = nf_get_first(0);
-		return seq_vcache;
+		/* first */
+		st->pcache = 0;
+		st->vcache = nf_get_stripe(st, 0);
+		return st->vcache;
 	}
-	if (ppos >= seq_pcache) {
-		ppos -= seq_pcache;
-		lh = seq_vcache;
-	} else
-		lh = nf_get_first(0);
+	if (ppos >= st->pcache) {
+		/* can iterate forward */
+		ppos -= st->pcache;
+		lh = st->vcache;
+	} else /* can't, start from 0 */
+		lh = nf_get_stripe(st, 0);
+	/* iterate forward */
 	while (ppos--)
-		lh = nf_get_next(lh);
-	seq_pcache = *pos;
-	seq_vcache = lh;
-	return seq_vcache;
+		lh = nf_get_next(st, lh);
+	st->pcache = *pos;
+	st->vcache = lh;
+	return st->vcache;
 }
 
 static void *flows_dump_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 {
-	seq_pcache = ++*pos;
-	seq_vcache = nf_get_next((struct list_head *)v);
-	return seq_vcache;
+	struct flows_dump_private *st = seq->private;
+
+	st->pcache = ++*pos;
+	st->vcache = nf_get_next(st, (struct list_head *)v);
+	return st->vcache;
 }
 
 static void flows_dump_seq_stop(struct seq_file *seq, void *v)
 {
 }
 
-static unsigned long dump_start; /* jiffies */
-static unsigned int dump_err;
 /* To view this: cat /sys/kernel/debug/netflow_dump */
 static int flows_dump_seq_show(struct seq_file *seq, void *v)
 {
-	struct ipt_netflow *nf = list_entry(v, struct ipt_netflow, flows_list);
-	long i_timeout = inactive_timeout * HZ;
-	long a_timeout = active_timeout * HZ;
-	int inactive = !!inactive_needs_export(nf, i_timeout, dump_start);
-	int active = active_needs_export(nf, a_timeout, dump_start);
+	struct flows_dump_private *st = seq->private;
+	const struct ipt_netflow *nf = list_entry(v, struct ipt_netflow, flows_list);
+	const long i_timeout = inactive_timeout * HZ;
+	const long a_timeout = active_timeout * HZ;
 	u_int32_t hash = hash_netflow(&nf->tuple);
 
-	if (seq_pcache == 0) {
-		unsigned int nr_flows = atomic_read(&ipt_netflow_count);
-
-		seq_printf(seq, "# Attention: netflow processing is disabled while dumping. (~%u flows)\n", nr_flows);
-		return 0;
+	if (st->pcache == 0) {
+		seq_printf(seq, "# hash a dev:i,o"
+#ifdef SNMP_RULES
+		    " snmp:i,o"
+#endif
+#ifdef ENABLE_MAC
+		    " mac:src,dst"
+#endif
+#ifdef ENABLE_VLAN
+		    " vlan"
+#endif
+#if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
+		    " type"
+#endif
+		    " proto src:ip,port dst:ip,port nexthop"
+		    " tos,tcpflags,options,tcpoptions"
+		    " packets bytes ts:first,last\n");
 	}
 
-	seq_printf(seq, "%d %02x,%04x %02d",
-	    seq_pcache,
-	    seq_stripe,
+	seq_printf(seq, "%d %04x %x",
+	    st->pcache,
 	    hash,
-	    inactive * 10 + active);
-#ifdef SNMP_RULES
-	seq_printf(seq, " %hd,%hd(%hd,%hd)",
-	    nf->i_ifcr,
-	    nf->o_ifcr,
+	    (!!inactive_needs_export(nf, i_timeout, jiffies)) | 
+	    (active_needs_export(nf, a_timeout, jiffies) << 1));
+	seq_printf(seq, " %hd,%hd",
 	    nf->tuple.i_ifc,
 	    nf->o_ifc);
-#else
+#ifdef SNMP_RULES
 	seq_printf(seq, " %hd,%hd",
+	    nf->i_ifcr,
+	    nf->o_ifcr,
 	    nf->tuple.i_ifc,
 	    nf->o_ifc);
 #endif
@@ -1018,55 +1057,44 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, " %pM,%pM", &nf->tuple.h_src, &nf->tuple.h_dst);
 #endif
 #ifdef ENABLE_VLAN
-	if (nf->tuple.tag[0] || nf->tuple.tag[1]) {
-		seq_printf(seq, ",%d", ntohs(nf->tuple.tag[0]));
+	if (nf->tuple.tag[0]) {
+		seq_printf(seq, " %d", ntohs(nf->tuple.tag[0]));
 		if (nf->tuple.tag[1])
 			seq_printf(seq, ",%d", ntohs(nf->tuple.tag[1]));
 	}
 #endif
 #if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
-	seq_printf(seq, " [%04x]", ntohs(nf->ethernetType));
+	seq_printf(seq, " %04x", ntohs(nf->ethernetType));
 #endif
-	seq_printf(seq, " %u,%u ",
-	    nf->tuple.l3proto,
+	seq_printf(seq, " %u ",
 	    nf->tuple.protocol);
 	if (nf->tuple.l3proto == AF_INET) {
-		seq_printf(seq, "%pI4n:%u,%pI4n:%u %pI4n",
+		seq_printf(seq, "%pI4n,%u %pI4n,%u %pI4n",
 		    &nf->tuple.src,
 		    ntohs(nf->tuple.s_port),
 		    &nf->tuple.dst,
 		    ntohs(nf->tuple.d_port),
 		    &nf->nh);
-		/* sanity check */
-		if (nf->tuple.src.ip6[1] ||
-		    nf->tuple.src.ip6[2] ||
-		    nf->tuple.src.ip6[3])
-			seq_puts(seq, "error:src:garbage");
-		if (nf->tuple.dst.ip6[1] ||
-		    nf->tuple.dst.ip6[2] ||
-		    nf->tuple.dst.ip6[3])
-			seq_puts(seq, "error:dst:garbage");
 	} else if (nf->tuple.l3proto == AF_INET6) {
-		seq_printf(seq, "%pI6c#%u,%pI6c#%u %pI6c",
+		seq_printf(seq, "%pI6c,%u %pI6c,%u %pI6c",
 		    &nf->tuple.src,
 		    ntohs(nf->tuple.s_port),
 		    &nf->tuple.dst,
 		    ntohs(nf->tuple.d_port),
 		    &nf->nh);
 	} else {
-		seq_puts(seq, "error:l3proto:unknown");
+		seq_puts(seq, "?,? ?,? ?");
 	}
 	seq_printf(seq, " %x,%x,%x,%x",
 	    nf->tuple.tos,
 	    nf->tcp_flags,
 	    nf->options,
 	    nf->tcpoptions);
-	seq_printf(seq, " %d,%d %lu,%lu\n",
+	seq_printf(seq, " %u %u %lu,%lu\n",
 	    nf->nr_packets,
 	    nf->nr_bytes,
 	    jiffies - nf->nf_ts_first,
-	    jiffies - nf->nf_ts_last
-	    );
+	    jiffies - nf->nf_ts_last);
 
 	return 0;
 }
@@ -1078,73 +1106,46 @@ static struct seq_operations flows_dump_seq_ops = {
 	.stop	= flows_dump_seq_stop,
 };
 
-static int flows_dump_open(struct inode *inode, struct file *file)
+static int flows_seq_open(struct inode *inode, struct file *file)
 {
-	int ret;
+	struct flows_dump_private *st;
 	char *buf;
 
-	/* 'netflow_dump' is designed to pause (freeze) all in/out processing
-	 * and dump state of hash table.  Note, that this is not transparent
-	 * view of hash at any time - it will cause packet drops, it is
-	 * deliberately made so, it's debug interface. */
-
-	/* make netflow target drop packets */
-	if (atomic_inc_return(&freeze) > 1) {
-		/* do not let concurrent dumps. */
-		atomic_dec(&freeze);
-		return -EAGAIN;
-	}
 	buf = kmalloc(KMALLOC_MAX_SIZE, GFP_KERNEL);
-	if (!buf) {
-		atomic_dec(&freeze);
+	if (!buf)
+		return -ENOMEM;
+
+	st = __seq_open_private(file, &flows_dump_seq_ops, sizeof(struct flows_dump_private));
+	if (!st) {
+		kfree(buf);
 		return -ENOMEM;
 	}
-	/* no export */
-	pause_scan_worker();
-	synchronize_sched();
-	/* write_lock to be sure that softirq is finished */
-	/* and forbid hash resize */
-	write_lock(&htable_rwlock);
-
-	dump_start = jiffies;
-	dump_err = NETFLOW_STAT_READ(freeze_err);
-
-	ret = seq_open(file, &flows_dump_seq_ops);
-	if (ret) {
-		write_unlock(&htable_rwlock);
-		cont_scan_worker();
-		kfree(buf);
-		atomic_dec(&freeze);
-		return ret;
-	}
-	/* speed up seq interface with big buffer */
+	INIT_LIST_HEAD(&st->list);
+	/* speed up seq interface with bigger buffer */
 	((struct seq_file *)file->private_data)->buf = buf;
 	((struct seq_file *)file->private_data)->size = KMALLOC_MAX_SIZE;
 	return 0;
 
 }
-static int flows_dump_release(struct inode *inode, struct file *file)
+static int flows_seq_release(struct inode *inode, struct file *file)
 {
-	seq_stripe = -1;
-	write_unlock(&htable_rwlock);
-	cont_scan_worker();
-	atomic_dec(&freeze);
+	struct seq_file *seq = file->private_data;
+	struct flows_dump_private *st = seq->private;
 
-	printk(KERN_INFO "ipt_NETFLOW: dump finished in %lu/%lu sec, dropped %u packets.\n", 
-	    jiffies - dump_start,
-	    msecs_to_jiffies(1000),
-	    NETFLOW_STAT_READ(freeze_err) - dump_err);
-	return seq_release(inode, file);
+	nf_free_stripe(&st->list);
+	if (st->alloc_errors)
+		printk(KERN_INFO "ipt_NETFLOW: alloc_errors %d\n", st->alloc_errors);
+	return seq_release_private(inode, file);
 }
 
-static const struct file_operations flows_dump_fops = {
+static struct file_operations flows_seq_fops = {
 	.owner	 = THIS_MODULE,
-	.open	 = flows_dump_open,
+	.open	 = flows_seq_open,
 	.read	 = seq_read,
 	.llseek	 = seq_lseek,
-	.release = flows_dump_release,
+	.release = flows_seq_release,
 };
-#endif /* ENABLE_DEBUGFS */
+#endif /* CONFIG_PROC_FS */
 
 #ifdef ENABLE_PROMISC
 static int promisc_finish(struct sk_buff *skb)
@@ -4782,16 +4783,6 @@ static unsigned int netflow_target(
 		return IPT_CONTINUE;
 	}
 
-#ifdef ENABLE_DEBUGFS
-	if (atomic_read(&freeze)) {
-		NETFLOW_STAT_INC(freeze_err);
-		NETFLOW_STAT_INC(pkt_drop);
-		NETFLOW_STAT_ADD(traf_drop, skb->len);
-		NETFLOW_STAT_TS(drop);
-		return IPT_CONTINUE;
-	}
-#endif
-
 	tuple.l3proto	= family;
 	tuple.s_port	= 0;
 	tuple.d_port	= 0;
@@ -5448,10 +5439,8 @@ static int __init ipt_netflow_init(void)
 		goto err_free_netflow_slab;
 	if (!register_stat("ipt_netflow_snmp", &snmp_seq_fops))
 		goto err_free_proc_stat1;
-
-#ifdef ENABLE_DEBUGFS
-	flows_dump_d = debugfs_create_file("netflow_dump", S_IRUGO, NULL, NULL, &flows_dump_fops);
-#endif
+	if (!register_stat("ipt_netflow_flows", &flows_seq_fops))
+		goto err_free_proc_stat2;
 
 #ifdef CONFIG_SYSCTL
 	ctl_table_renumber(netflow_sysctl_table);
@@ -5466,7 +5455,7 @@ static int __init ipt_netflow_init(void)
 #endif
 	if (!netflow_sysctl_header) {
 		printk(KERN_ERR "netflow: can't register to sysctl\n");
-		goto err_free_proc_stat2;
+		goto err_free_proc_stat3;
 	} else
 		printk(KERN_INFO "netflow: registered: sysctl net.netflow\n");
 #endif
@@ -5552,12 +5541,11 @@ err_stop_timer:
 err_free_sysctl:
 #ifdef CONFIG_SYSCTL
 	unregister_sysctl_table(netflow_sysctl_header);
-err_free_proc_stat2:
 #endif
-#ifdef ENABLE_DEBUGFS
-	debugfs_remove(flows_dump_d);
-#endif
+err_free_proc_stat3:
 #ifdef CONFIG_PROC_FS
+	remove_proc_entry("ipt_netflow_flows", INIT_NET(proc_net_stat));
+err_free_proc_stat2:
 	remove_proc_entry("ipt_netflow_snmp", INIT_NET(proc_net_stat));
 err_free_proc_stat1:
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
@@ -5578,10 +5566,8 @@ static void __exit ipt_netflow_fini(void)
 #ifdef CONFIG_SYSCTL
 	unregister_sysctl_table(netflow_sysctl_header);
 #endif
-#ifdef ENABLE_DEBUGFS
-	debugfs_remove(flows_dump_d);
-#endif
 #ifdef CONFIG_PROC_FS
+	remove_proc_entry("ipt_netflow_flows", INIT_NET(proc_net_stat));
 	remove_proc_entry("ipt_netflow_snmp", INIT_NET(proc_net_stat));
 	remove_proc_entry("ipt_netflow", INIT_NET(proc_net_stat));
 #endif
