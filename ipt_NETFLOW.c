@@ -1110,8 +1110,9 @@ static int flows_seq_open(struct inode *inode, struct file *file)
 {
 	struct flows_dump_private *st;
 	char *buf;
+	const size_t size = 4 * PAGE_SIZE;
 
-	buf = kmalloc(KMALLOC_MAX_SIZE, GFP_KERNEL);
+	buf = kmalloc(size, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
@@ -1123,7 +1124,7 @@ static int flows_seq_open(struct inode *inode, struct file *file)
 	INIT_LIST_HEAD(&st->list);
 	/* speed up seq interface with bigger buffer */
 	((struct seq_file *)file->private_data)->buf = buf;
-	((struct seq_file *)file->private_data)->size = KMALLOC_MAX_SIZE;
+	((struct seq_file *)file->private_data)->size = size;
 	return 0;
 
 }
