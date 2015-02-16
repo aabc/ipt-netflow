@@ -396,28 +396,28 @@ struct netflow_aggr_p {
 	__u16 aggr_port;
 };
 
-#define NETFLOW_STAT_INC(count) (__get_cpu_var(ipt_netflow_stat).count++)
-#define NETFLOW_STAT_ADD(count, val) (__get_cpu_var(ipt_netflow_stat).count += (unsigned long long)val)
-#define NETFLOW_STAT_SET(count, val) (__get_cpu_var(ipt_netflow_stat).count = (unsigned long long)val)
+#define NETFLOW_STAT_INC(count) (((struct ipt_netflow_stat*) this_cpu_ptr(&ipt_netflow_stat))->count++)
+#define NETFLOW_STAT_ADD(count, val) (((struct ipt_netflow_stat*) this_cpu_ptr(&ipt_netflow_stat))->count += (unsigned long long)val)
+#define NETFLOW_STAT_SET(count, val) (((struct ipt_netflow_stat*) this_cpu_ptr(&ipt_netflow_stat))->count = (unsigned long long)val)
 #define NETFLOW_STAT_TS(count)							 \
 	do {									 \
 		ktime_t kts = ktime_get_real();					 \
-		if (!(__get_cpu_var(ipt_netflow_stat)).count.first.tv64)	 \
-			__get_cpu_var(ipt_netflow_stat).count.first = kts;	 \
-		__get_cpu_var(ipt_netflow_stat).count.last = kts;		 \
+		if (!(((struct ipt_netflow_stat*) this_cpu_ptr(&ipt_netflow_stat))->count.first.tv64))	 \
+			((struct ipt_netflow_stat*) this_cpu_ptr(&ipt_netflow_stat))->count.first = kts;	 \
+		((struct ipt_netflow_stat*) this_cpu_ptr(&ipt_netflow_stat))->count.last = kts;		 \
 	} while (0);
 
 #define NETFLOW_STAT_INC_ATOMIC(count)				\
 	do {							\
 		preempt_disable();				\
-		(__get_cpu_var(ipt_netflow_stat).count++);	\
+		(((struct ipt_netflow_stat*) this_cpu_ptr(&ipt_netflow_stat))->count++);	\
 		preempt_enable();				\
 	} while (0);
 
 #define NETFLOW_STAT_ADD_ATOMIC(count, val)			\
 	do {							\
 		preempt_disable();				\
-		(__get_cpu_var(ipt_netflow_stat).count += (unsigned long long)val); \
+		((((struct ipt_netflow_stat*) this_cpu_ptr(&ipt_netflow_stat))->count += (unsigned long long)val); \
 		preempt_enable();				\
 	} while (0);
 #define NETFLOW_STAT_READ(count) ({					\
