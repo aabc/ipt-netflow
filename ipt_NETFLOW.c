@@ -960,6 +960,8 @@ static struct list_head *nf_get_stripe(struct flows_dump_private *st, int nstrip
 /* simply next element in flows list or NULL */
 static struct list_head *nf_get_next(struct flows_dump_private *st, struct list_head *head)
 {
+	if (head == SEQ_START_TOKEN)
+		return nf_get_stripe(st, 0);
 	if (st->stripe < 0)
 		return NULL;
 	/* next element */
@@ -980,7 +982,7 @@ static void *flows_dump_seq_start(struct seq_file *seq, loff_t *pos)
 	if (!ppos) {
 		/* first */
 		st->pcache = 0;
-		st->vcache = nf_get_stripe(st, 0);
+		st->vcache = SEQ_START_TOKEN;
 		return st->vcache;
 	}
 	if (ppos >= st->pcache) {
@@ -988,7 +990,7 @@ static void *flows_dump_seq_start(struct seq_file *seq, loff_t *pos)
 		ppos -= st->pcache;
 		lh = st->vcache;
 	} else /* can't, start from 0 */
-		lh = nf_get_stripe(st, 0);
+		lh = SEQ_START_TOKEN;
 	/* iterate forward */
 	while (ppos--)
 		lh = nf_get_next(st, lh);
@@ -1014,12 +1016,11 @@ static void flows_dump_seq_stop(struct seq_file *seq, void *v)
 static int flows_dump_seq_show(struct seq_file *seq, void *v)
 {
 	struct flows_dump_private *st = seq->private;
-	const struct ipt_netflow *nf = list_entry(v, struct ipt_netflow, flows_list);
 	const long i_timeout = inactive_timeout * HZ;
 	const long a_timeout = active_timeout * HZ;
-	u_int32_t hash = hash_netflow(&nf->tuple);
+	const struct ipt_netflow *nf;
 
-	if (st->pcache == 0) {
+	if (v == SEQ_START_TOKEN) {
 		seq_printf(seq, "# hash a dev:i,o"
 #ifdef SNMP_RULES
 		    " snmp:i,o"
@@ -1036,11 +1037,13 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 		    " proto src:ip,port dst:ip,port nexthop"
 		    " tos,tcpflags,options,tcpoptions"
 		    " packets bytes ts:first,last\n");
+		return 0;
 	}
 
+	nf = list_entry(v, struct ipt_netflow, flows_list);
 	seq_printf(seq, "%d %04x %x",
 	    st->pcache,
-	    hash,
+	    hash_netflow(&nf->tuple),
 	    (!!inactive_needs_export(nf, i_timeout, jiffies)) | 
 	    (active_needs_export(nf, a_timeout, jiffies) << 1));
 	seq_printf(seq, " %hd,%hd",
