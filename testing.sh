@@ -6,7 +6,7 @@ if [ "$1" = "" ]; then
   echo Maintainer only tool.
   exit 1
 elif [ "$1" = all ]; then
-  exec bash $0 linux-2.6.18 centos5 linux-3.11.2 centos6 linux-3.4.66 linux-3.9.11 centos7 linux-3.14 linux-3.17
+  exec bash $0 linux-2.6.18 centos5 linux-3.11.2 centos6 linux-3.4.66 linux-3.9.11 centos7 linux-3.14 linux-3.17 linux-3.19
   exit 1
 fi
 
@@ -33,6 +33,9 @@ readarray -t opts <<EOF
   --enable-sampler=hash
   --enable-promisc
 EOF
+if [ "$SHORT" ]; then
+  opts=("")
+fi
 
 colorecho() {
   echo -e "\033[1;32m$@\033[m"

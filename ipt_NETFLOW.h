@@ -396,6 +396,9 @@ struct netflow_aggr_p {
 	__u16 aggr_port;
 };
 
+#ifndef __get_cpu_var
+#define __get_cpu_var(var)	(*this_cpu_ptr(&(var)))
+#endif
 #define NETFLOW_STAT_INC(count) (__get_cpu_var(ipt_netflow_stat).count++)
 #define NETFLOW_STAT_ADD(count, val) (__get_cpu_var(ipt_netflow_stat).count += (unsigned long long)val)
 #define NETFLOW_STAT_SET(count, val) (__get_cpu_var(ipt_netflow_stat).count = (unsigned long long)val)
