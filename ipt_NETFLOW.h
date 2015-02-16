@@ -16,8 +16,8 @@
  *
  */
 
-#ifndef _IP_NETFLOW_H
-#define _IP_NETFLOW_H
+#ifndef _IPT_NETFLOW_H
+#define _IPT_NETFLOW_H
 
 /*
  * Some tech info:
@@ -241,15 +241,6 @@ struct ipfix_pdu {
  * not searchable and will be exported soon. */
 #define FLOW_FULL_WATERMARK 0xffefffff
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
-union nf_inet_addr {
-	__be32          ip;
-	__be32          ip6[4];
-	struct in_addr  in;
-	struct in6_addr in6;
-};
-#endif
-
 #define EXTRACT_SPI(tuple)	((tuple.s_port << 16) | tuple.d_port)
 #define SAVE_SPI(tuple, spi)	{ tuple.s_port = spi >> 16; \
 				  tuple.d_port = spi; }
@@ -396,9 +387,6 @@ struct netflow_aggr_p {
 	__u16 aggr_port;
 };
 
-#ifndef __get_cpu_var
-#define __get_cpu_var(var)	(*this_cpu_ptr(&(var)))
-#endif
 #define NETFLOW_STAT_INC(count) (__get_cpu_var(ipt_netflow_stat).count++)
 #define NETFLOW_STAT_ADD(count, val) (__get_cpu_var(ipt_netflow_stat).count += (unsigned long long)val)
 #define NETFLOW_STAT_SET(count, val) (__get_cpu_var(ipt_netflow_stat).count = (unsigned long long)val)
@@ -479,11 +467,6 @@ struct ipt_netflow_stat {
 	u64 old_notfound;
 	int metric;			// one minute ewma of hash efficiency
 };
-
-#ifndef list_first_entry
-#define list_first_entry(ptr, type, member) \
-	list_entry((ptr)->next, type, member)
-#endif
 
 #endif
 /* vim: set sw=8: */

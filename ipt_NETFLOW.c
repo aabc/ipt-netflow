@@ -51,62 +51,37 @@
 #ifndef ENABLE_NAT
 # undef CONFIG_NF_NAT_NEEDED
 #endif
-#ifdef ENABLE_VLAN
-#include <linux/if_vlan.h>
+#if defined(ENABLE_VLAN) || defined(ENABLE_PROMISC)
+# include <linux/if_vlan.h>
 #endif
 #ifdef ENABLE_MAC
-#include <linux/if_ether.h>
-#include <linux/etherdevice.h>
+# include <linux/if_ether.h>
+# include <linux/etherdevice.h>
 #endif
 #if defined(CONFIG_NF_NAT_NEEDED)
-#include <linux/notifier.h>
-#include <net/netfilter/nf_conntrack.h>
-#include <net/netfilter/nf_conntrack_core.h>
+# include <linux/notifier.h>
+# include <net/netfilter/nf_conntrack.h>
+# include <net/netfilter/nf_conntrack_core.h>
 #endif
 #include <linux/version.h>
 #include <asm/unaligned.h>
 #ifdef HAVE_LLIST
 	/* llist.h is officially defined since linux 3.1,
 	 * but centos6 have it backported on its 2.6.32.el6 */
-#include <linux/llist.h>
+# include <linux/llist.h>
 #endif
+#include "compat.h"
 #include "ipt_NETFLOW.h"
 #include "murmur3.h"
 #ifdef CONFIG_BRIDGE_NETFILTER
-#include <linux/netfilter_bridge.h>
+# include <linux/netfilter_bridge.h>
 #endif
 #ifdef CONFIG_SYSCTL
-#include <linux/sysctl.h>
+# include <linux/sysctl.h>
 #endif
 #ifndef CONFIG_NF_CONNTRACK_EVENTS
 /* No conntrack events in the kernel imply no natevents. */
-#undef CONFIG_NF_NAT_NEEDED
-#endif
-
-#ifndef NIPQUAD
-#define NIPQUAD(addr) \
-	((unsigned char *)&addr)[0], \
-	((unsigned char *)&addr)[1], \
-	((unsigned char *)&addr)[2], \
-	((unsigned char *)&addr)[3]
-#endif
-#ifndef HIPQUAD
-#if defined(__LITTLE_ENDIAN)
-#define HIPQUAD(addr) \
-	((unsigned char *)&addr)[3], \
-	((unsigned char *)&addr)[2], \
-	((unsigned char *)&addr)[1], \
-	((unsigned char *)&addr)[0]
-#elif defined(__BIG_ENDIAN)
-#define HIPQUAD NIPQUAD
-#else
-#error "Please fix asm/byteorder.h"
-#endif /* __LITTLE_ENDIAN */
-#endif
-
-#ifndef IPT_CONTINUE
-#define IPT_CONTINUE XT_CONTINUE
-#define ipt_target xt_target
+# undef CONFIG_NF_NAT_NEEDED
 #endif
 
 #define IPT_NETFLOW_VERSION "2.1"   /* Note that if you are using git, you
@@ -412,12 +387,6 @@ static inline void pause_scan_worker(void)
 	mutex_lock(&worker_lock);
 	_unschedule_scan_worker();
 }
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
-#define INIT_NET(x) x
-#else
-#define INIT_NET(x) init_net.x
-#endif
 
 #ifdef ENABLE_SAMPLER
 static inline unsigned char get_sampler_mode(void)
@@ -1263,10 +1232,6 @@ drop:
 	return NET_RX_DROP;
 }
 
-#ifndef ETH_P_8021AD
-#define ETH_P_8021AD	0x88A8	/* 802.1ad Service VLAN */
-#endif
-
 /* source is skb_network_protocol() and __vlan_get_protocol() */
 static __be16 __skb_network_protocol(struct sk_buff *skb, int *depth)
 {
@@ -1381,21 +1346,6 @@ unlock:
 #endif
 
 #ifdef CONFIG_SYSCTL
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
-#define BEFORE2632(x,y) x,y
-#else /* since 2.6.32 */
-#define BEFORE2632(x,y)
-#endif
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
-#define ctl_table struct ctl_table
-#endif
-
-#ifndef CONFIG_GRKERNSEC
-#define ctl_table_no_const ctl_table
-#endif
-
 /* sysctl /proc/sys/net/netflow */
 static int hsize_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
@@ -2333,12 +2283,7 @@ ipt_netflow_find(const struct ipt_netflow_tuple *tuple, const unsigned int hash)
 {
 	struct ipt_netflow *nf;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0)
-#define compat_hlist_for_each_entry		      hlist_for_each_entry
-#define compat_hlist_for_each_entry_safe	      hlist_for_each_entry_safe
 	struct hlist_node *pos;
-#else /* since 3.9.0 */
-#define compat_hlist_for_each_entry(a,pos,c,d)	      hlist_for_each_entry(a,c,d)
-#define compat_hlist_for_each_entry_safe(a,pos,c,d,e) hlist_for_each_entry_safe(a,c,d,e)
 #endif
 
 	compat_hlist_for_each_entry(nf, pos, &htable[hash], hlist) {
@@ -3264,23 +3209,6 @@ static void pdu_add_template(struct data_template *tpl)
 	pdu_tpl_records++;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
-static inline s64 portable_ktime_to_ms(const ktime_t kt)
-{
-	struct timeval tv = ktime_to_timeval(kt);
-	return (s64) tv.tv_sec * MSEC_PER_SEC + tv.tv_usec / USEC_PER_MSEC;
-}
-#define ktime_to_ms portable_ktime_to_ms
-#endif
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
-static inline s64 portable_ktime_to_us(const ktime_t kt)
-{
-	struct timeval tv = ktime_to_timeval(kt);
-	return (s64) tv.tv_sec * USEC_PER_SEC + tv.tv_usec;
-}
-#define ktime_to_us portable_ktime_to_us
-#endif
-
 #ifdef ENABLE_DIRECTION
 static inline __u8 hook2dir(const __u8 hooknum)
 {
@@ -3294,21 +3222,6 @@ static inline __u8 hook2dir(const __u8 hooknum)
 	default:
 		return -1;
 	}
-}
-#endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)
-static inline void put_unaligned_be16(u16 val, void *p)
-{
-	put_unaligned(cpu_to_be16(val), (__be16 *)p);
-}
-static inline void put_unaligned_be32(u32 val, void *p)
-{
-	put_unaligned(cpu_to_be32(val), (__be32 *)p);
-}
-static inline void put_unaligned_be64(u64 val, void *p)
-{
-	put_unaligned(cpu_to_be64(val), (__be64 *)p);
 }
 #endif
 
@@ -3348,9 +3261,6 @@ static inline s64 jiffies_to_ms_abs(unsigned long j)
 		return jiffies_base.ms + (s64)jiffies_to_msecs(-jdiff);
 }
 
-#ifndef WARN_ONCE
-#define WARN_ONCE(x,fmt...) ({ if (x) printk(KERN_WARNING fmt); })
-#endif
 typedef struct in6_addr in6_t;
 /* encode one field (data records only) */
 static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_netflow *nf)
@@ -3452,18 +3362,6 @@ static inline unsigned long timeout_rate_j(void)
 	return t_rate_j;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
-#define IPPROTO_UDPLITE 136
-#endif
-
-#ifndef time_is_before_jiffies
-#define time_is_before_jiffies(a) time_after(jiffies, a)
-#endif
-#ifndef time_is_after_jiffies
-#define time_is_after_jiffies(a) time_before(jiffies, a)
-#endif
-
-
 /* return buffer where to write records data */
 static unsigned char *alloc_record_tpl(struct data_template *tpl)
 {
@@ -3515,18 +3413,6 @@ static unsigned char *alloc_record_key(const unsigned int t_key, struct data_tem
 	*ptpl = tpl;
 	return alloc_record_tpl(tpl);
 }
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,14,0)
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
-#define prandom_u32 get_random_int
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0)
-#define prandom_u32 random32
-#endif
-static inline u32 prandom_u32_max(u32 ep_ro)
-{
-	return (u32)(((u64) prandom_u32() * ep_ro) >> 32);
-}
-#endif
 
 static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 {
@@ -3746,13 +3632,6 @@ static inline void export_stat(const unsigned int tpl_mask)
 	export_stat_st(tpl_mask, NULL);
 }
 
-#ifndef min_not_zero
-#define min_not_zero(x, y) ({			\
-	typeof(x) __x = (x);			\
-	typeof(y) __y = (y);			\
-	__x == 0 ? __y : ((__y == 0) ? __x : min(__x, __y)); })
-#endif
-
 static void netflow_export_stats(void)
 {
 	struct ipt_netflow_stat t = { 0 };
@@ -3837,20 +3716,6 @@ static void export_sampler_parameters(void)
 }
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,2,0)
-int __ethtool_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
-{
-	ASSERT_RTNL();
-
-	if (!dev->ethtool_ops->get_settings)
-		return -EOPNOTSUPP;
-
-	memset(cmd, 0, sizeof(struct ethtool_cmd));
-	cmd->cmd = ETHTOOL_GSET;
-	return dev->ethtool_ops->get_settings(dev, cmd);
-}
-#endif
-
 static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *dev)
 {
 	struct ethtool_drvinfo info = { 0 };
@@ -3885,9 +3750,6 @@ static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *d
 	if (!__ethtool_get_settings(dev, &ecmd)) {
 		char *s, *p;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
-#define ethtool_cmd_speed(x) (x)->speed
-#endif
 		switch (ethtool_cmd_speed(&ecmd)) {
 		case SPEED_10000: s = "10Gb"; break;
 		case SPEED_2500:  s = "2.5Gb"; break;
@@ -3915,14 +3777,6 @@ ret:
 		ops->complete(dev);
 	return size - len;
 }
-
-#ifndef ARPHRD_PHONET
-#define ARPHRD_PHONET		820
-#define ARPHRD_PHONET_PIPE	821
-#endif
-#ifndef ARPHRD_IEEE802154
-#define ARPHRD_IEEE802154	804
-#endif
 
 static const unsigned short netdev_type[] =
 {ARPHRD_NETROM, ARPHRD_ETHER, ARPHRD_AX25,
@@ -4028,13 +3882,6 @@ static void export_dev(struct net_device *dev)
 	pdu_ts_mod = jiffies;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
-#define for_each_netdev_ns(net, dev) for (dev = dev_base; dev; dev = dev->next)
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
-#define for_each_netdev_ns(net, d) for_each_netdev(d)
-#else
-#define for_each_netdev_ns(net, d) for_each_netdev(net, d)
-#endif
 static void export_ifnames(void)
 {
 	struct net_device *dev;
@@ -4491,13 +4338,6 @@ netflow_target_check(const struct xt_tgchk_param *par)
 	if (strcmp("nat", tablename) == 0) {
 		/* In the nat table we only see single packet per flow, which is useless. */
 		printk(KERN_ERR "%s target: is not valid in %s table\n", target->name, tablename);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
-#define CHECK_FAIL	0
-#define CHECK_OK	1
-#else
-#define CHECK_FAIL	-EINVAL
-#define CHECK_OK	0
-#endif
 		return CHECK_FAIL;
 	}
 	if (target->family == AF_INET6 && protocol == 5) {
@@ -4508,9 +4348,6 @@ netflow_target_check(const struct xt_tgchk_param *par)
 }
 
 #define SetXBit(x) (0x8000 >> (x)) /* Proper bit for htons later. */
-#ifndef IPPROTO_MH
-#define IPPROTO_MH	135
-#endif
 static inline __u16 observed_hdrs(const __u8 currenthdr)
 {
 	switch (currenthdr) {
@@ -4657,11 +4494,6 @@ static inline struct vlan_ethhdr2 *vlan_eth_hdr2(const struct sk_buff *skb)
 	return (struct vlan_ethhdr2 *)skb_mac_header(skb);
 }
 #define VLAN_ETH_H2LEN	(VLAN_ETH_HLEN + 4)
-#ifndef ETH_P_QINQ1
-#define ETH_P_QINQ1	0x9100	/* deprecated QinQ VLAN */
-#define ETH_P_QINQ2	0x9200	/* deprecated QinQ VLAN */
-#define ETH_P_QINQ3	0x9300	/* deprecated QinQ VLAN */
-#endif
 /* http://tools.ietf.org/html/rfc7133 */
 static inline __u16 parse_vlan_tags(const struct sk_buff *skb, struct ipt_netflow_tuple *tuple)
 {
@@ -5254,9 +5086,6 @@ static void register_ct_events(void)
 	/* Reference netlink module to prevent it's unsafe unload before us. */
 	if (!referenced && (netlink_m = find_module(NETLINK_M))) {
 		referenced++;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)
-#define use_module ref_module
-#endif
 		use_module(THIS_MODULE, netlink_m);
 	}
 
@@ -5293,39 +5122,6 @@ static void unregister_ct_events(void)
 	mutex_unlock(&events_lock);
 }
 #endif /* CONFIG_NF_NAT_NEEDED */
-
-#ifndef NF_IP_LOCAL_IN /* 2.6.25 */
-#define NF_IP_PRE_ROUTING	NF_INET_PRE_ROUTING
-#define NF_IP_LOCAL_IN		NF_INET_LOCAL_IN
-#define NF_IP_FORWARD		NF_INET_FORWARD
-#define NF_IP_LOCAL_OUT		NF_INET_LOCAL_OUT
-#define NF_IP_POST_ROUTING	NF_INET_POST_ROUTING
-#endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
-/* net/netfilter/x_tables.c */
-static void xt_unregister_targets(struct xt_target *target, unsigned int n)
-{
-	unsigned int i;
-
-	for (i = 0; i < n; i++)
-		xt_unregister_target(&target[i]);
-}
-static int xt_register_targets(struct xt_target *target, unsigned int n)
-{
-	unsigned int i;
-
-	int err = 0;
-	for (i = 0; i < n; i++)
-		if ((err = xt_register_target(&target[i])))
-			goto err;
-	return err;
-err:
-	if (i > 0)
-		xt_unregister_targets(target, i);
-	return err;
-}
-#endif
 
 static struct ipt_target ipt_netflow_reg[] __read_mostly = {
 	{
@@ -5400,9 +5196,6 @@ static int __init ipt_netflow_init(void)
 	clear_ipt_netflow_stat();
 
 	if (!hashsize) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,11,0)
-#define num_physpages totalram_pages
-#endif
 		/* use 1/1024 of memory, 1M for hash table on 1G box */
 		unsigned long memksize = (num_physpages << PAGE_SHIFT) / 1024;
 

@@ -20,11 +20,11 @@ ccflags-y = @KOPTS@
 
 all: ipt_NETFLOW.ko libipt_NETFLOW.so libip6t_NETFLOW.so @SNMPTARGET@
 
-ipt_NETFLOW.ko: version.h ipt_NETFLOW.c ipt_NETFLOW.h Makefile
+ipt_NETFLOW.ko: version.h ipt_NETFLOW.c ipt_NETFLOW.h compat.h Makefile
 	@echo Compiling for kernel $(KVERSION)
 	make -C $(KDIR) M=$(CURDIR) modules CONFIG_DEBUG_INFO=y
 	@touch $@
-sparse: | version.h ipt_NETFLOW.c ipt_NETFLOW.h Makefile
+sparse: | version.h ipt_NETFLOW.c ipt_NETFLOW.h compat.h Makefile
 	@rm -f ipt_NETFLOW.ko ipt_NETFLOW.o
 	@echo Compiling for kernel $(KVERSION)
 	make -C $(KDIR) M=$(CURDIR) modules C=1
@@ -66,7 +66,7 @@ sinstall: | snmp_NETFLOW.so IPT-NETFLOW-MIB.my
 %.so: %_sh.o
 	gcc -shared -o $@ $<
 
-version.h: ipt_NETFLOW.c ipt_NETFLOW.h Makefile
+version.h: ipt_NETFLOW.c ipt_NETFLOW.h compat.h Makefile
 	@./version.sh --define > version.h
 
 linstall: | libipt_NETFLOW.so libip6t_NETFLOW.so
