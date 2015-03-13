@@ -3746,10 +3746,13 @@ static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *d
 	if (!n || len <= 1) /* have room for separator too */
 		goto ret;
 
-	/* append basic parameters: speed and port */
-	if (!__ethtool_get_settings(dev, &ecmd)) {
+	/* only get_settings for running devices to not trigger link negotiation */
+	if (dev->flags & IFF_UP &&
+	    dev->flags & IFF_RUNNING &&
+	    !__ethtool_get_settings(dev, &ecmd)) {
 		char *s, *p;
 
+		/* append basic parameters: speed and port */
 		switch (ethtool_cmd_speed(&ecmd)) {
 		case SPEED_10000: s = "10Gb"; break;
 		case SPEED_2500:  s = "2.5Gb"; break;
