@@ -2617,6 +2617,8 @@ struct base_template {
 #define BTPL_DIRECTION	0x00200000	/* flowDirection */
 #define BTPL_SAMPLERID	0x00400000	/* samplerId (v9) */
 #define BTPL_SELECTORID	0x00800000	/* selectorId (IPFIX) */
+#define BTPL_PHYSINDEV	0x01000000	/* ingressPhysicalInterface */
+#define BTPL_PHYSOUTDEV	0x02000000	/* egressPhysicalInterface */
 #define BTPL_OPTION	0x80000000	/* Options Template */
 #define BTPL_MAX	32
 /* Options Templates */
@@ -2691,6 +2693,14 @@ static struct base_template template_vlan_inner = {
 		dot1qCustomerPriority,
 		0
 	}
+};
+#endif
+#ifdef ENABLE_PHYSDEV
+static struct base_template template_physindev = {
+	.types = { ingressPhysicalInterface, 0 }
+};
+static struct base_template template_physoutdev = {
+	.types = { egressPhysicalInterface, 0 }
 };
 #endif
 #ifdef ENABLE_DIRECTION
@@ -3027,6 +3037,12 @@ static struct data_template *get_template(const unsigned int tmask)
 				tlist[tnum++] = &template_icmp_ipv6;
 		} else if (tmask & BTPL_NAT4)
 			tlist[tnum++] = &template_nat4;
+#ifdef ENABLE_PHYSDEV
+		if (tmask & BTPL_PHYSINDEV)
+			tlist[tnum++] = &template_physindev;
+		if (tmask & BTPL_PHYSOUTDEV)
+			tlist[tnum++] = &template_physoutdev;
+#endif
 		if (tmask & BTPL_PORTS)
 			tlist[tnum++] = &template_ports;
 		else if (tmask & BTPL_ICMP9)
@@ -3284,6 +3300,12 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 	case INPUT_SNMP:     put_unaligned_be16(nf->tuple.i_ifc, ptr); break;
 	case OUTPUT_SNMP:    put_unaligned_be16(nf->o_ifc, ptr); break;
 #endif
+#ifdef ENABLE_PHYSDEV
+	case ingressPhysicalInterface:
+			     put_unaligned_be16(nf->i_ifphys, ptr); break;
+	case egressPhysicalInterface:
+			     put_unaligned_be16(nf->o_ifphys, ptr); break;
+#endif
 #ifdef ENABLE_VLAN
 #define EXTRACT_VLAN_PRIO(tag) ((ntohs(tag) & VLAN_PRIO_MASK) >> VLAN_PRIO_SHIFT)
 	case SRC_VLAN:
@@ -3444,6 +3466,12 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 		if (unlikely(nf->flow_label))
 			tpl_mask |= BTPL_LABEL6;
 	}
+#ifdef ENABLE_PHYSDEV
+	if (nf->i_ifphys)
+		tpl_mask |= BTPL_PHYSINDEV;
+	if (nf->o_ifphys)
+		tpl_mask |= BTPL_PHYSOUTDEV;
+#endif
 	if (unlikely(nf->tcpoptions))
 		tpl_mask |= BTPL_TCPOPTIONS;
 	if (unlikely(nf->s_mask || nf->d_mask))
@@ -4910,6 +4938,14 @@ do_protocols:
 		nf->o_ifc = if_out? if_out->ifindex : -1;
 #else
 		nf->o_ifc = par->out? par->out->ifindex : -1;
+#endif
+#ifdef ENABLE_PHYSDEV
+		if (skb->nf_bridge) {
+			if (skb->nf_bridge->physindev)
+				nf->i_ifphys = skb->nf_bridge->physindev->ifindex;
+			if (skb->nf_bridge->physoutdev)
+				nf->o_ifphys = skb->nf_bridge->physoutdev->ifindex;
+		}
 #endif
 #ifdef SNMP_RULES
 		rcu_read_lock();

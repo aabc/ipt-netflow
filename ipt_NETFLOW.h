@@ -147,6 +147,8 @@ struct netflow5_pdu {
 	one(244, dot1qPriority, 1) \
 	one(245, dot1qCustomerVlanId, 2) \
 	one(246, dot1qCustomerPriority, 1) \
+	one(252, ingressPhysicalInterface, 2) \
+	one(253, egressPhysicalInterface, 2) \
 	one(256, ethernetType, 2) \
 	one(295, IPSecSPI, 4) \
 	one(300, observationDomainName, 128) \
@@ -279,6 +281,10 @@ struct ipt_netflow {
 	__be16		ethernetType; /* Network byte order */
 #endif
 	__u16		o_ifc;
+#ifdef ENABLE_PHYSDEV
+	__u16		i_ifphys;
+	__u16		o_ifphys;
+#endif
 #ifdef SNMP_RULES
 	__u16		i_ifcr;	/* translated interface numbers*/
 	__u16		o_ifcr;

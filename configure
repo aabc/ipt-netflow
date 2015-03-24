@@ -271,6 +271,7 @@ show_help() {
   echo "  --enable-sampler=hash  enables Hash sampler"
   echo "  --enable-aggregation   enables aggregation rules"
   echo "  --enable-promisc       enables promisc hack"
+  echo "  --enable-physdev       enables physdev reporting"
   echo "  --disable-snmp-agent   disables net-snmp agent"
   echo "  --disable-dkms         disables DKMS support completely"
   echo "  --disable-dkms-install  no DKMS install but still create dkms.conf"
@@ -302,6 +303,7 @@ do
     --enable-aggr*)  KOPTS="$KOPTS -DENABLE_AGGR" ;;
     --enable-promi*) KOPTS="$KOPTS -DENABLE_PROMISC" ;;
     --enable-snmp-r*)  KOPTS="$KOPTS -DENABLE_SNMP" ;;
+    --enable-physdev*) KOPTS="$KOPTS -DENABLE_PHYSDEV" ;;
     --disable-snmp-a*)   SKIPSNMP=1 ;;
     --disable-net-snmp*) SKIPSNMP=1 ;;
     --disable-dkms*)     SKIPDKMS=1 ;;
