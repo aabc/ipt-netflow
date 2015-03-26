@@ -33,6 +33,7 @@ readarray -t opts <<EOF
   --enable-sampler=hash
   --enable-promisc
   --enable-physdev
+  --enable-physdev-override
 EOF
 if [ "$SHORT" ]; then
   opts=("")

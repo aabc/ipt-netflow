@@ -2617,8 +2617,6 @@ struct base_template {
 #define BTPL_DIRECTION	0x00200000	/* flowDirection */
 #define BTPL_SAMPLERID	0x00400000	/* samplerId (v9) */
 #define BTPL_SELECTORID	0x00800000	/* selectorId (IPFIX) */
-#define BTPL_PHYSINDEV	0x01000000	/* ingressPhysicalInterface */
-#define BTPL_PHYSOUTDEV	0x02000000	/* egressPhysicalInterface */
 #define BTPL_OPTION	0x80000000	/* Options Template */
 #define BTPL_MAX	32
 /* Options Templates */
@@ -2638,6 +2636,10 @@ static struct base_template template_base_9 = {
 	.types = {
 		INPUT_SNMP,
 		OUTPUT_SNMP,
+#ifdef ENABLE_PHYSDEV
+		ingressPhysicalInterface,
+		egressPhysicalInterface,
+#endif
 		IN_PKTS,
 		IN_BYTES,
 		FIRST_SWITCHED,
@@ -2651,6 +2653,10 @@ static struct base_template template_base_ipfix = {
 	.types = {
 		ingressInterface,
 		egressInterface,
+#ifdef ENABLE_PHYSDEV
+		ingressPhysicalInterface,
+		egressPhysicalInterface,
+#endif
 		packetDeltaCount,
 		octetDeltaCount,
 		flowStartMilliseconds,
@@ -2693,14 +2699,6 @@ static struct base_template template_vlan_inner = {
 		dot1qCustomerPriority,
 		0
 	}
-};
-#endif
-#ifdef ENABLE_PHYSDEV
-static struct base_template template_physindev = {
-	.types = { ingressPhysicalInterface, 0 }
-};
-static struct base_template template_physoutdev = {
-	.types = { egressPhysicalInterface, 0 }
 };
 #endif
 #ifdef ENABLE_DIRECTION
@@ -3037,12 +3035,6 @@ static struct data_template *get_template(const unsigned int tmask)
 				tlist[tnum++] = &template_icmp_ipv6;
 		} else if (tmask & BTPL_NAT4)
 			tlist[tnum++] = &template_nat4;
-#ifdef ENABLE_PHYSDEV
-		if (tmask & BTPL_PHYSINDEV)
-			tlist[tnum++] = &template_physindev;
-		if (tmask & BTPL_PHYSOUTDEV)
-			tlist[tnum++] = &template_physoutdev;
-#endif
 		if (tmask & BTPL_PORTS)
 			tlist[tnum++] = &template_ports;
 		else if (tmask & BTPL_ICMP9)
@@ -3466,12 +3458,6 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 		if (unlikely(nf->flow_label))
 			tpl_mask |= BTPL_LABEL6;
 	}
-#ifdef ENABLE_PHYSDEV
-	if (nf->i_ifphys)
-		tpl_mask |= BTPL_PHYSINDEV;
-	if (nf->o_ifphys)
-		tpl_mask |= BTPL_PHYSOUTDEV;
-#endif
 	if (unlikely(nf->tcpoptions))
 		tpl_mask |= BTPL_TCPOPTIONS;
 	if (unlikely(nf->s_mask || nf->d_mask))
@@ -4599,6 +4585,8 @@ static unsigned int netflow_target(
 			   const void *targinfo
 # endif
 #else /* since 2.6.28 */
+# define if_in  par->in
+# define if_out par->out
 # if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
 			   const struct xt_target_param *par
 # else
@@ -4653,12 +4641,13 @@ static unsigned int netflow_target(
 	tuple.l3proto	= family;
 	tuple.s_port	= 0;
 	tuple.d_port	= 0;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
-	tuple.i_ifc	= if_in? if_in->ifindex : -1;
-#else
-	tuple.i_ifc	= par->in? par->in->ifindex : -1;
+#ifdef ENABLE_PHYSDEV_OVER
+	if (skb->nf_bridge && skb->nf_bridge->physindev)
+		tuple.i_ifc = skb->nf_bridge->physindev->ifindex;
+	else /* FALLTHROUGH */
 #endif
-	tcp_flags	= 0; /* Cisco sometimes have TCP ACK for non TCP packets, don't get it */
+	tuple.i_ifc	= if_in? if_in->ifindex : -1;
+	tcp_flags	= 0;
 	s_mask		= 0;
 	d_mask		= 0;
 #ifdef ENABLE_MAC
@@ -4934,29 +4923,37 @@ do_protocols:
 #endif
 		nf->nf_ts_first = jiffies;
 		nf->tcp_flags = tcp_flags;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 		nf->o_ifc = if_out? if_out->ifindex : -1;
-#else
-		nf->o_ifc = par->out? par->out->ifindex : -1;
+#ifdef ENABLE_PHYSDEV_OVER
+		if (skb->nf_bridge && skb->nf_bridge->physoutdev)
+			nf->o_ifc = skb->nf_bridge->physoutdev->ifindex;
 #endif
-#ifdef ENABLE_PHYSDEV
-		if (skb->nf_bridge) {
-			if (skb->nf_bridge->physindev)
-				nf->i_ifphys = skb->nf_bridge->physindev->ifindex;
-			if (skb->nf_bridge->physoutdev)
-				nf->o_ifphys = skb->nf_bridge->physoutdev->ifindex;
-		}
-#endif
+
 #ifdef SNMP_RULES
 		rcu_read_lock();
-# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
+#else
+# define resolve_snmp(dev) ((dev)? (dev)->ifindex : -1)
+#endif
+/* copy and snmp-resolve device with physdev overriding normal dev */
+#define copy_dev(out, physdev, dev) \
+		if (skb->nf_bridge && skb->nf_bridge->physdev) \
+			out = resolve_snmp(skb->nf_bridge->physdev); \
+		else \
+			out = resolve_snmp(dev);
+#ifdef ENABLE_PHYSDEV
+		copy_dev(nf->o_ifphys, physoutdev, if_out);
+		copy_dev(nf->i_ifphys, physindev, if_in);
+#endif
+#ifdef SNMP_RULES
+# ifdef ENABLE_PHYSDEV_OVER
+		copy_dev(nf->o_ifcr, physoutdev, if_out);
+		copy_dev(nf->i_ifcr, physindev, if_in);
+# else
 		nf->o_ifcr = resolve_snmp(if_out);
 		nf->i_ifcr = resolve_snmp(if_in);
-# else
-		nf->o_ifcr = resolve_snmp(par->out);
-		nf->i_ifcr = resolve_snmp(par->in);
 # endif
 		rcu_read_unlock();
+
 #endif
 		nf->s_mask = s_mask;
 		nf->d_mask = d_mask;
