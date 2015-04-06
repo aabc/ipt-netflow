@@ -39,9 +39,9 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
      Such as metering, exporting, sampling stat and reliability stat, sampling 
      configuration, network devices ifName, ifDescr list.
 
-   * Tested to compile and work out of the box on Centos 5, 6, 7, and Debian.
-     Many vanilla Linux kernels since 2.6.18 up to the latest (as of writing
-     is 3.16) are supported and tested.
+   * Tested to compile and work out of the box on Centos 5, 6, 7, Debian and
+   * Ubuntu. Many vanilla Linux kernels since 2.6.18 up to the latest (as of
+   * writing is 3.19) are supported and tested.
 
    * Module load time and run-time (via sysctl) configuration.
 
@@ -79,7 +79,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
 
       ~# yum install kernel-devel
 
-   b) What to do for Debian:
+   b) What to do for Debian and Ubuntu:
 
       ~# apt-get install module-assistant
       ~# m-a prepare
@@ -118,7 +118,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
 
       # yum install iptables-devel
 
-   b) What to do for Debian:
+   b) What to do for Debian or Ubuntu:
 
       # apt-get install iptables-dev pkg-config
 
@@ -134,7 +134,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
 
       # yum install net-snmp net-snmp-devel
 
-  b) For Debian:
+  b) For Debian or Ubuntu:
 
       # apt-get install snmpd libsnmp-dev
 
