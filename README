@@ -532,13 +532,25 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
        snmp-rules are compilation disabled by default, to enable you will need
        to add --enable-snmp option to ./configure script.
 
-   scan-min = 1
+   scan-min=1
      - Minimal interval between flow export scans. Sometimes could be useful
        to reduce load on exporting CPU by increasing this interval. Value are
        in kernel jiffies units (which is x/HZ seconds).
 
-   promisc = 1
+   promisc=1
      - Enable promisc hack. See README.promisc Solution.1 for details.
+
+   exportcpu=number
+     - Lock exporter to single CPU. This may be useful to fine control CPU
+       load. Common use case: with smp_affinity and RSS you spread packet
+       processing to all CPUs except one, and lock it to the exporter. While
+       exporter CPU load generally is not high, for someone it may be not
+       desirable to combine it with packet processing on very highly loaded
+       routers.
+
+       This option also could be changed at runtime with: 
+
+         # echo number > /sys/module/ipt_NETFLOW/parameters/exportcpu
 
 
 ====================
