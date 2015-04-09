@@ -52,7 +52,8 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
    * SNMP-index translation rules, let convert meaningless and unstable
      interface indexes (ifIndex) to more meaningful numbering scheme.
 
-   * Easy support for catching mirrored traffic with promisc option.
+   * Easy support for catching mirrored traffic with promisc option. Which is
+     also supporting optional MPLS decapsulation.
 
 
 ============================
@@ -228,12 +229,19 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
          case you will want to install it manually.
 
      --enable-physdev
-
 	 Export ingressPhysicalInterface(252) and egressPhysicalInterface(253)
 	 (relevant for bridges) in V9 and IPFIX. If your collector does not
 	 support these Elements but you still need physdevs then use
 	 --enable-physdev-override, in that case physdevs will override normal
 	 interface numbers ingressInterface(10) and egressInterface(14).
+
+     --enable-promisc
+	 Enables capturing of promiscuous packets into raw/PREROUTING chain.
+	 See README.promisc Solution 1 for usage details and example.
+
+     --promisc-mpls
+	 Enables MPLS label stack decapsulation for promiscuous packets. (For
+	 IPv4 and IPv6 packets only).
 
 
 ===========
@@ -538,7 +546,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
        in kernel jiffies units (which is x/HZ seconds).
 
    promisc=1
-     - Enable promisc hack. See README.promisc Solution.1 for details.
+     - Enables promisc hack. See README.promisc Solution 1 for details.
 
    exportcpu=number
      - Lock exporter to single CPU. This may be useful to fine control CPU

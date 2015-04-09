@@ -270,7 +270,8 @@ show_help() {
   echo "  --enable-sampler       enables Flow Sampling"
   echo "  --enable-sampler=hash  enables Hash sampler"
   echo "  --enable-aggregation   enables aggregation rules"
-  echo "  --enable-promisc       enables promisc hack"
+  echo "  --enable-promisc       enables promisc hack mode"
+  echo "  --promisc-mpls         decapsulate MPLS in promisc mode"
   echo "  --enable-physdev       enables physdev reporting"
   echo "  --enable-physdev-override      to override interfaces"
   echo "  --disable-snmp-agent   disables net-snmp agent"
@@ -302,7 +303,8 @@ do
     --enable-sampl*hash) KOPTS="$KOPTS -DENABLE_SAMPLER -DSAMPLING_HASH" ;;
     --enable-sampl*) KOPTS="$KOPTS -DENABLE_SAMPLER" ;;
     --enable-aggr*)  KOPTS="$KOPTS -DENABLE_AGGR" ;;
-    --enable-promi*) KOPTS="$KOPTS -DENABLE_PROMISC" ;;
+    --enable-promi*) ENABLE_PROMISC=1 ;;
+    --promisc-mpls)  ENABLE_PROMISC=1; PROMISC_MPLS=1 ;;
     --enable-snmp-r*)  KOPTS="$KOPTS -DENABLE_SNMP" ;;
     --enable-physdev)       KOPTS="$KOPTS -DENABLE_PHYSDEV" ;;
     --enable-physdev-over*) KOPTS="$KOPTS -DENABLE_PHYSDEV_OVER" ;;
@@ -317,6 +319,9 @@ do
 #    *) ni="$ni $ac_option" ;;
   esac
 done
+
+if [ "$ENABLE_PROMISC" = 1 ]; then KOPTS="$KOPTS -DENABLE_PROMISC"; fi
+if [ "$PROMISC_MPLS" = 1 ]; then   KOPTS="$KOPTS -DPROMISC_MPLS"; fi
 
 kernel_find_version() {
   KHOW=requested

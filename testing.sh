@@ -31,12 +31,12 @@ readarray -t opts <<EOF
   --enable-direction
   --enable-sampler
   --enable-sampler=hash
-  --enable-promisc
+  --enable-promisc --promisc-mpls
   --enable-physdev
   --enable-physdev-override
 EOF
 if [ "$SHORT" ]; then
-  opts=("")
+  opts=("$SHORT")
 fi
 
 colorecho() {

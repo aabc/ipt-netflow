@@ -268,4 +268,19 @@ out:
 #define __get_cpu_var(var)	(*this_cpu_ptr(&(var)))
 #endif
 
+#ifndef MPLS_HLEN
+#define MPLS_HLEN 4
+static inline int eth_p_mpls(__be16 eth_type)
+{
+	return eth_type == htons(ETH_P_MPLS_UC) ||
+		eth_type == htons(ETH_P_MPLS_MC);
+}
+#endif
+#ifndef MPLS_LS_S_MASK
+struct mpls_label {
+	__be32 entry;
+};
+#define MPLS_LS_S_MASK          0x00000100
+#endif
+
 #endif /* COMPAT_NETFLOW_H */

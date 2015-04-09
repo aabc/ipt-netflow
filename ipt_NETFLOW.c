@@ -578,6 +578,9 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 #endif
 #ifdef ENABLE_PROMISC
 	    " promisc"
+# ifdef PROMISC_MPLS
+	    "+mpls"
+# endif
 #endif
 #ifdef ENABLE_SAMPLER
 	    " samp"
@@ -1302,17 +1305,38 @@ static int promisc_rcv(struct sk_buff *skb, struct net_device *dev, struct packe
 		skb_pull(skb, vlan_depth);
 
 		skb_reset_network_header(skb);
-		skb_reset_transport_header(skb);
 		skb_reset_mac_len(skb);
 	}
+# ifdef PROMISC_MPLS
+	if (eth_p_mpls(skb->protocol)) {
+		size_t stack_len = 0;
+		const struct mpls_label *mpls;
 
+		do {
+			mpls = (struct mpls_label *)(skb->data + stack_len);
+			stack_len += MPLS_HLEN;
+			if (unlikely(!pskb_may_pull(skb, stack_len)))
+				goto drop;
+		} while (!(mpls->entry & htonl(MPLS_LS_S_MASK)));
+
+		skb_pull(skb, stack_len);
+		skb_reset_network_header(skb);
+
+		if (!pskb_may_pull(skb, 1))
+			goto drop;
+		switch (ip_hdr(skb)->version) {
+		case 4:  skb->protocol = htons(ETH_P_IP);   break;
+		case 6:  skb->protocol = htons(ETH_P_IPV6); break;
+		default: goto drop;
+		}
+	}
+# endif
 	switch (skb->protocol) {
 	case htons(ETH_P_IP):
 		return promisc4_rcv(skb, dev, pt, orig_dev);
 	case htons(ETH_P_IPV6):
 		return promisc6_rcv(skb, dev, pt, orig_dev);
 	}
-
 drop:
 	NETFLOW_STAT_INC(pkt_promisc_drop);
 out:
