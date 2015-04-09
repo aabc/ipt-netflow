@@ -107,6 +107,7 @@ union nf_inet_addr {
 # elif LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0)
 #  define prandom_u32 random32
 #endif
+#define prandom_u32_max compat_prandom_u32_max
 static inline u32 prandom_u32_max(u32 ep_ro)
 {
 	return (u32)(((u64) prandom_u32() * ep_ro) >> 32);
