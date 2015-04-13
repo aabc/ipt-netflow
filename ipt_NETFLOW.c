@@ -1313,10 +1313,10 @@ static int promisc_rcv(struct sk_buff *skb, struct net_device *dev, struct packe
 		const struct mpls_label *mpls;
 
 		do {
-			mpls = (struct mpls_label *)(skb->data + stack_len);
 			stack_len += MPLS_HLEN;
 			if (unlikely(!pskb_may_pull(skb, stack_len)))
 				goto drop;
+			mpls = (struct mpls_label *)(skb->data + stack_len - MPLS_HLEN);
 		} while (!(mpls->entry & htonl(MPLS_LS_S_MASK)));
 
 		skb_pull(skb, stack_len);
