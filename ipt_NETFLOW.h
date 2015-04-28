@@ -113,6 +113,16 @@ struct netflow5_pdu {
 	two(61,  DIRECTION, flowDirection, 1) \
 	two(62,  IPV6_NEXT_HOP, ipNextHopIPv6Address, 16) \
 	two(64,  IPV6_OPTION_HEADERS, ipv6ExtensionHeaders, 2) \
+	two(70,  MPLS_LABEL_1,  mplsTopLabelStackSection, 3) \
+	two(71,  MPLS_LABEL_2,  mplsLabelStackSection2,   3) \
+	two(72,  MPLS_LABEL_3,  mplsLabelStackSection3,   3) \
+	two(73,  MPLS_LABEL_4,  mplsLabelStackSection4,   3) \
+	two(74,  MPLS_LABEL_5,  mplsLabelStackSection5,   3) \
+	two(75,  MPLS_LABEL_6,  mplsLabelStackSection6,   3) \
+	two(76,  MPLS_LABEL_7,  mplsLabelStackSection7,   3) \
+	two(77,  MPLS_LABEL_8,  mplsLabelStackSection8,   3) \
+	two(78,  MPLS_LABEL_9,  mplsLabelStackSection9,   3) \
+	two(79,  MPLS_LABEL_10, mplsLabelStackSection10,  3) \
 	one(80,  destinationMacAddress, 6) \
 	two(82,  IF_NAME, interfaceName, IF_NAME_SZ) \
 	two(83,  IF_DESC, interfaceDescription, IF_DESC_SZ) \
@@ -136,6 +146,9 @@ struct netflow5_pdu {
 	one(166, notSentFlowTotalCount, 8) \
 	one(167, notSentPacketTotalCount, 8) \
 	one(168, notSentOctetTotalCount, 8) \
+	one(200, mplsTopLabelTTL, 1) \
+	one(201, mplsLabelStackLength, 1) \
+	one(202, mplsLabelStackDepth, 1) \
 	one(208, ipv4Options, 4) \
 	one(209, tcpOptions, 4) \
 	one(225, postNATSourceIPv4Address, 4) \
@@ -255,6 +268,9 @@ struct ipt_netflow_tuple {
 	union nf_inet_addr dst;
 	__be16		s_port; // Network byte order
 	__be16		d_port; // -"-
+#ifdef MPLS_DEPTH
+	__be32		mpls[MPLS_DEPTH]; /* Network byte order */
+#endif
 	__u16		i_ifc;	// Host byte order
 #ifdef ENABLE_VLAN
 	__be16		tag[MAX_VLAN_TAGS]; // Network byte order (outer tag first)

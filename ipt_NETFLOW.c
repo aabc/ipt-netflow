@@ -2641,6 +2641,7 @@ struct base_template {
 #define BTPL_DIRECTION	0x00200000	/* flowDirection */
 #define BTPL_SAMPLERID	0x00400000	/* samplerId (v9) */
 #define BTPL_SELECTORID	0x00800000	/* selectorId (IPFIX) */
+#define BTPL_MPLS	0x01000000	/* MPLS stack */
 #define BTPL_OPTION	0x80000000	/* Options Template */
 #define BTPL_MAX	32
 /* Options Templates */
@@ -2721,6 +2722,27 @@ static struct base_template template_vlan_inner = {
 	.types = {
 		dot1qCustomerVlanId,
 		dot1qCustomerPriority,
+		0
+	}
+};
+#endif
+#ifdef MPLS_DEPTH
+static struct base_template template_mpls = {
+	.types = {
+		mplsTopLabelTTL,
+		/* do not just add element here, becasue this array
+		 * is truncated in ipt_netflow_init() */
+#define MPLS_LABELS_BASE_INDEX 1
+		MPLS_LABEL_1,
+		MPLS_LABEL_2,
+		MPLS_LABEL_3,
+		MPLS_LABEL_4,
+		MPLS_LABEL_5,
+		MPLS_LABEL_6,
+		MPLS_LABEL_7,
+		MPLS_LABEL_8,
+		MPLS_LABEL_9,
+		MPLS_LABEL_10,
 		0
 	}
 };
@@ -3091,6 +3113,10 @@ static struct data_template *get_template(const unsigned int tmask)
 		if (tmask & BTPL_ETHERTYPE)
 			tlist[tnum++] = &template_ethertype;
 #endif
+#ifdef MPLS_DEPTH
+		if (tmask & BTPL_MPLS)
+			tlist[tnum++] = &template_mpls;
+#endif
 #ifdef ENABLE_DIRECTION
 		if (tmask & BTPL_DIRECTION)
 			tlist[tnum++] = &template_direction;
@@ -3338,6 +3364,21 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 	case destinationMacAddress: memcpy(ptr, &nf->tuple.h_dst, ETH_ALEN); break;
 	case sourceMacAddress:	    memcpy(ptr, &nf->tuple.h_src, ETH_ALEN); break;
 #endif
+#ifdef MPLS_DEPTH
+	case MPLS_LABEL_1:    memcpy(ptr, &nf->tuple.mpls[0], 3); break;
+	case MPLS_LABEL_2:    memcpy(ptr, &nf->tuple.mpls[1], 3); break;
+	case MPLS_LABEL_3:    memcpy(ptr, &nf->tuple.mpls[2], 3); break;
+# if MPLS_DEPTH > 3
+	case MPLS_LABEL_4:    memcpy(ptr, &nf->tuple.mpls[3], 3); break;
+	case MPLS_LABEL_5:    memcpy(ptr, &nf->tuple.mpls[4], 3); break;
+	case MPLS_LABEL_6:    memcpy(ptr, &nf->tuple.mpls[5], 3); break;
+	case MPLS_LABEL_7:    memcpy(ptr, &nf->tuple.mpls[6], 3); break;
+	case MPLS_LABEL_8:    memcpy(ptr, &nf->tuple.mpls[7], 3); break;
+	case MPLS_LABEL_9:    memcpy(ptr, &nf->tuple.mpls[8], 3); break;
+	case MPLS_LABEL_10:   memcpy(ptr, &nf->tuple.mpls[9], 3); break;
+# endif
+	case mplsTopLabelTTL: *ptr = ntohl(nf->tuple.mpls[0]); break;
+#endif
 #ifdef ENABLE_DIRECTION
 	case DIRECTION:		       *ptr = hook2dir(nf->hooknumx - 1); break;
 #endif
@@ -3523,6 +3564,10 @@ static void netflow_export_flow_tpl(struct ipt_netflow *nf)
 #if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
 	if (nf->ethernetType)
 		tpl_mask |= BTPL_ETHERTYPE;
+#endif
+#ifdef MPLS_DEPTH
+	if (nf->tuple.mpls[0])
+		tpl_mask |= BTPL_MPLS;
 #endif
 #ifdef ENABLE_DIRECTION
 	if (nf->hooknumx)
@@ -4519,74 +4564,79 @@ static inline __u32 tcp_options(const struct sk_buff *skb, const unsigned int pt
 	return ret;
 }
 
-#ifdef ENABLE_VLAN
-/* double tagged header */
-struct vlan_ethhdr2 {
-	unsigned char   h_dest[ETH_ALEN];
-	unsigned char   h_source[ETH_ALEN];
-	__be16          h_vlan_proto;
-	__be16          h_vlan_TCI;
-	__be16          h2_vlan_proto;
-	__be16          h2_vlan_TCI;
-	__be16          h2_vlan_encapsulated_proto;
-};
-static inline struct vlan_ethhdr2 *vlan_eth_hdr2(const struct sk_buff *skb)
+/* check if data region is in header boundary */
+inline static int skb_in_header(const struct sk_buff *skb, const void *ptr, size_t off)
 {
-	return (struct vlan_ethhdr2 *)skb_mac_header(skb);
+	return ((unsigned char *)ptr + off) <= skb->data;
 }
-#define VLAN_ETH_H2LEN	(VLAN_ETH_HLEN + 4)
-/* http://tools.ietf.org/html/rfc7133 */
-static inline __u16 parse_vlan_tags(const struct sk_buff *skb, struct ipt_netflow_tuple *tuple)
+
+static inline int eth_p_vlan(__be16 eth_type)
 {
-	int tn;
+	return eth_type == htons(ETH_P_8021Q) ||
+		eth_type == htons(ETH_P_8021AD);
+}
+
+/* Extract all L2 header data, currently (in iptables) skb->data is
+ * pointing to network_header, so we use mac_header instead. */
+/* Parse eth header, then vlans, then mpls. */
+static void parse_l2_header(const struct sk_buff *skb, struct ipt_netflow_tuple *tuple)
+{
+#if defined(ENABLE_MAC) || defined(ENABLE_VLAN) || defined(MPLS_DEPTH)
+	unsigned char *mac_header = skb_mac_header(skb);
+# if defined(ENABLE_VLAN) || defined(MPLS_DEPTH)
+	unsigned int hdr_depth;
 	__be16 proto;
+# endif
+# ifdef ENABLE_VLAN
+	int tag_num = 0;
 
-	/* no even untagged ethernet header */
-	if (skb_mac_header(skb) < skb->head ||
-	    skb_mac_header(skb) + ETH_HLEN > skb->data)
-		return skb->protocol;
-
+	/* get vlan tag that is saved in skb->vlan_tci */
+	if (vlan_tx_tag_present(skb))
+		tuple->tag[tag_num++] = htons(vlan_tx_tag_get(skb));
+# endif
+	if (mac_header < skb->head ||
+	    mac_header + ETH_HLEN > skb->data)
+		return;
+# ifdef ENABLE_MAC
+	memcpy(&tuple->h_dst, eth_hdr(skb)->h_dest, ETH_ALEN);
+	memcpy(&tuple->h_src, eth_hdr(skb)->h_source, ETH_ALEN);
+# endif
+# if defined(ENABLE_VLAN) || defined(MPLS_DEPTH)
+	hdr_depth = ETH_HLEN;
 	proto = eth_hdr(skb)->h_proto;
-	switch (proto) {
-		case htons(ETH_P_QINQ1):
-		case htons(ETH_P_QINQ2):
-		case htons(ETH_P_QINQ3):
-		case htons(ETH_P_8021AD): /* S-TAG or B-TAG */
-		case htons(ETH_P_8021Q):  /* C-TAG */
-			/* tagged and have full vlan header */
-			if (skb_mac_header(skb) + VLAN_ETH_HLEN <= skb->data)
-				break;
-			/* FALLTHROUGH */
-		default:
-			return proto;
+	if (eth_p_vlan(proto)) {
+		do {
+			const struct vlan_hdr *vh;
+
+			vh = (struct vlan_hdr *)(mac_header + hdr_depth);
+			if (!skb_in_header(skb, vh, VLAN_HLEN))
+				return;
+			proto = vh->h_vlan_encapsulated_proto;
+#  ifdef ENABLE_VLAN
+			if (tag_num < MAX_VLAN_TAGS)
+				tuple->tag[tag_num++] = vh->h_vlan_TCI;
+#  endif
+			hdr_depth += VLAN_HLEN;
+		} while (eth_p_vlan(proto));
 	}
+#  ifdef MPLS_DEPTH
+	if (eth_p_mpls(proto)) {
+		const struct mpls_label *mpls;
+		int label_num = 0;
 
-	/* if there is already tag[0] I assume it's from skb->vlan_tci, and
-	 * it isn't present in the frame (that's how vlan_untag() doing it),
-	 * thus, tag we see first is actually second tag. */
-	tn = tuple->tag[0]? 1 : 0;
-
-	/* outer tag */
-	tuple->tag[tn++] = vlan_eth_hdr(skb)->h_vlan_TCI;
-	proto = vlan_eth_hdr(skb)->h_vlan_encapsulated_proto;
-
-	if (tn >= MAX_VLAN_TAGS)
-		return proto;
-
-	switch (proto) {
-		case htons(ETH_P_8021Q):  /* C-TAG */
-			if (skb_mac_header(skb) + VLAN_ETH_H2LEN <= skb->data)
-				break;
-			/* FALLTHROUGH */
-		default:
-			return proto;
+		do {
+			mpls = (struct mpls_label *)(mac_header + hdr_depth);
+			if (!skb_in_header(skb, mpls, MPLS_HLEN))
+				return;
+			if (label_num < MPLS_DEPTH)
+				tuple->mpls[label_num++] = mpls->entry;
+			hdr_depth += MPLS_HLEN;
+		} while (!(mpls->entry & htonl(MPLS_LS_S_MASK)));
 	}
-
-	/* second tag */
-	tuple->tag[tn] = vlan_eth_hdr2(skb)->h2_vlan_TCI;
-	return vlan_eth_hdr2(skb)->h2_vlan_encapsulated_proto;
+#  endif
+# endif /* defined(ENABLE_VLAN) || defined(MPLS_DEPTH) */
+#endif /* defined(ENABLE_MAC) || defined(ENABLE_VLAN) || defined(MPLS_DEPTH) */
 }
-#endif /* ENABLE_VLAN */
 
 /* packet receiver */
 static unsigned int netflow_target(
@@ -4649,12 +4699,10 @@ static unsigned int netflow_target(
 	int options = 0;
 	int tcpoptions = 0;
 	struct stripe_entry *stripe;
-#if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
-	__be16 ethernetType = 0;
-#endif
 
-	iph = skb_header_pointer(skb, 0, (likely(family == AF_INET))? sizeof(_iph.ip) : sizeof(_iph.ip6), &iph);
-	if (unlikely(iph == NULL)) {
+	if (unlikely(!pskb_may_pull(skb, 0) ||
+		    !(iph = skb_header_pointer(skb, 0,
+				    (likely(family == AF_INET))? sizeof(_iph.ip) : sizeof(_iph.ip6), &iph)))) {
 		NETFLOW_STAT_INC(truncated);
 		NETFLOW_STAT_INC(pkt_drop);
 		NETFLOW_STAT_ADD(traf_drop, skb->len);
@@ -4662,9 +4710,8 @@ static unsigned int netflow_target(
 		return IPT_CONTINUE;
 	}
 
-	tuple.l3proto	= family;
-	tuple.s_port	= 0;
-	tuple.d_port	= 0;
+	memset(&tuple, 0, sizeof(tuple));
+	tuple.l3proto = family;
 #ifdef ENABLE_PHYSDEV_OVER
 	if (skb->nf_bridge && skb->nf_bridge->physindev)
 		tuple.i_ifc = skb->nf_bridge->physindev->ifindex;
@@ -4674,25 +4721,7 @@ static unsigned int netflow_target(
 	tcp_flags	= 0;
 	s_mask		= 0;
 	d_mask		= 0;
-#ifdef ENABLE_MAC
-	if (skb_mac_header(skb) >= skb->head &&
-	    skb_mac_header(skb) + ETH_HLEN <= skb->data) {
-		memcpy(&tuple.h_dst, eth_hdr(skb)->h_dest, ETH_ALEN);
-		memcpy(&tuple.h_src, eth_hdr(skb)->h_source, ETH_ALEN);
-#ifndef ENABLE_VLAN
-		ethernetType = eth_hdr(skb)->h_proto;
-#endif
-	} else {
-		memset(&tuple.h_dst, 0, ETH_ALEN);
-		memset(&tuple.h_src, 0, ETH_ALEN);
-	}
-#endif
-#ifdef ENABLE_VLAN
-	tuple.tag[1] = tuple.tag[0] = 0;
-	if (vlan_tx_tag_present(skb))
-		tuple.tag[0] = htons(vlan_tx_tag_get(skb));
-	ethernetType = parse_vlan_tags(skb, &tuple);
-#endif
+	parse_l2_header(skb, &tuple);
 
 	if (likely(family == AF_INET)) {
 		tuple.src	= (union nf_inet_addr){ .ip = iph->ip.saddr };
@@ -4983,7 +5012,7 @@ do_protocols:
 		nf->d_mask = d_mask;
 
 #if defined(ENABLE_MAC) || defined(ENABLE_VLAN)
-		nf->ethernetType = ethernetType;
+		nf->ethernetType = skb->protocol;
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)
@@ -5274,6 +5303,11 @@ static int __init ipt_netflow_init(void)
 		printk(KERN_ERR "Unable to create ipt_neflow_hash\n");
 		goto err;
 	}
+
+#ifdef MPLS_DEPTH
+	if (MPLS_DEPTH >= 0 && MPLS_DEPTH < 10)
+		template_mpls.types[MPLS_LABELS_BASE_INDEX + MPLS_DEPTH] = 0;
+#endif
 
 	for (i = 0; i < LOCK_COUNT; i++) {
 		spin_lock_init(&htable_stripes[i].lock);

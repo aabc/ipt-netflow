@@ -28,6 +28,7 @@ readarray -t opts <<EOF
   --enable-snmp-rules
   --enable-macaddress
   --enable-vlan
+  --promisc-mpls
   --enable-direction
   --enable-sampler
   --enable-sampler=hash

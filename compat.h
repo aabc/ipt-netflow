@@ -280,7 +280,8 @@ static inline int eth_p_mpls(__be16 eth_type)
 struct mpls_label {
 	__be32 entry;
 };
-#define MPLS_LS_S_MASK          0x00000100
+#define MPLS_LS_S_MASK		0x00000100
+
 #endif
 
 #endif /* COMPAT_NETFLOW_H */

@@ -53,7 +53,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
      interface indexes (ifIndex) to more meaningful numbering scheme.
 
    * Easy support for catching mirrored traffic with promisc option. Which is
-     also supporting optional MPLS decapsulation.
+     also supporting optional MPLS decapsulation and MPLS-aware NetFlow.
 
 
 ============================
@@ -241,7 +241,10 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
 
      --promisc-mpls
 	 Enables MPLS label stack decapsulation for promiscuous packets. (For
-	 IPv4 and IPv6 packets only).
+	 IPv4 and IPv6 packets only). This also enables MPLS-aware NetFlow (v9
+	 and IPFIX), you may wish to specify with --promisc-mpls=n how much MPLS
+	 labels you want to be recorded and exported (default is 3, maximum is
+	 10, set to 0 to not report anything).
 
 
 ===========
@@ -751,16 +754,25 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
      IP TOS:                     ipClassOfService(5),
      and address family (IP or IPv6).
 
-  If VLAN exporting is enabled:
+  Additional Flow Keys if VLAN exporting is enabled:
+
      First (outer) dot1q VLAN tag: dot1qVlanId(243) and
                                  dot1qPriority(244) for IPFIX,
                                  or vlanId(243) for NetFlow v9.
      Second (customer) dot1q VLAN tag: dot1qCustomerVlanId(245)
                                  and dot1qCustomerPriority(246).
 
-  If MAC address exporting is enabled:
+  Additional Flow Keys if MAC address exporting is enabled:
+
      Destination MAC address:    destinationMacAddress(80),
      Source MAC address:         sourceMacAddress(56).
+
+  Additional Flow Keys if MPLS-aware NetFlow is enabled:
+
+     Captured MPLS stack is fully treated as flow key (including TTL values),
+     which is Elements from mplsTopLabelStackSection(70) to
+     mplsLabelStackSection10(79), and, if present, mplsTopLabelTTL(200).
+
 
   Other Elements are not Flow Keys. Note that outer interface, which is
   egressInterface(14), is not regarded as Flow Key. Quoting RFC 7012: "For
