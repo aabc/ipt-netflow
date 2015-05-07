@@ -377,8 +377,7 @@ static inline int ipt_netflow_tuple_equal(const struct ipt_netflow_tuple *t1,
 struct ipt_netflow_sock {
 	struct list_head list;
 	struct socket *sock;
-	__be32 ipaddr;			// destination
-	unsigned short port;
+	struct sockaddr_storage addr;	// destination
 	atomic_t wmem_peak;		// sk_wmem_alloc peak value
 	unsigned int err_connect;	// connect errors
 	unsigned int err_full;		// socket filled error

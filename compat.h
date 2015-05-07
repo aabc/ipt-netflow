@@ -284,4 +284,61 @@ struct mpls_label {
 
 #endif
 
+/* sockaddr comparison functions is from fs/nfs/client.c */
+static int sockaddr_match_ipaddr6(const struct sockaddr *sa1, const struct sockaddr *sa2)
+{
+	const struct sockaddr_in6 *sin1 = (const struct sockaddr_in6 *)sa1;
+	const struct sockaddr_in6 *sin2 = (const struct sockaddr_in6 *)sa2;
+
+	if (!ipv6_addr_equal(&sin1->sin6_addr, &sin2->sin6_addr))
+		return 0;
+	else if (ipv6_addr_type(&sin1->sin6_addr) & IPV6_ADDR_LINKLOCAL)
+		return sin1->sin6_scope_id == sin2->sin6_scope_id;
+
+	return 1;
+}
+
+static int sockaddr_match_ipaddr4(const struct sockaddr *sa1, const struct sockaddr *sa2)
+{
+	const struct sockaddr_in *sin1 = (const struct sockaddr_in *)sa1;
+	const struct sockaddr_in *sin2 = (const struct sockaddr_in *)sa2;
+
+	return sin1->sin_addr.s_addr == sin2->sin_addr.s_addr;
+}
+
+static int sockaddr_cmp_ip6(const struct sockaddr *sa1, const struct sockaddr *sa2)
+{
+	const struct sockaddr_in6 *sin1 = (const struct sockaddr_in6 *)sa1;
+	const struct sockaddr_in6 *sin2 = (const struct sockaddr_in6 *)sa2;
+
+	return sockaddr_match_ipaddr6(sa1, sa2) &&
+		(sin1->sin6_port == sin2->sin6_port);
+}
+
+static int sockaddr_cmp_ip4(const struct sockaddr *sa1, const struct sockaddr *sa2)
+{
+	const struct sockaddr_in *sin1 = (const struct sockaddr_in *)sa1;
+	const struct sockaddr_in *sin2 = (const struct sockaddr_in *)sa2;
+
+	return sockaddr_match_ipaddr4(sa1, sa2) &&
+		(sin1->sin_port == sin2->sin_port);
+}
+
+static int sockaddr_cmp(const struct sockaddr_storage *sa1, const struct sockaddr_storage *sa2)
+{
+	const struct sockaddr *s1 = (const struct sockaddr *)sa1;
+	const struct sockaddr *s2 = (const struct sockaddr *)sa2;
+
+	if (sa1->ss_family != sa2->ss_family)
+		return 0;
+
+	switch (sa1->ss_family) {
+	case AF_INET:
+		return sockaddr_cmp_ip4(s1, s2);
+	case AF_INET6:
+		return sockaddr_cmp_ip6(s1, s2);
+	}
+	return 0;
+}
+
 #endif /* COMPAT_NETFLOW_H */
