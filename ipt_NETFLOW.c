@@ -26,6 +26,8 @@
 #include <linux/seq_file.h>
 #include <linux/random.h>
 #include <linux/in6.h>
+#include <linux/inet.h>
+#include <linux/kernel.h>
 #include <linux/ip.h>
 #include <linux/udp.h>
 #include <linux/icmp.h>
@@ -307,7 +309,7 @@ static int metric = METRIC_DFL,
 
 static int set_hashsize(int new_size);
 static void destination_removeall(void);
-static int add_destinations(char *ptr);
+static int add_destinations(const char *ptr);
 static int netflow_scan_and_export(int flush);
 enum {
 	DONT_FLUSH, AND_FLUSH
@@ -2203,36 +2205,76 @@ static inline int resolve_snmp(const struct net_device *ifc)
 }
 #endif /* SNMP_RULES */
 
-#define SEPARATORS " ,;\t\n"
-static int add_destinations(char *ptr)
+/* count how much character c is in the string */
+static size_t strncount(const char *s, size_t count, int c)
 {
-	while (ptr) {
-		unsigned char ip[4];
-		unsigned short port;
+	size_t amount = 0;
 
+	for (; count-- && *s != '\0'; ++s)
+		if (*s == (char)c)
+			++amount;
+	return amount;
+}
+
+#define SEPARATORS " ,;\t\n"
+static int add_destinations(const char *ptr)
+{
+	int len;
+
+	for (; ptr; ptr += len) {
+		struct sockaddr_storage ss;
+		struct ipt_netflow_sock *usock;
+		const char *end;
+		int succ = 0;
+
+		/* skip initial separators */
 		ptr += strspn(ptr, SEPARATORS);
 
-		if (sscanf(ptr, "%hhu.%hhu.%hhu.%hhu:%hu",
-			   ip, ip + 1, ip + 2, ip + 3, &port) == 5) {
-			struct ipt_netflow_sock *usock;
-			struct sockaddr_in *sin;
-
-			if (!(usock = vmalloc(sizeof(*usock)))) {
-				printk(KERN_ERR "ipt_NETFLOW: can't vmalloc socket\n");
-				return -ENOMEM;
-			}
-
-			memset(usock, 0, sizeof(*usock));
-			sin = (struct sockaddr_in *)&usock->addr;
-			sin->sin_family = AF_INET;
-			sin->sin_port = htons(port);
-			sin->sin_addr.s_addr = *(__be32 *)ip;
-			usock_connect(usock, 0);
-			add_usock(usock);
-		} else
+		len = strcspn(ptr, SEPARATORS);
+		if (!len)
 			break;
+		memset(&ss, 0, sizeof(ss));
 
-		ptr = strpbrk(ptr, SEPARATORS);
+		if (strncount(ptr, len, ':') >= 2) {
+			struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&ss;
+			const char *c = ptr;
+			int clen = len;
+
+			sin6->sin6_family = AF_INET6;
+			sin6->sin6_port = htons(2055);
+			if (*c == '[') {
+				++c;
+				--clen;
+			}
+			succ = in6_pton(c, clen, (u8 *)&sin6->sin6_addr, -1, &end);
+			if (succ && *ptr == '[' && *end == ']')
+				++end;
+			if (succ &&
+			    (*end == ':' || *end == '.' || *end == 'p' || *end == '#'))
+				sin6->sin6_port = htons(simple_strtoul(++end, NULL, 0));
+		} else {
+			struct sockaddr_in *sin = (struct sockaddr_in *)&ss;
+
+			sin->sin_family = AF_INET;
+			sin->sin_port = htons(2055);
+			succ = in4_pton(ptr, len, (u8 *)&sin->sin_addr, -1, &end);
+			if (succ && *end == ':')
+				sin->sin_port = htons(simple_strtoul(++end, NULL, 0));
+		}
+		if (!succ) {
+			printk(KERN_ERR "ipt_NETFLOW: can't parse destination: %.*s\n",
+			    len, ptr);
+			continue;
+		}
+
+		if (!(usock = vmalloc(sizeof(*usock)))) {
+			printk(KERN_ERR "ipt_NETFLOW: can't vmalloc socket\n");
+			return -ENOMEM;
+		}
+		memset(usock, 0, sizeof(*usock));
+		usock->addr = ss;
+		usock_connect(usock, 0);
+		add_usock(usock);
 	}
 	return 0;
 }

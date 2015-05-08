@@ -401,9 +401,14 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
        because NetFlow v5 isn't compatible with IPv6.
 
    destination=127.0.0.1:2055
-     - where to export netflow, to this ip address
-       You will see this connection in netstat like this:
+     - where to export netflow, to this ip address. Port is optional, default
+       is 2055. You will see this connection in netstat like this:
+
        udp 0 0 127.0.0.1:32772 127.0.0.1:2055 ESTABLISHED 
+
+   destination=[2001:db8::1]:2055
+     - export target using IPv6 address. Brackets are optional, but otherwise
+       you should delimit port with 'p' or '#' character.
 
    destination=127.0.0.1:2055,192.0.0.1:2055
      - mirror flows to two (can be more) addresses, separate addresses
