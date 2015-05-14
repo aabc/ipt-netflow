@@ -1,3 +1,9 @@
+/* This code is derived from the Linux Kernel sources intended
+ * to maintain compatibility with different Kernel versions.
+ * Copyright of original source is of respective Linux Kernel authors.
+ * License is GPLv2.
+ */
+
 #ifndef COMPAT_NETFLOW_H
 #define COMPAT_NETFLOW_H
 
