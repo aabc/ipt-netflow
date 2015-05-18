@@ -8,15 +8,21 @@ MVERSION=`sed -n 's/^#define.*IPT_NETFLOW_VERSION.*"\(.*\)".*/\1/p' ipt_NETFLOW.
 
 # GITVERSION overrides base version.
 if [ -e version.h ]; then
-  MVERSION=`sed -n 's/#define GITVERSION "\(.*\)".*/\1/p' version.h`
+  GITVERSION=`sed -n 's/#define GITVERSION "\(.*\)".*/\1/p' version.h`
+fi
+if [ "$GITVERSION" != "" ]; then
+  MVERSION="$GITVERSION"
 fi
 
 # git describe overrides version from the source.
 if [ -d .git ] && which git >/dev/null 2>&1; then \
   GVERSION=`git describe --dirty`
-  MVERSION=${GVERSION#v}
+  GITDESCVERSION=${GVERSION#v}
 else
   GVERSION=
+fi
+if [ "$GITDESCVERSION" != "" ]; then
+  MVERSION="$GITDESCVERSION"
 fi
 
 if [ "$1" = --define ]; then
