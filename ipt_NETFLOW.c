@@ -2667,7 +2667,7 @@ static inline void pdu_rewind_space(const size_t size)
 /* allocate data space in pdu, or export (reallocate) and fail. */
 static inline unsigned char *pdu_alloc_fail_export(const size_t size)
 {
-	if (!pdu_have_space(size)) {
+	if (unlikely(!pdu_have_space(size))) {
 		netflow_export_pdu();
 		return NULL;
 	}
@@ -3530,9 +3530,9 @@ static unsigned char *alloc_record_tpl(struct data_template *tpl)
 
 	/* If previous write was to the same template and there is room, then we just add new record,
 	 * otherwise we (re)allocate flowset (and/or whole pdu). */
-	if (unlikely(!pdu_flowset ||
+	if (!pdu_flowset ||
 	    pdu_flowset->flowset_id != tpl->template_id_n ||
-	    !(ptr = pdu_alloc_fail_export(tpl->rec_size)))) {
+	    !(ptr = pdu_alloc_fail_export(tpl->rec_size))) {
 
 		/* if there was previous data template we should pad it to 4 bytes */
 		if (pdu_flowset) {
@@ -4664,6 +4664,7 @@ static inline int eth_p_vlan(__be16 eth_type)
 static void parse_l2_header(const struct sk_buff *skb, struct ipt_netflow_tuple *tuple)
 {
 #if defined(ENABLE_MAC) || defined(ENABLE_VLAN) || defined(MPLS_DEPTH)
+#define ENABLE_L2
 	unsigned char *mac_header = skb_mac_header(skb);
 # if defined(ENABLE_VLAN) || defined(MPLS_DEPTH)
 	unsigned int hdr_depth;
@@ -4752,7 +4753,11 @@ static unsigned int netflow_target(
 		)
 {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
-	const struct sk_buff *skb = *pskb;
+# ifndef ENABLE_L2
+	/* pskb_may_pull() may modify skb */
+	const
+# endif
+		struct sk_buff *skb = *pskb;
 #endif
 	union {
 		struct iphdr ip;
@@ -4782,9 +4787,14 @@ static unsigned int netflow_target(
 	int tcpoptions = 0;
 	struct stripe_entry *stripe;
 
-	if (unlikely(!pskb_may_pull(skb, 0) ||
-		    !(iph = skb_header_pointer(skb, 0,
-				    (likely(family == AF_INET))? sizeof(_iph.ip) : sizeof(_iph.ip6), &iph)))) {
+	if (unlikely(
+#ifdef ENABLE_L2
+	    /* to ensure that full L2 headers are present */
+	    unlikely(!pskb_may_pull(skb, 0)) ||
+#endif
+	    !(iph = skb_header_pointer(skb, 0,
+			    (likely(family == AF_INET))? sizeof(_iph.ip) : sizeof(_iph.ip6),
+			    &iph)))) {
 		NETFLOW_STAT_INC(truncated);
 		NETFLOW_STAT_INC(pkt_drop);
 		NETFLOW_STAT_ADD(traf_drop, skb->len);
@@ -4923,16 +4933,16 @@ do_protocols:
 		    case IPPROTO_ICMP: {
 			struct icmphdr _hdr, *hp;
 
-			if (likely(family == AF_INET &&
-				    (hp = skb_header_pointer(skb, ptr, 2, &_hdr))))
+			if (likely(family == AF_INET) &&
+				    likely(hp = skb_header_pointer(skb, ptr, 2, &_hdr)))
 				tuple.d_port = htons((hp->type << 8) | hp->code);
 			break;
 		    }
 		    case IPPROTO_ICMPV6: {
 			struct icmp6hdr _icmp6h, *ic;
 
-			if (likely(family == AF_INET6 &&
-				    (ic = skb_header_pointer(skb, ptr, 2, &_icmp6h))))
+			if (likely(family == AF_INET6) &&
+				    likely(ic = skb_header_pointer(skb, ptr, 2, &_icmp6h)))
 				tuple.d_port = htons((ic->icmp6_type << 8) | ic->icmp6_code);
 			break;
 		    }
@@ -4947,8 +4957,8 @@ do_protocols:
 			struct ip_auth_hdr _hdr, *hp;
 
 			/* This is for IPv4 only. IPv6 it's parsed above. */
-			if (likely(family == AF_INET &&
-				    (hp = skb_header_pointer(skb, ptr, 8, &_hdr))))
+			if (likely(family == AF_INET) &&
+				    likely(hp = skb_header_pointer(skb, ptr, 8, &_hdr)))
 				SAVE_SPI(tuple, hp->spi);
 			break;
 		    }

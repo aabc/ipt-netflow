@@ -211,13 +211,30 @@ err:
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
+# ifdef ktime_to_timeval
+/* ktime_to_timeval is defined on 64bit and inline on 32bit cpu */
+/* when it's defined it calls ns_to_timeval, which is not exported */
+struct timeval portable_ns_to_timeval(const s64 nsec)
+{
+	struct timespec ts = ns_to_timespec(nsec);
+	struct timeval tv;
+
+	tv.tv_sec = ts.tv_sec;
+	tv.tv_usec = (suseconds_t) ts.tv_nsec / 1000;
+
+	return tv;
+}
+# define ns_to_timeval portable_ns_to_timeval
+# endif
+
 static inline s64 portable_ktime_to_ms(const ktime_t kt)
 {
 	struct timeval tv = ktime_to_timeval(kt);
 	return (s64) tv.tv_sec * MSEC_PER_SEC + tv.tv_usec / USEC_PER_MSEC;
 }
-#define ktime_to_ms portable_ktime_to_ms
-#endif
+# define ktime_to_ms portable_ktime_to_ms
+#endif /* before 2.6.35 */
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
 static inline s64 portable_ktime_to_us(const ktime_t kt)
 {
@@ -298,9 +315,10 @@ static int sockaddr_match_ipaddr6(const struct sockaddr *sa1, const struct socka
 
 	if (!ipv6_addr_equal(&sin1->sin6_addr, &sin2->sin6_addr))
 		return 0;
+#if 0
 	else if (ipv6_addr_type(&sin1->sin6_addr) & IPV6_ADDR_LINKLOCAL)
 		return sin1->sin6_scope_id == sin2->sin6_scope_id;
-
+#endif
 	return 1;
 }
 
