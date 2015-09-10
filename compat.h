@@ -580,4 +580,8 @@ out:
 }
 #endif /* IN6PTON_XDIGIT */
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,2,0)
+# define sock_create_kern(f, t, p, s) sock_create_kern(&init_net, f, t, p, s)
+#endif
+
 #endif /* COMPAT_NETFLOW_H */
