@@ -79,7 +79,7 @@ union nf_inet_addr {
 #  define ctl_table struct ctl_table
 # endif
 
-# ifndef CONFIG_GRKERNSEC
+# ifndef HAVE_GRSECURITY_H
 #  define ctl_table_no_const ctl_table
 # endif
 #endif

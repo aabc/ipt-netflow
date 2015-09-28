@@ -453,6 +453,7 @@ kernel_check_include() {
 
 kernel_check_features() {
   kernel_check_include include/linux/llist.h -DHAVE_LLIST
+  kernel_check_include include/linux/grsecurity.h -DHAVE_GRSECURITY_H
 }
 
 snmp_check() {
