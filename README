@@ -1,4 +1,4 @@
-ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
+ipt_NETFLOW linux 2.6.x-4.x kernel module by <abc@telekom.ru> -- 2008-2015.
 
    High performance NetFlow v5, v9, IPFIX flow data export module for Linux
    kernel. Created to be useful for highly loaded linux router. It should be
@@ -60,7 +60,7 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
 = OBTAINING LATEST VERSION =
 ============================
 
-   $ git clone git://git.code.sf.net/p/ipt-netflow/code ipt-netflow
+   $ git clone git://github.com/aabc/ipt-netflow.git ipt-netflow
    $ cd ipt-netflow
 
 
@@ -161,6 +161,14 @@ ipt_NETFLOW linux 2.6.x-3.x kernel module by <abc@telekom.ru> -- 2008-2015.
 
      c) If you have sources in non-standard places or configure isn't able to
      find something run ./configure --help to see how to specify paths manually.
+
+     d) To run irqtop on Debian 8 you may need to install:
+
+       # apt-get install ruby ruby-dev ncurses-dev
+       # gem install curses
+
+     z) If all fails create ticket at
+          https://github.com/aabc/ipt-netflow/issues
 
 ** 5. After this point you should be able to load module and
      use -j NETFLOW target in your iptables. See next section.
