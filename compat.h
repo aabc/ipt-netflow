@@ -588,4 +588,11 @@ out:
 # define vlan_tx_tag_get skb_vlan_tag_get
 # define vlan_tx_tag_present skb_vlan_tag_present
 #endif
+
+#ifndef NF_HOOK
+# define NF_HOOK_COMPAT NF_HOOK
+#else
+# define NF_HOOK_COMPAT(a,b,c,d,e,f,g) NF_HOOK(a,b,d,e,f,g)
+#endif
+
 #endif /* COMPAT_NETFLOW_H */

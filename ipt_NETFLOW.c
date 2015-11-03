@@ -1173,7 +1173,11 @@ static struct file_operations flows_seq_fops = {
 #endif /* CONFIG_PROC_FS */
 
 #ifdef ENABLE_PROMISC
-static int promisc_finish(struct sk_buff *skb)
+static int promisc_finish(
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,1,0)
+    struct sock *sk,
+#endif
+    struct sk_buff *skb)
 {
 	/* don't pass to the routing */
 	kfree_skb(skb);
@@ -1208,7 +1212,8 @@ static int promisc4_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 	memset(IPCB(skb), 0, sizeof(struct inet_skb_parm));
 	skb_orphan(skb);
 
-	return NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING, skb, dev, NULL, promisc_finish);
+	return NF_HOOK_COMPAT(NFPROTO_IPV4, NF_INET_PRE_ROUTING, NULL,
+	    skb, dev, NULL, promisc_finish);
 drop:
 	NETFLOW_STAT_INC(pkt_promisc_drop);
 	kfree_skb(skb);
@@ -1276,7 +1281,8 @@ static int promisc6_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 	rcu_read_unlock();
 	skb_orphan(skb);
 
-	return NF_HOOK(NFPROTO_IPV6, NF_INET_PRE_ROUTING, skb, dev, NULL, promisc_finish);
+	return NF_HOOK_COMPAT(NFPROTO_IPV6, NF_INET_PRE_ROUTING, NULL,
+	    skb, dev, NULL, promisc_finish);
 drop:
 	rcu_read_unlock();
 	NETFLOW_STAT_INC(pkt_promisc_drop);
