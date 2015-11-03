@@ -584,4 +584,8 @@ out:
 # define sock_create_kern(f, t, p, s) sock_create_kern(&init_net, f, t, p, s)
 #endif
 
+#if !defined(vlan_tx_tag_get) && defined(skb_vlan_tag_get)
+# define vlan_tx_tag_get skb_vlan_tag_get
+# define vlan_tx_tag_present skb_vlan_tag_present
+#endif
 #endif /* COMPAT_NETFLOW_H */
