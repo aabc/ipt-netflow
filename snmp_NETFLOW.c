@@ -368,10 +368,10 @@ static int iptNetflowSysctl_handler(
 		return sysctl_read(request, obj);
 	case MODE_SET_RESERVE1:
 		sys = find_varinfo(sysctls, obj);
-		if (request->requestvb->type != sys->type)
-			netsnmp_request_set_error(request, SNMP_ERR_WRONGTYPE);
-		if (!sysctl_access_ok(sys->name))
+		if (!sys || !sysctl_access_ok(sys->name))
 			netsnmp_request_set_error(request, SNMP_ERR_NOSUCHNAME);
+		if (sys && request->requestvb->type != sys->type)
+			netsnmp_request_set_error(request, SNMP_ERR_WRONGTYPE);
 		break;
 	case MODE_SET_RESERVE2:
 	case MODE_SET_FREE:
