@@ -3899,8 +3899,8 @@ static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *d
 		return 0;
 	if (ops->begin) {
 		/* was not called before __ethtool_get_settings() though */
-		if (ops->begin(dev) < 0);
-		return 0;
+		if (ops->begin(dev) < 0)
+			return 0;
 	}
 
 	/* driver name */
