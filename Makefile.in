@@ -29,6 +29,9 @@ sparse: | version.h ipt_NETFLOW.c ipt_NETFLOW.h compat.h Makefile
 	@echo Compiling for kernel $(KVERSION)
 	make -C $(KDIR) M=$(CURDIR) modules C=1
 	@touch ipt_NETFLOW.ko
+coverity:
+	coverity-submit -v
+
 minstall: | ipt_NETFLOW.ko
 	@echo " *"
 	make -C $(KDIR) M=$(CURDIR) modules_install INSTALL_MOD_PATH=$(DESTDIR)
