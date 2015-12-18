@@ -45,7 +45,7 @@ get_lib_dir() {
 }
 
 get_lib_from_bin() {
-  LIB=`strings $IPTBIN | grep ^/.*lib.*tables`
+  LIB=`strings $IPTBIN | grep ^/.*lib.*/.*tables`
   if [ "$LIB" ]; then
     IPTLIB=$LIB
     echo "$IPTLIB (from binary)"
@@ -57,10 +57,10 @@ get_lib_from_bin() {
 get_lib_from_lib() {
   XLIB=`/usr/bin/ldd $IPTBIN | grep libxtables | sed -n 's!.* \(/[^ ]\+\).*!\1!p'`
   test "$XLIB" || return 1
-  LIB=`strings $XLIB | grep ^/.*lib.*tables`
+  LIB=`strings $XLIB | grep ^/.*lib.*/.*tables`
   if [ "$LIB" ]; then
     IPTLIB=$LIB
-    echo "$IPTLIB (from iptables binary)"
+    echo "$IPTLIB (from libxtables.so, from binary)"
     return 0
   fi
   return 1
