@@ -589,10 +589,12 @@ out:
 # define vlan_tx_tag_present skb_vlan_tag_present
 #endif
 
-/* NF_HOOK is define in old code, is function in new code and in Centos 7 */
-#if defined(NF_HOOK) || defined(RHEL_MAJOR)
-# define NF_HOOK_COMPAT(a,b,c,d,e,f,g) NF_HOOK(a,b,d,e,f,g)
-#else
+/* NF_HOOK is 'define' in old code, but it's function in new code,
+ * also, it's function in, supposedly older, kernel version of Centos 7,
+ * due to backporing. */
+#if defined(NF_HOOK) || (defined(RHEL_MAJOR) && RHEL_MAJOR == 7)
+# define NF_HOOK_COMPAT(a,b,c,d,e,f,g) NF_HOOK(a,b,  d,e,f,g)
+#else /* new kernels */
 # define NF_HOOK_COMPAT NF_HOOK
 #endif
 
