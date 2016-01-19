@@ -1177,7 +1177,8 @@ static int promisc_finish(
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,0)
     struct net *net,
 #endif
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,1,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,1,0) || \
+    (defined(RHEL_MAJOR) && RHEL_MAJOR == 7 && RHEL_MINOR >= 2)
     struct sock *sk,
 #endif
     struct sk_buff *skb)
