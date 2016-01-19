@@ -305,7 +305,7 @@ do
     --enable-sampl*) KOPTS="$KOPTS -DENABLE_SAMPLER" ;;
     --enable-aggr*)  KOPTS="$KOPTS -DENABLE_AGGR" ;;
     --enable-promi*)   ENABLE_PROMISC=1 ;;
-    --promisc-mpls*)   ENABLE_PROMISC=1; PROMISC_MPLS=1; MPLS_DEPTH="$ac_optarg" ;;
+    --promisc-mpls*)   ENABLE_PROMISC=1; PROMISC_MPLS=1; MPLS_DEPTH=${ac_optarg:-3} ;;
     --enable-snmp-r*)  KOPTS="$KOPTS -DENABLE_SNMP" ;;
     --enable-physdev)       KOPTS="$KOPTS -DENABLE_PHYSDEV" ;;
     --enable-physdev-over*) KOPTS="$KOPTS -DENABLE_PHYSDEV_OVER" ;;
@@ -324,11 +324,12 @@ done
 if [ "$ENABLE_PROMISC" = 1 ]; then KOPTS="$KOPTS -DENABLE_PROMISC"; fi
 if [ "$PROMISC_MPLS" = 1 ]; then
   KOPTS="$KOPTS -DPROMISC_MPLS"
-  if [ "$MPLS_DEPTH" -gt 10 ]; then
+  case "$MPLS_DEPTH" in (*[!0-9]*|"") MPLS_DEPTH=1 ;; esac
+  if [ "$MPLS_DEPTH" -lt 1 ]; then
+    echo "! Requested MPLS stack depth is too small, limiting to 1."
+  elif [ "$MPLS_DEPTH" -gt 10 ]; then
     echo "! Requested MPLS stack depth is too big, limiting to 10."
     MPLS_DEPTH=10;
-  elif [ ! "$MPLS_DEPTH" ]; then
-    MPLS_DEPTH=3
   fi
   if [ "$MPLS_DEPTH" -ge 1 ]; then KOPTS="$KOPTS -DMPLS_DEPTH=$MPLS_DEPTH"; fi
 fi

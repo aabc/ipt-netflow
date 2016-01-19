@@ -3463,6 +3463,8 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 	case sourceMacAddress:	    memcpy(ptr, &nf->tuple.h_src, ETH_ALEN); break;
 #endif
 #ifdef MPLS_DEPTH
+# pragma GCC diagnostic push
+# pragma GCC diagnostic ignored "-Warray-bounds"
 	case MPLS_LABEL_1:    memcpy(ptr, &nf->tuple.mpls[0], 3); break;
 	case MPLS_LABEL_2:    memcpy(ptr, &nf->tuple.mpls[1], 3); break;
 	case MPLS_LABEL_3:    memcpy(ptr, &nf->tuple.mpls[2], 3); break;
@@ -3475,6 +3477,7 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 	case MPLS_LABEL_9:    memcpy(ptr, &nf->tuple.mpls[8], 3); break;
 	case MPLS_LABEL_10:   memcpy(ptr, &nf->tuple.mpls[9], 3); break;
 # endif
+# pragma GCC diagnostic pop
 	case mplsTopLabelTTL: *ptr = ntohl(nf->tuple.mpls[0]); break;
 #endif
 #ifdef ENABLE_DIRECTION
@@ -5413,6 +5416,9 @@ static int __init ipt_netflow_init(void)
 	}
 
 #ifdef MPLS_DEPTH
+	/* template_mpls is terminated on the MPLS_DEPTH mark, so, it
+	 * never send Element which can access mpls labels array above
+	 * its defined MPLS_DEPTH value. */
 	if (MPLS_DEPTH >= 0 && MPLS_DEPTH < 10)
 		template_mpls.types[MPLS_LABELS_BASE_INDEX + MPLS_DEPTH] = 0;
 #endif
