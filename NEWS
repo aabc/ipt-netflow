@@ -1,6 +1,17 @@
 ipt-netflow NEWS
 ================
 
+2.2 (2016-02-21)
+
+    * Minor feature and Maintenance release.
+       - Decapsulate MPLS in promisc mode and MPLS-aware NetFlow feature.
+       - Export flowEndReason for IPFIX.
+       - Promics mode improvements.
+       - Allow export destination to be IPv6 address.
+       - Move flows list from debugfs to proc.
+       - Compilation compatibility with latest kernels.
+       - Code is Coverity scanned.
+
 2.1 (2014-02-08)
 
     * Options Templates support (V9 and IPFIX). Which let to implement:

@@ -1,6 +1,6 @@
 /*
  * This is NetFlow exporting module (NETFLOW target) for linux
- * (c) 2008-2015 <abc@telekom.ru>
+ * (c) 2008-2016 <abc@telekom.ru>
  *
  *
  *   This program is free software: you can redistribute it and/or modify
@@ -86,7 +86,7 @@
 # undef CONFIG_NF_NAT_NEEDED
 #endif
 
-#define IPT_NETFLOW_VERSION "2.1"   /* Note that if you are using git, you
+#define IPT_NETFLOW_VERSION "2.2"   /* Note that if you are using git, you
 				       will see version in other format. */
 #include "version.h"
 #ifdef GITVERSION
