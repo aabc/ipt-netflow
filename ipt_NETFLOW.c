@@ -3904,7 +3904,13 @@ static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *d
 {
 	struct ethtool_drvinfo info = { 0 };
 	const struct ethtool_ops *ops = dev->ethtool_ops;
+#ifndef ETHTOOL_GLINKSETTINGS
 	struct ethtool_cmd ecmd;
+#define _KSETTINGS(x, y) (x)
+#else
+	struct ethtool_link_ksettings ekmd;
+#define _KSETTINGS(x, y) (y)
+#endif
 	int len = size;
 	int n;
 
@@ -3933,11 +3939,11 @@ static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *d
 	/* only get_settings for running devices to not trigger link negotiation */
 	if (dev->flags & IFF_UP &&
 	    dev->flags & IFF_RUNNING &&
-	    !__ethtool_get_settings(dev, &ecmd)) {
+	    !_KSETTINGS(__ethtool_get_settings(dev, &ecmd), __ethtool_get_link_ksettings(dev, &ekmd))) {
 		char *s, *p;
 
 		/* append basic parameters: speed and port */
-		switch (ethtool_cmd_speed(&ecmd)) {
+		switch (_KSETTINGS(ethtool_cmd_speed(&ecmd), ekmd.base.speed)) {
 		case SPEED_10000: s = "10Gb"; break;
 		case SPEED_2500:  s = "2.5Gb"; break;
 		case SPEED_1000:  s = "1Gb"; break;
@@ -3945,7 +3951,7 @@ static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *d
 		case SPEED_10:    s = "10Mb"; break;
 		default:          s = "";
 		}
-		switch (ecmd.port) {
+		switch (_KSETTINGS(ecmd.port, ekmd.base.port)) {
 		case PORT_TP:     p = "tp"; break;
 		case PORT_AUI:    p = "aui"; break;
 		case PORT_MII:    p = "mii"; break;
@@ -3964,6 +3970,7 @@ ret:
 		ops->complete(dev);
 	return size - len;
 }
+#undef _KSETTINGS
 
 static const unsigned short netdev_type[] =
 {ARPHRD_NETROM, ARPHRD_ETHER, ARPHRD_AX25,
