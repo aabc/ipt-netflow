@@ -3940,16 +3940,16 @@ static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *d
 	if (dev->flags & IFF_UP &&
 	    dev->flags & IFF_RUNNING &&
 	    !_KSETTINGS(__ethtool_get_settings(dev, &ecmd), __ethtool_get_link_ksettings(dev, &ekmd))) {
-		char *s, *p;
+		char *units, *p;
+		__u32 speed = _KSETTINGS(ethtool_cmd_speed(&ecmd), ekmd.base.speed);
 
-		/* append basic parameters: speed and port */
-		switch (_KSETTINGS(ethtool_cmd_speed(&ecmd), ekmd.base.speed)) {
-		case SPEED_10000: s = "10Gb"; break;
-		case SPEED_2500:  s = "2.5Gb"; break;
-		case SPEED_1000:  s = "1Gb"; break;
-		case SPEED_100:   s = "100Mb"; break;
-		case SPEED_10:    s = "10Mb"; break;
-		default:          s = "";
+		if (speed == SPEED_UNKNOWN)
+			units = "";
+		else if (speed <= 1000)
+			units = "MbE";
+		else {
+			speed /= 1000;
+			units = "GbE";
 		}
 		switch (_KSETTINGS(ecmd.port, ekmd.base.port)) {
 		case PORT_TP:     p = "tp"; break;
@@ -3962,7 +3962,7 @@ static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *d
 #endif
 		default:          p = "";
 		}
-		n = scnprintf(ptr, len, ",%s,%s", s, p);
+		n = scnprintf(ptr, len, ",%d%s,%s", speed, units, p);
 		len -= n;
 	}
 ret:
