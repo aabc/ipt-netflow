@@ -85,6 +85,9 @@
 /* No conntrack events in the kernel imply no natevents. */
 # undef CONFIG_NF_NAT_NEEDED
 #endif
+#ifdef ENABLE_SOURCE_ID_FROM_HOSTNAME
+#include <linux/utsname.h>
+#endif
 
 #define IPT_NETFLOW_VERSION "2.2"   /* Note that if you are using git, you
 				       will see version in other format. */
@@ -2532,7 +2535,7 @@ static void netflow_export_pdu_v5(void)
 	pdu.v5.ts_unsecs	= htonl(tv.tv_usec);
 	pdu.v5.seq		= htonl(pdu_seq);
 	//pdu.v5.eng_type	= 0;
-	pdu.v5.eng_id		= engine_id;
+	pdu.v5.eng_id		= engine_id & 0xff;
 #ifdef ENABLE_SAMPLER
 	pdu.v5.sampling		= htons(sampler_nf_v5());
 #endif
@@ -5520,6 +5523,17 @@ static int __init ipt_netflow_init(void)
 
 		promisc = 0;
 		switch_promisc(newpromisc);
+	}
+#endif
+
+#ifdef ENABLE_SOURCE_ID_FROM_HOSTNAME
+	{
+		struct new_utsname *utsn;
+
+		utsn = utsname();
+		engine_id = murmur3(utsn->nodename, sizeof(utsn->nodename), 0) & 0x7fffffff;
+		printk(KERN_INFO "ipt_NETFLOW: Setting observation domain to %d based on hostname %s", engine_id, utsn->nodename);
+		engine_id = htonl(engine_id);
 	}
 #endif
 
