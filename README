@@ -254,6 +254,13 @@ ipt_NETFLOW linux 2.6.x-4.x kernel module by <abc@telekom.ru> -- 2008-2016.
 	 labels you want to be recorded and exported (default is 3, maximum is
 	 10, set to 0 to not report anything).
 
+     --enable-source-id-from-hostname
+	 Sets the Observation Domain ID (IPFIX)/Source ID (NetFlow) of exported
+	 flow data to a value based on the hostname of the local machine.
+	 This is usefuly if your collector has no other way of distinguishing
+	 between multple exporters.  If this option isn't enabled this value
+	 is always set to 0.
+
 
 ===========
 = RUNNING =

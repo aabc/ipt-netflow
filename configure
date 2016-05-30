@@ -275,6 +275,7 @@ show_help() {
   echo "  --promisc-mpls=N       -- and record N labels (default 3)"
   echo "  --enable-physdev       enables physdev reporting"
   echo "  --enable-physdev-override      to override interfaces"
+  echo "  --enable-source-id-from-hostname enables setting the Observation Domain to a hash of the hostname"
   echo "  --disable-snmp-agent   disables net-snmp agent"
   echo "  --disable-dkms         disables DKMS support completely"
   echo "  --disable-dkms-install  no DKMS install but still create dkms.conf"
@@ -309,6 +310,7 @@ do
     --enable-snmp-r*)  KOPTS="$KOPTS -DENABLE_SNMP" ;;
     --enable-physdev)       KOPTS="$KOPTS -DENABLE_PHYSDEV" ;;
     --enable-physdev-over*) KOPTS="$KOPTS -DENABLE_PHYSDEV_OVER" ;;
+    --enable-source-id-fro*) KOPTS="$KOPTS -DENABLE_SOURCE_ID_FROM_HOSTNAME" ;;
     --disable-snmp-a*)   SKIPSNMP=1 ;;
     --disable-net-snmp*) SKIPSNMP=1 ;;
     --disable-dkms*)     SKIPDKMS=1 ;;
