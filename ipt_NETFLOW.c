@@ -209,6 +209,10 @@ MODULE_PARM_DESC(maxflows, "maximum number of flows");
 static int peakflows = 0;
 static unsigned long peakflows_at; /* jfffies */
 
+static int engine_id = 0;
+module_param(engine_id, int, 0644);
+MODULE_PARM_DESC(engine_id, "Observation Domain ID");
+
 #ifdef ENABLE_AGGR
 #define AGGR_SIZE 1024
 static char aggregation_buf[AGGR_SIZE] = "";
@@ -271,7 +275,6 @@ static union {
 	struct netflow9_pdu v9;
 	struct ipfix_pdu ipfix;
 } pdu;
-static int engine_id = 0; /* Observation Domain */
 static __u8 *pdu_data_used;
 static __u8 *pdu_high_wm; /* high watermark */
 static struct flowset_data *pdu_flowset = NULL; /* current data flowset */
@@ -2532,7 +2535,7 @@ static void netflow_export_pdu_v5(void)
 	pdu.v5.ts_unsecs	= htonl(tv.tv_usec);
 	pdu.v5.seq		= htonl(pdu_seq);
 	//pdu.v5.eng_type	= 0;
-	pdu.v5.eng_id		= engine_id;
+	pdu.v5.eng_id		= (__u8)engine_id;
 #ifdef ENABLE_SAMPLER
 	pdu.v5.sampling		= htons(sampler_nf_v5());
 #endif
