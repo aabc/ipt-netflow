@@ -572,9 +572,20 @@ ipt_NETFLOW linux 2.6.x-4.x kernel module by <abc@telekom.ru> -- 2008-2016.
        desirable to combine it with packet processing on very highly loaded
        routers.
 
-       This option also could be changed at runtime with: 
+       This option could be changed at runtime with:
 
          # echo number > /sys/module/ipt_NETFLOW/parameters/exportcpu
+
+   engine_id=number
+     - Observation Domain ID (on IPFIX, Source Id on NetFlow v9, or Engine Id
+       on NetFlow v5) value to be exported. This may help your collector to
+       distinguish between multiple exporters. On Netflow v9 and IPFIX this
+       value is 32-bit on NetFlow v5 only 8 low bits are significant.
+       Default value is 0.
+
+       This option could be changed at runtime with:
+
+         # echo number > /sys/module/ipt_NETFLOW/parameters/engine_id
 
 
 ====================
