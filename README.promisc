@@ -26,6 +26,8 @@ If you wish to account with ipt-netflow module traffic mirrored on switch you ma
    # cd ipt-netflow/
    # ./configure --enable-promisc
    # make all install
+   # depmod
+   # modprobe ipt_NETFLOW destination=127.0.0.1:2055
    # iptables -A PREROUTING -t raw -i eth2 -j NETFLOW
    # sysctl net.netflow.promisc=1
    # ifconfig eth2 promisc
