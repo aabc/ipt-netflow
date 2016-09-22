@@ -312,7 +312,7 @@ do
     --disable-snmp-a*)   SKIPSNMP=1 ;;
     --disable-net-snmp*) SKIPSNMP=1 ;;
     --disable-dkms*)     SKIPDKMS=1 ;;
-    --from-dkms-conf) ;;
+    --from-dkms-conf*) ;;
     --make) echo called from make; CARGS=`echo $CARGS | sed s/--make//g` ;;
     -Werror) KOPTS="$KOPTS -Werror" ;;
     --help|-h) show_help ;;
