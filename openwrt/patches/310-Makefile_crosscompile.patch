@@ -1,0 +1,17 @@
+Index: ipt-netflow-2.2/Makefile.in
+===================================================================
+--- ipt-netflow-2.2.orig/Makefile.in
++++ ipt-netflow-2.2/Makefile.in
+@@ -64,10 +64,10 @@ sinstall: | snmp_NETFLOW.so IPT-NETFLOW-
+ 	fi
+ 
+ %_sh.o: libipt_NETFLOW.c
+-	gcc -O2 -Wall -Wunused $(IPTABLES_CFLAGS) -fPIC -o $@ -c libipt_NETFLOW.c
++	$(CC) $(CFLAGS) -O2 -Wall -Wunused $(IPTABLES_CFLAGS) -fPIC -o $@ -c libipt_NETFLOW.c
+ 
+ %.so: %_sh.o
+-	gcc -shared -o $@ $<
++	$(CC) -shared -o $@ $<
+ 
+ version.h: ipt_NETFLOW.c ipt_NETFLOW.h compat.h Makefile
+ 	@./version.sh --define > version.h
