@@ -1,0 +1,14 @@
+.ipt_NETFLOW.ko.cmd
+.ipt_NETFLOW.mod.o.cmd
+.ipt_NETFLOW.o.cmd
+.tmp_versions/
+Makefile
+Module.symvers
+ipt_NETFLOW.ko
+ipt_NETFLOW.mod.c
+ipt_NETFLOW.mod.o
+ipt_NETFLOW.o
+libip6t_NETFLOW.so
+libipt_NETFLOW.so
+modules.order
+version.h
