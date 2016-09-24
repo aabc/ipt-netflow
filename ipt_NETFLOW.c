@@ -1219,11 +1219,14 @@ static int promisc4_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 	memset(IPCB(skb), 0, sizeof(struct inet_skb_parm));
 	skb_orphan(skb);
 
-	return NF_HOOK_COMPAT(NFPROTO_IPV4, NF_INET_PRE_ROUTING,
+	return NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,0)
 	    dev_net(dev),
 #endif
-	    NULL, skb, dev, NULL, promisc_finish);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,1,0) || (defined(RHEL_MAJOR) && RHEL_MAJOR == 7 && RHEL_MINOR > 1)
+	    NULL,
+#endif
+	    skb, dev, NULL, promisc_finish);
 drop:
 	NETFLOW_STAT_INC(pkt_promisc_drop);
 	kfree_skb(skb);
@@ -1291,11 +1294,14 @@ static int promisc6_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 	rcu_read_unlock();
 	skb_orphan(skb);
 
-	return NF_HOOK_COMPAT(NFPROTO_IPV6, NF_INET_PRE_ROUTING,
+	return NF_HOOK(NFPROTO_IPV6, NF_INET_PRE_ROUTING,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,0)
 	    dev_net(dev),
 #endif
-	    NULL, skb, dev, NULL, promisc_finish);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,1,0) || (defined(RHEL_MAJOR) && RHEL_MAJOR == 7 && RHEL_MINOR > 1)
+	    NULL,
+#endif
+	    skb, dev, NULL, promisc_finish);
 drop:
 	rcu_read_unlock();
 	NETFLOW_STAT_INC(pkt_promisc_drop);
@@ -3466,8 +3472,10 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 	case sourceMacAddress:	    memcpy(ptr, &nf->tuple.h_src, ETH_ALEN); break;
 #endif
 #ifdef MPLS_DEPTH
-# pragma GCC diagnostic push
-# pragma GCC diagnostic ignored "-Warray-bounds"
+# if __GNUC_PREREQ(4,6)
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Warray-bounds"
+# endif
 	case MPLS_LABEL_1:    memcpy(ptr, &nf->tuple.mpls[0], 3); break;
 	case MPLS_LABEL_2:    memcpy(ptr, &nf->tuple.mpls[1], 3); break;
 	case MPLS_LABEL_3:    memcpy(ptr, &nf->tuple.mpls[2], 3); break;
@@ -3480,7 +3488,9 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 	case MPLS_LABEL_9:    memcpy(ptr, &nf->tuple.mpls[8], 3); break;
 	case MPLS_LABEL_10:   memcpy(ptr, &nf->tuple.mpls[9], 3); break;
 # endif
-# pragma GCC diagnostic pop
+# if __GNUC_PREREQ(4,6)
+#  pragma GCC diagnostic pop
+# endif
 	case mplsTopLabelTTL: *ptr = ntohl(nf->tuple.mpls[0]); break;
 #endif
 #ifdef ENABLE_DIRECTION
