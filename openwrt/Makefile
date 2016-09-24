@@ -1,20 +1,19 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-
 PKG_NAME:=ipt-netflow
 PKG_RELEASE:=2
 
+PKG_SOURCE_URL:=https://github.com/aabc/$(PKG_NAME).git
 PKG_VERSION:=2.2
 PKG_SOURCE_VERSION:=v$(PKG_VERSION)
 
-#TO BUILD development version uncomment below and remove patches
-#PKG_VERSION:=git
+#TO BUILD development version uncomment 2 rows below and remove patches
+#PKG_VERSION:=$(shell (git ls-remote $(PKG_SOURCE_URL) | grep refs/heads/master | cut -f 1 | head -c 7))
 #PKG_SOURCE_VERSION:=HEAD
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=https://github.com/aabc/$(PKG_NAME).git
 
 PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
 
