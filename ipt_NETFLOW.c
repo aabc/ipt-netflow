@@ -1219,11 +1219,14 @@ static int promisc4_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 	memset(IPCB(skb), 0, sizeof(struct inet_skb_parm));
 	skb_orphan(skb);
 
-	return NF_HOOK_COMPAT(NFPROTO_IPV4, NF_INET_PRE_ROUTING,
+	return NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,0)
 	    dev_net(dev),
 #endif
-	    NULL, skb, dev, NULL, promisc_finish);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,1,0) || (defined(RHEL_MAJOR) && RHEL_MAJOR == 7 && RHEL_MINOR > 1)
+	    NULL,
+#endif
+	    skb, dev, NULL, promisc_finish);
 drop:
 	NETFLOW_STAT_INC(pkt_promisc_drop);
 	kfree_skb(skb);
@@ -1291,11 +1294,14 @@ static int promisc6_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 	rcu_read_unlock();
 	skb_orphan(skb);
 
-	return NF_HOOK_COMPAT(NFPROTO_IPV6, NF_INET_PRE_ROUTING,
+	return NF_HOOK(NFPROTO_IPV6, NF_INET_PRE_ROUTING,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,0)
 	    dev_net(dev),
 #endif
-	    NULL, skb, dev, NULL, promisc_finish);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,1,0) || (defined(RHEL_MAJOR) && RHEL_MAJOR == 7 && RHEL_MINOR > 1)
+	    NULL,
+#endif
+	    skb, dev, NULL, promisc_finish);
 drop:
 	rcu_read_unlock();
 	NETFLOW_STAT_INC(pkt_promisc_drop);
