@@ -9,3 +9,5 @@ Run `make` to build full firmware or `make package/network/ipt-netflow/{clean,pr
 To make git version uncomment two lines in Makefile.
 
 Tested to work on Chaos Calmer and Designated Driver with Atheros AR7xxx/AR9xxx target.
+
+For ipt-netflow 2.2 patches are needed, drop it for next version or git master to build.
