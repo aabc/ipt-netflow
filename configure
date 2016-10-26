@@ -152,6 +152,34 @@ iptables_find_version() {
   fi
 }
 
+compiler_presence_test() {
+  echo -n "Check for working gcc: "
+  gcc -v >/dev/null 2>&1
+  if [ $? = 0 ]; then
+    echo Yes
+  else
+    echo No
+
+    echo "! You need gcc to install module from source"
+    if [ -s /etc/debian_version ]; then
+      NAME=Debian
+      if [ -e /etc/os-release ]; then
+	. /etc/os-release >/dev/null 2>&1
+      fi
+      echo "! "
+      echo "! Under $NAME try to run this:"
+      echo "!   root# apt-get install gcc"
+      echo "! "
+    elif [ -s /etc/redhat-release ]; then
+      echo "! "
+      echo "! Under Centos try to run this:"
+      echo "!   root# yum install gcc"
+      echo "! "
+    fi
+    exit 1
+  fi
+}
+
 compile_libitp_test() {
   local FLAGS
   local MSG
@@ -211,6 +239,7 @@ iptables_try_pkgconfig() {
     # and if not, then it's older who need it.
     IPTCFLAGS="-I$KDIR/include -DIPTABLES_VERSION=\\\\\"$IPTVER\\\\\""
   fi
+  compiler_presence_test
   if compile_libitp_test xtables.h; then
     IPTCFLAGS="-DXTABLES $IPTCFLAGS"
   elif ! compile_libitp_test iptables.h; then
