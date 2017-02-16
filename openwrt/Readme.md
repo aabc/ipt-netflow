@@ -15,6 +15,7 @@ For ipt-netflow 2.2 patches are needed, drop it for next version or git master t
 Making and installilng
 ===
 
+```shell
 mkdir debian-toolchain
 sudo debootstrap jessie debian-toolchain
 sudo chroot debian-toolchain
@@ -38,12 +39,12 @@ ln -s ~/ipt-netflow/openwrt/ package/network/ipt-netflow
 
 
 make menuconfig
-#select target and device
-#go to network/netflow and check both
+  #select target and device
+  #go to network/netflow and check both
 
 make
-#and go for dinner or a walk ;)
-#after five hours
+  #and go for dinner or a walk ;)
+  #after five hours
 
 scp bin/ar71xx/packages/kernel/kmod-ipt-netflow_4.4.14+2.2-2_ar71xx.ipk  \
    root@192.168.236.79:/tmp/
@@ -52,7 +53,7 @@ scp bin/ar71xx/packages/base/iptables-mod-netflow_2.2-2_ar71xx.ipk \
 scp bin/ar71xx/packages/base/kernel_4.4.14-1-abf9cc6feb410252d667326556dae184_ar71xx.ipk   \ 
    root@192.168.236.79:/tmp/
 
-#goto router
+   #goto router
 ssh root@192.168.236.79
 
 opkg install /tmp/*.ipk
@@ -64,3 +65,5 @@ sysctl -w net.netflow.destination=192.168.236.34:2055
 iptables -I FORWARD -j NETFLOW
 iptables -I INPUT -j NETFLOW
 iptables -I OUTPUT -j NETFLOW
+
+```
