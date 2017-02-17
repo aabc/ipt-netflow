@@ -154,7 +154,7 @@ iptables_find_version() {
 
 compiler_presence_test() {
   echo -n "Check for working gcc: "
-  gcc -v >/dev/null 2>&1
+  $CC -v >/dev/null 2>&1
   if [ $? = 0 ]; then
     echo Yes
   else
@@ -197,7 +197,7 @@ compile_libitp_test() {
   echo "
 #define __EXPORTED_HEADERS__
 #include <$*>" > test.c
-  gcc -c test.c $FLAGS >/dev/null 2>&1
+  $CC -c test.c $FLAGS >/dev/null 2>&1
   RET=$?
   if [ $RET = 0 ]; then
     echo Yes $MSG;
@@ -593,6 +593,7 @@ kernel_check_consistency
 kernel_check_config
 kernel_check_features
 
+test "$CC" || CC=`which gcc`
 test "$IPTBIN" || IPTBIN=`which iptables`
 
 iptables_find_version	#IPTVER
