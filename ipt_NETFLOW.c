@@ -3863,10 +3863,10 @@ static void netflow_export_stats(void)
 		t.pkts_selected	+= st->pkts_selected;
 		t.pkts_observed	+= st->pkts_observed;
 #endif
-		t.drop.first.tv64 = min_not_zero(t.drop.first.tv64, st->drop.first.tv64);
-		t.drop.last.tv64  = max(t.drop.last.tv64, st->drop.last.tv64);
-		t.lost.first.tv64 = min_not_zero(t.lost.first.tv64, st->lost.first.tv64);
-		t.lost.last.tv64  = max(t.lost.last.tv64, st->lost.last.tv64);
+		t.drop.first_tv64 = min_not_zero(t.drop.first_tv64, st->drop.first_tv64);
+		t.drop.last_tv64  = max(t.drop.last_tv64, st->drop.last_tv64);
+		t.lost.first_tv64 = min_not_zero(t.lost.first_tv64, st->lost.first_tv64);
+		t.lost.last_tv64  = max(t.lost.last_tv64, st->lost.last_tv64);
 	}
 
 	export_stat_st(OTPL_MPSTAT, &t);
@@ -4781,8 +4781,8 @@ static unsigned int netflow_target(
 			   const void *targinfo
 # endif
 #else /* since 2.6.28 */
-# define if_in  par->in
-# define if_out par->out
+# define if_in  xt_in(par)
+# define if_out xt_out(par)
 # if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
 			   const struct xt_target_param *par
 # else
@@ -4809,7 +4809,7 @@ static unsigned int netflow_target(
 #ifdef ENABLE_DIRECTION
 	const int hooknum = par->hooknum;
 #endif
-	const int family = par->family;
+	const int family = xt_family(par);
 #endif
 	struct ipt_netflow_tuple tuple;
 	struct ipt_netflow *nf;

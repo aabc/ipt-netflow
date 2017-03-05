@@ -414,7 +414,7 @@ struct netflow_aggr_p {
 #define NETFLOW_STAT_TS(count)							 \
 	do {									 \
 		ktime_t kts = ktime_get_real();					 \
-		if (!(__get_cpu_var(ipt_netflow_stat)).count.first.tv64)	 \
+		if (!(__get_cpu_var(ipt_netflow_stat)).count.first_tv64)	 \
 			__get_cpu_var(ipt_netflow_stat).count.first = kts;	 \
 		__get_cpu_var(ipt_netflow_stat).count.last = kts;		 \
 	} while (0);

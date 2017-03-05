@@ -600,4 +600,29 @@ out:
 # define __GNUC_PREREQ(maj, min) 0
 #endif
 
+/* ktime is not union anymore, since 2456e855354415bfaeb7badaa14e11b3e02c8466 */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
+# define first_tv64	first.tv64
+# define last_tv64	last.tv64
+#else
+# define first_tv64	first
+# define last_tv64	last
+#endif
+
+/* Offset changes made in 613dbd95723aee7abd16860745691b6c7bda20dc */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,28) && LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
+static inline u_int8_t xt_family(const struct xt_action_param *par)
+{
+	return par->family;
+}
+static inline const struct net_device *xt_in(const struct xt_action_param *par)
+{
+	return par->in;
+}
+static inline const struct net_device *xt_out(const struct xt_action_param *par)
+{
+	return par->out;
+}
+#endif
+
 #endif /* COMPAT_NETFLOW_H */
