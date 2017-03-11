@@ -67,17 +67,20 @@ Patch authors and submitters:
    uropek [2013]
    shaman [2013]
    Jeremy Drake [2013]
+   Matthew Martin [2016] DKMS fixes
+   alex-eri [2016, 2017] OpenWRT compatibility
 
 
 Reference or prototype code authors:
 
-   Valentin V. Yankin [2011]
+   Valentin V. Yankin [2011] SNMP-index
 
 
 Project supporters:
 
    Summa Telecom [2014]
    Starlink [2014]
+   Anonymous
 
 
 Extensive testing and other help:
