@@ -224,11 +224,6 @@ ipt_NETFLOW linux 2.6.x-4.x kernel module by <abc@telekom.ru> -- 2008-2016.
      --enable-aggregation
          enables aggregation rules. Read below for explanation of aggregation.
 
-     --enable-debugfs
-         enabled debugfs interface to active flows list. NB! This is for debug
-         purposes only. cat /sys/kernel/debug/netflow_dump to see all currently
-         accouned flows.
-
      --disable-dkms
          disable creating dkms.conf and auto-install module into DKMS tree.
 
@@ -276,6 +271,7 @@ ipt_NETFLOW linux 2.6.x-4.x kernel module by <abc@telekom.ru> -- 2008-2016.
 2. Statistics is in /proc/net/stat/ipt_netflow
    Machine readable statistics is in /proc/net/stat/ipt_netflow_snmp
    To view boring slab statistics: grep ipt_netflow /proc/slabinfo
+   Dump of all flows is in /proc/net/stat/ipt_netflow_flows
 
 3. You can view parameters and control them via sysctl, example:
 
