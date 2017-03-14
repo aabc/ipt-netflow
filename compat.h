@@ -623,6 +623,10 @@ static inline const struct net_device *xt_out(const struct xt_action_param *par)
 {
 	return par->out;
 }
+static inline unsigned int xt_hooknum(const struct xt_action_param *par)
+{
+	return par->hooknum;
+}
 #endif
 
 #endif /* COMPAT_NETFLOW_H */

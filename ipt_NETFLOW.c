@@ -4806,9 +4806,9 @@ static unsigned int netflow_target(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
 	const int family = target->family;
 #else
-#ifdef ENABLE_DIRECTION
-	const int hooknum = par->hooknum;
-#endif
+# ifdef ENABLE_DIRECTION
+	const int hooknum = xt_hooknum(par);
+# endif
 	const int family = xt_family(par);
 #endif
 	struct ipt_netflow_tuple tuple;
