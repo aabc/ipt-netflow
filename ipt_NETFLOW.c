@@ -2624,7 +2624,7 @@ static void netflow_export_pdu_v9(void)
 	do_gettimeofday(&tv);
 	pdu.v9.export_time_s	= htonl(tv.tv_sec);
 	pdu.v9.seq		= htonl(pdu_seq);
-	pdu.v9.source_id	= engine_id;
+	pdu.v9.source_id	= htonl(engine_id);
 
 	pdusize = pdu_data_used - (unsigned char *)&pdu.v9;
 
@@ -2656,7 +2656,7 @@ static void netflow_export_pdu_ipfix(void)
 	do_gettimeofday(&tv);
 	pdu.ipfix.export_time_s	= htonl(tv.tv_sec);
 	pdu.ipfix.seq		= htonl(pdu_seq);
-	pdu.ipfix.odomain_id	= engine_id;
+	pdu.ipfix.odomain_id	= htonl(engine_id);
 	pdusize = pdu_data_used - (unsigned char *)&pdu;
 	pdu.ipfix.length	= htons(pdusize);
 
