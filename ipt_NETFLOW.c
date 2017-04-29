@@ -469,6 +469,42 @@ static char *print_sockaddr(const struct sockaddr_storage *ss)
 	return snprintf_sockaddr(buf, sizeof(buf), ss);
 }
 
+static int is_zero_addr(const struct sockaddr_storage *ss)
+{
+	if (ss->ss_family == AF_INET)
+		return ((const struct sockaddr_in *)ss)->sin_addr.s_addr == 0;
+	else if (ss->ss_family == AF_INET6)
+		return  ((const struct sockaddr_in6 *)ss)->sin6_addr.s6_addr32[0] == 0 &&
+			((const struct sockaddr_in6 *)ss)->sin6_addr.s6_addr32[1] == 0 &&
+			((const struct sockaddr_in6 *)ss)->sin6_addr.s6_addr32[2] == 0 &&
+			((const struct sockaddr_in6 *)ss)->sin6_addr.s6_addr32[3] == 0;
+	else /* AF_UNSPEC */
+		return 1;
+}
+
+static char *print_usock_addr(struct ipt_netflow_sock *usock)
+{
+	static char buf[128];
+	size_t len;
+
+	snprintf(buf, sizeof(buf), "%s", print_sockaddr(&usock->addr));
+
+	if (!is_zero_addr(&usock->saddr)) {
+		len = strlen(buf);
+		snprintf(buf + len, sizeof(buf) - len, "@%s",
+		    print_sockaddr(&usock->saddr));
+		len = strlen(buf);
+		/* strip zero port */
+		if (len > 2 && buf[len - 1] == '0' && buf[len - 2] == ':')
+			buf[len - 2] = '\0';
+	}
+	if (usock->sdev[0]) {
+		len = strlen(buf);
+		snprintf(buf + len, sizeof(buf) - len, "%%%s", usock->sdev);
+	}
+	return buf;
+}
+
 #ifdef CONFIG_PROC_FS
 static inline int ABS(int x) { return x >= 0 ? x : -x; }
 #define SAFEDIV(x,y) ((y)? ({ u64 __tmp = x; do_div(__tmp, y); (int)__tmp; }) : 0)
@@ -575,7 +611,7 @@ static int snmp_seq_show(struct seq_file *seq, void *v)
 			sndbuf_peak = wmem_peak;
 		seq_printf(seq, "sock%d %s %d %u %u %u %u",
 		    snum,
-		    print_sockaddr(&usock->addr),
+		    print_usock_addr(usock),
 		    !!usock->sock,
 		    usock->err_connect,
 		    usock->err_full,
@@ -821,7 +857,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 	list_for_each_entry(usock, &usock_list, list) {
 		seq_printf(seq, "sock%d: %s",
 		    snum,
-		    print_sockaddr(&usock->addr));
+		    print_usock_addr(usock));
 		if (usock->sock) {
 			struct sock *sk = usock->sock->sk;
 
@@ -1888,24 +1924,50 @@ static void sk_error_report(struct sock *sk)
 	return;
 }
 
-static struct socket *usock_open_sock(const struct sockaddr_storage *addr, void *user_data)
+static struct socket *usock_open_sock(struct ipt_netflow_sock *usock)
 {
 	struct socket *sock;
 	int error;
+	int salen = 0;
 
-	if ((error = sock_create_kern(addr->ss_family, SOCK_DGRAM, IPPROTO_UDP, &sock)) < 0) {
+	if ((error = sock_create_kern(usock->addr.ss_family, SOCK_DGRAM, IPPROTO_UDP, &sock)) < 0) {
 		printk(KERN_ERR "ipt_NETFLOW: sock_create_kern error %d\n", -error);
 		return NULL;
 	}
 	sock->sk->sk_allocation = GFP_ATOMIC;
 	sock->sk->sk_prot->unhash(sock->sk); /* hidden from input */
 	sock->sk->sk_error_report = &sk_error_report; /* clear ECONNREFUSED */
-	sock->sk->sk_user_data = user_data; /* usock */
+	sock->sk->sk_user_data = usock;
+	sock->sk->sk_reuse = SK_CAN_REUSE;
+
+	if (usock->sdev[0]) {
+		struct net_device *dev = dev_get_by_name(&init_net, usock->sdev);
+
+		if (dev) {
+			sock->sk->sk_bound_dev_if = dev->ifindex;
+			dev_put(dev);
+		} else {
+			printk(KERN_ERR "ipt_NETFLOW: error binding to device %s, errno %d\n",
+			    usock->sdev, -error);
+			return NULL;
+		}
+	}
+	if (!is_zero_addr(&usock->saddr)) {
+		if (usock->saddr.ss_family == AF_INET)
+			salen = sizeof(struct sockaddr_in);
+		else if (usock->saddr.ss_family == AF_INET6)
+			salen = sizeof(struct sockaddr_in6);
+		if ((error = sock->ops->bind(sock, (struct sockaddr *)&usock->saddr, salen)) < 0) {
+			printk(KERN_ERR "ipt_NETFLOW: error binding socket %d\n", -error);
+			return NULL;
+		}
+	}
+
 	if (sndbuf)
 		sock->sk->sk_sndbuf = sndbuf;
 	else
 		sndbuf = sock->sk->sk_sndbuf;
-	error = sock->ops->connect(sock, (struct sockaddr *)addr, sizeof(*addr), 0);
+	error = sock->ops->connect(sock, (struct sockaddr *)&usock->addr, sizeof(usock->addr), 0);
 	if (error < 0) {
 		printk(KERN_ERR "ipt_NETFLOW: error connecting UDP socket %d,"
 		    " don't worry, will try reconnect later.\n", -error);
@@ -1918,7 +1980,7 @@ static struct socket *usock_open_sock(const struct sockaddr_storage *addr, void 
 
 static void usock_connect(struct ipt_netflow_sock *usock, const int sendmsg)
 {
-	usock->sock = usock_open_sock(&usock->addr, usock);
+	usock->sock = usock_open_sock(usock);
 	if (usock->sock) {
 		if (sendmsg || debug)
 			printk(KERN_INFO "ipt_NETFLOW: connected %s\n",
@@ -2052,7 +2114,7 @@ static void add_usock(struct ipt_netflow_sock *usock)
 	}
 	list_add_tail(&usock->list, &usock_list);
 	printk(KERN_INFO "ipt_NETFLOW: added destination %s%s\n",
-	       print_sockaddr(&usock->addr),
+	       print_usock_addr(usock),
 	       (!usock->sock)? " (unconnected)" : "");
 	mutex_unlock(&sock_lock);
 }
@@ -2248,9 +2310,11 @@ static int add_destinations(const char *ptr)
 
 	for (; ptr; ptr += len) {
 		struct sockaddr_storage ss;
+		struct sockaddr_storage sbind = {};
 		struct ipt_netflow_sock *usock;
 		const char *end;
 		int succ = 0;
+		char name[IFNAMSIZ] = { 0 };
 
 		/* skip initial separators */
 		ptr += strspn(ptr, SEPARATORS);
@@ -2262,6 +2326,7 @@ static int add_destinations(const char *ptr)
 
 		if (strncount(ptr, len, ':') >= 2) {
 			struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&ss;
+			struct sockaddr_in6 *sout = (struct sockaddr_in6 *)&sbind;
 			const char *c = ptr;
 			int clen = len;
 
@@ -2276,15 +2341,32 @@ static int add_destinations(const char *ptr)
 				++end;
 			if (succ &&
 			    (*end == ':' || *end == '.' || *end == 'p' || *end == '#'))
-				sin6->sin6_port = htons(simple_strtoul(++end, NULL, 0));
+				sin6->sin6_port = htons(simple_strtoul(++end, (char **)&end, 0));
+			if (succ && *end == '@') {
+				++end;
+				sout->sin6_family = AF_INET6;
+				sout->sin6_port   = 0;
+				succ = in6_pton(end, strcspn(end, SEPARATORS), (u8 *)&sout->sin6_addr, -1, &end);
+			}
 		} else {
-			struct sockaddr_in *sin = (struct sockaddr_in *)&ss;
+			struct sockaddr_in *sin  = (struct sockaddr_in *)&ss;
+			struct sockaddr_in *sout = (struct sockaddr_in *)&sbind;
 
 			sin->sin_family = AF_INET;
 			sin->sin_port = htons(2055);
 			succ = in4_pton(ptr, len, (u8 *)&sin->sin_addr, -1, &end);
 			if (succ && *end == ':')
-				sin->sin_port = htons(simple_strtoul(++end, NULL, 0));
+				sin->sin_port = htons(simple_strtoul(++end, (char **)&end, 0));
+			if (succ && *end == '@') {
+				++end;
+				sout->sin_family = AF_INET;
+				sout->sin_port   = 0;
+				succ = in4_pton(end, strcspn(end, SEPARATORS), (u8 *)&sout->sin_addr, -1, &end);
+			}
+		}
+		if (succ && *end == '%') {
+			++end;
+			snprintf(name, sizeof(name), "%.*s", (int)strcspn(end, SEPARATORS), end);
 		}
 		if (!succ) {
 			printk(KERN_ERR "ipt_NETFLOW: can't parse destination: %.*s\n",
@@ -2297,7 +2379,9 @@ static int add_destinations(const char *ptr)
 			return -ENOMEM;
 		}
 		memset(usock, 0, sizeof(*usock));
-		usock->addr = ss;
+		usock->addr  = ss;
+		usock->saddr = sbind;
+		memcpy(usock->sdev, name, sizeof(usock->sdev));
 		usock_connect(usock, 0);
 		add_usock(usock);
 	}

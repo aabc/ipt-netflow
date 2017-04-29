@@ -418,6 +418,12 @@ ipt_NETFLOW linux 2.6.x-4.x kernel module by <abc@telekom.ru> -- 2008-2016.
      - mirror flows to two (can be more) addresses, separate addresses
        with comma.
 
+   destination=127.0.0.1:2055@127.0.0.2
+     - bind socket to address (127.0.0.2).
+
+   destination=127.0.0.1:2055%eth0
+     - bind socket to interface (eth0). May be useful for multi-homed boxes.
+
    sampler=deterministic:123
    sampler=random:123
    sampler=hash:123

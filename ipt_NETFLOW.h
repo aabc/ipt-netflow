@@ -378,6 +378,8 @@ struct ipt_netflow_sock {
 	struct list_head list;
 	struct socket *sock;
 	struct sockaddr_storage addr;	// destination
+	struct sockaddr_storage saddr;	// source
+	char   sdev[IFNAMSIZ];		// source device
 	atomic_t wmem_peak;		// sk_wmem_alloc peak value
 	unsigned int err_connect;	// connect errors
 	unsigned int err_full;		// socket filled error
