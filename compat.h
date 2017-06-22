@@ -611,6 +611,9 @@ out:
 
 /* Offset changes made in 613dbd95723aee7abd16860745691b6c7bda20dc */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,28) && LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
+# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
+#  define xt_action_param xt_target_param
+# endif
 static inline u_int8_t xt_family(const struct xt_action_param *par)
 {
 	return par->family;
@@ -627,6 +630,10 @@ static inline unsigned int xt_hooknum(const struct xt_action_param *par)
 {
 	return par->hooknum;
 }
+#endif
+
+#ifndef SK_CAN_REUSE
+# define SK_CAN_REUSE   1
 #endif
 
 #endif /* COMPAT_NETFLOW_H */
