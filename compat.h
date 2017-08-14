@@ -636,4 +636,10 @@ static inline unsigned int xt_hooknum(const struct xt_action_param *par)
 # define SK_CAN_REUSE   1
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,13,0)
+# define compat_refcount_read atomic_read
+#else
+# define compat_refcount_read refcount_read
+#endif
+
 #endif /* COMPAT_NETFLOW_H */

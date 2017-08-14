@@ -622,7 +622,7 @@ static int snmp_seq_show(struct seq_file *seq, void *v)
 
 			seq_printf(seq, " %u %u %u\n",
 			    sk->sk_sndbuf,
-			    atomic_read(&sk->sk_wmem_alloc),
+			    compat_refcount_read(&sk->sk_wmem_alloc),
 			    wmem_peak);
 		} else
 			seq_printf(seq, " 0 0 %u\n", wmem_peak);
@@ -864,7 +864,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 			seq_printf(seq, ", sndbuf %u, filled %u, peak %u;"
 			    " err: sndbuf reached %u, connect %u, cberr %u, other %u\n",
 			    sk->sk_sndbuf,
-			    atomic_read(&sk->sk_wmem_alloc),
+			    compat_refcount_read(&sk->sk_wmem_alloc),
 			    atomic_read(&usock->wmem_peak),
 			    usock->err_full,
 			    usock->err_connect,
@@ -2031,7 +2031,7 @@ static void netflow_sendmsg(void *buffer, const int len)
 			printk(KERN_INFO "netflow_sendmsg: sendmsg(%d, %d) [%u %u]\n",
 			       snum,
 			       len,
-			       atomic_read(&usock->sock->sk->sk_wmem_alloc),
+			       compat_refcount_read(&usock->sock->sk->sk_wmem_alloc),
 			       usock->sock->sk->sk_sndbuf);
 		ret = kernel_sendmsg(usock->sock, &msg, &iov, 1, (size_t)len);
 		if (ret < 0) {
@@ -2054,7 +2054,7 @@ static void netflow_sendmsg(void *buffer, const int len)
 			printk(KERN_ERR "ipt_NETFLOW: sendmsg[%d] error %d: data loss %llu pkt, %llu bytes%s\n",
 			       snum, ret, pdu_packets, pdu_traf, suggestion);
 		} else {
-			unsigned int wmem = atomic_read(&usock->sock->sk->sk_wmem_alloc);
+			unsigned int wmem = compat_refcount_read(&usock->sock->sk->sk_wmem_alloc);
 			if (wmem > atomic_read(&usock->wmem_peak))
 				atomic_set(&usock->wmem_peak, wmem);
 			NETFLOW_STAT_INC(exported_pkt);
