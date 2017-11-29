@@ -1112,9 +1112,7 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 #ifdef SNMP_RULES
 	seq_printf(seq, " %hd,%hd",
 	    nf->i_ifcr,
-	    nf->o_ifcr,
-	    nf->tuple.i_ifc,
-	    nf->o_ifc);
+	    nf->o_ifcr);
 #endif
 #ifdef ENABLE_MAC
 	seq_printf(seq, " %pM,%pM", &nf->tuple.h_src, &nf->tuple.h_dst);

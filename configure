@@ -335,7 +335,7 @@ do
     --enable-aggr*)  KOPTS="$KOPTS -DENABLE_AGGR" ;;
     --enable-promi*)   ENABLE_PROMISC=1 ;;
     --promisc-mpls*)   ENABLE_PROMISC=1; PROMISC_MPLS=1; MPLS_DEPTH=${ac_optarg:-3} ;;
-    --enable-snmp-r*)  KOPTS="$KOPTS -DENABLE_SNMP" ;;
+    --enable-snmp-r*)  KOPTS="$KOPTS -DSNMP_RULES" ;;
     --enable-physdev)       KOPTS="$KOPTS -DENABLE_PHYSDEV" ;;
     --enable-physdev-over*) KOPTS="$KOPTS -DENABLE_PHYSDEV_OVER" ;;
     --disable-snmp-a*)   SKIPSNMP=1 ;;
