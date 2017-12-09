@@ -3376,15 +3376,15 @@ static u_int16_t scope_ipfix_to_v9(const u_int16_t elem)
 	case observationDomainId:
 	case meteringProcessId:
 	case exportingProcessId:
-		return SCOPE_SYSTEM;
+		return V9_SCOPE_SYSTEM;
 	case ingressInterface:
 	case portId:
-		return SCOPE_INTERFACE;
+		return V9_SCOPE_INTERFACE;
 	case observationPointId:
 	case LineCardId:
-		return SCOPE_LINECARD;
+		return V9_SCOPE_LINECARD;
 	case TemplateId:
-		return SCOPE_TEMPLATE;
+		return V9_SCOPE_TEMPLATE;
 	default:
 		return -1;
 	}

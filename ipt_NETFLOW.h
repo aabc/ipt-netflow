@@ -194,11 +194,11 @@ enum {
 };
 
 enum {				/* v9 scopes */
-	SCOPE_SYSTEM = 1,
-	SCOPE_INTERFACE = 2,
-	SCOPE_LINECARD = 3,
-	SCOPE_CACHE = 4,
-	SCOPE_TEMPLATE = 5,
+	V9_SCOPE_SYSTEM = 1,
+	V9_SCOPE_INTERFACE = 2,
+	V9_SCOPE_LINECARD = 3,
+	V9_SCOPE_CACHE = 4,
+	V9_SCOPE_TEMPLATE = 5,
 };
 
 struct flowset_template {
