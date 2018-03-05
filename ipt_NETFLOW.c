@@ -4141,9 +4141,17 @@ static void export_dev(struct net_device *dev)
 			 * then ethtool driver name with basic info,
 			 * finally net_device.type is a last resort */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,28)
-			if (dev->ifalias)
+			if (dev->ifalias) {
+# if LINUX_VERSION_CODE < KERNEL_VERSION(4,15,0)
 				n = scnprintf(ptr, size, "%s", dev->ifalias);
-			else
+# else
+				char tmp[IFALIASZ];
+
+				n = dev_get_alias(dev, tmp, sizeof(tmp));
+				if (n > 0)
+					n = scnprintf(ptr, size, "%s", tmp);
+# endif
+			} else
 #endif
 				n = ethtool_drvinfo(ptr, size, dev);
 			if (!n)
@@ -4452,7 +4460,13 @@ static void netflow_work_fn(struct work_struct *dummy)
 #define CALC_RATE(ewma, cur, minutes) ewma += _A(cur - ewma, minutes)
 
 // calculate EWMA throughput rate for whole module
-static void rate_timer_calc(unsigned long dummy)
+static void rate_timer_calc(
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
+    unsigned long dummy
+#else
+    struct timer_list *t
+#endif
+    )
 {
 	static u64 old_pkt_total = 0;
 	static u64 old_traf_total = 0;
@@ -5620,7 +5634,7 @@ static int __init ipt_netflow_init(void)
 
 	netflow_switch_version(protocol);
 	_schedule_scan_worker(0);
-	setup_timer(&rate_timer, rate_timer_calc, 0);
+	timer_setup(&rate_timer, rate_timer_calc, 0);
 	mod_timer(&rate_timer, jiffies + (HZ * SAMPLERATE));
 
 	peakflows_at = jiffies;

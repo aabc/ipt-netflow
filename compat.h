@@ -642,4 +642,8 @@ static inline unsigned int xt_hooknum(const struct xt_action_param *par)
 # define compat_refcount_read refcount_read
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
+# define timer_setup setup_timer
+#endif
+
 #endif /* COMPAT_NETFLOW_H */
