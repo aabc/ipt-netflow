@@ -646,4 +646,28 @@ static inline unsigned int xt_hooknum(const struct xt_action_param *par)
 # define timer_setup setup_timer
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,15,0)
+static int dev_get_alias(const struct net_device *dev, char *name, size_t len)
+{
+	return snprintf(name, len, "%s", dev->ifalias);
+}
+#else
+/* no static because defined in include/linux/netdevice.h,
+ * but forgot to create EXPORT_SYMBOL,
+ * probably will collide with some future kernel */
+int dev_get_alias(const struct net_device *dev, char *name, size_t len)
+{
+	const struct dev_ifalias *alias;
+	int ret = 0;
+
+	rcu_read_lock();
+	alias = rcu_dereference(dev->ifalias);
+	if (alias)
+		ret = snprintf(name, len, "%s", alias->ifalias);
+	rcu_read_unlock();
+
+	return ret;
+}
+#endif
+
 #endif /* COMPAT_NETFLOW_H */

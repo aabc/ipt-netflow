@@ -4142,15 +4142,9 @@ static void export_dev(struct net_device *dev)
 			 * finally net_device.type is a last resort */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,28)
 			if (dev->ifalias) {
-# if LINUX_VERSION_CODE < KERNEL_VERSION(4,15,0)
-				n = scnprintf(ptr, size, "%s", dev->ifalias);
-# else
-				char tmp[IFALIASZ];
-
-				n = dev_get_alias(dev, tmp, sizeof(tmp));
-				if (n > 0)
-					n = scnprintf(ptr, size, "%s", tmp);
-# endif
+				n = dev_get_alias(dev, ptr, size);
+				if (n >= size)
+					n = size - 1;
 			} else
 #endif
 				n = ethtool_drvinfo(ptr, size, dev);
