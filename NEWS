@@ -1,6 +1,15 @@
 ipt-netflow NEWS
 ================
 
+2.3 (2018-03-19)
+
+    * Minor feature and Maintenance release.
+       - Compatibility with latest kernels.
+       - Allow to set engine_id (observationDomainId).
+       - Cross-compilation support.
+       - OpenWRT support.
+       - Allow binding destination socket to IP and interface.
+
 2.2 (2016-02-21)
 
     * Minor feature and Maintenance release.

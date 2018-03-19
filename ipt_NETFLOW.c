@@ -1,6 +1,6 @@
 /*
  * This is NetFlow exporting module (NETFLOW target) for linux
- * (c) 2008-2016 <abc@telekom.ru>
+ * (c) 2008-2018 <abc@openwall.com>
  *
  *
  *   This program is free software: you can redistribute it and/or modify
