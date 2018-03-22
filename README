@@ -111,7 +111,8 @@ ipt_NETFLOW linux 2.6.x-4.x kernel module by <abc@openwall.com> -- 2008-2018.
    Before this step it also would be useful to install pkg-config if don't
    already have.
 
-   If you have package system just install iptables-devel (or iptables-dev)
+   If you have package system just install iptables-devel (or on Debian, Ubuntu
+   and derivatives libxtables-dev if available, otherwise iptables-dev)
    package, otherwise install iptables source matching version of your
    installation from ftp://ftp.netfilter.org/pub/iptables/
 
