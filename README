@@ -1,8 +1,8 @@
 ipt_NETFLOW linux 2.6.x-4.x kernel module by <abc@openwall.com> -- 2008-2018.
 
    High performance NetFlow v5, v9, IPFIX flow data export module for Linux
-   kernel. Created to be useful for highly loaded linux router. It should be
-   used as iptables target.
+   kernel. Created to be useful for linux routers in high-throughput networks.
+   It should be used as iptables target.
 
 
 =========================
