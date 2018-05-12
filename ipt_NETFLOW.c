@@ -4805,6 +4805,23 @@ static void parse_l2_header(const struct sk_buff *skb, struct ipt_netflow_tuple 
 	/* get vlan tag that is saved in skb->vlan_tci */
 	if (vlan_tx_tag_present(skb))
 		tuple->tag[tag_num++] = htons(vlan_tx_tag_get(skb));
+	else if (skb->dev && is_vlan_dev(skb->dev)) {
+		struct net_device *vlan_dev = skb->dev;
+# if LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
+		struct vlan_dev_priv *vlan = vlan_dev_priv(vlan_dev);
+
+		/* `if` condition is `#if`ed intentionally, and this is
+		 * just inversion of conditional from vlan_do_receive */
+		if (!(vlan
+		    && !(vlan->flags & VLAN_FLAG_REORDER_HDR)
+#  if LINUX_VERSION_CODE >= KERNEL_VERSION(4,3,0)
+		    && !netif_is_macvlan_port(vlan_dev)
+		    && !netif_is_bridge_port(vlan_dev)
+#  endif
+		   ))
+# endif
+			tuple->tag[tag_num++] = htons(vlan_dev_vlan_id(vlan_dev));
+	}
 # endif
 	if (mac_header < skb->head ||
 	    mac_header + ETH_HLEN > skb->data)

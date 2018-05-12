@@ -670,4 +670,11 @@ int dev_get_alias(const struct net_device *dev, char *name, size_t len)
 }
 #endif
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,39) && !defined(RHEL_MAJOR)
+static inline int is_vlan_dev(struct net_device *dev)
+{
+	return dev->priv_flags & IFF_802_1Q_VLAN;
+}
+#endif
+
 #endif /* COMPAT_NETFLOW_H */
