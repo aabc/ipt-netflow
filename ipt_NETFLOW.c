@@ -1947,7 +1947,7 @@ static struct socket *usock_open_sock(struct ipt_netflow_sock *usock)
 		} else {
 			printk(KERN_ERR "ipt_NETFLOW: error binding to device %s, errno %d\n",
 			    usock->sdev, -error);
-			return NULL;
+			goto err_free_sock;
 		}
 	}
 	if (!is_zero_addr(&usock->saddr)) {
@@ -1957,7 +1957,7 @@ static struct socket *usock_open_sock(struct ipt_netflow_sock *usock)
 			salen = sizeof(struct sockaddr_in6);
 		if ((error = sock->ops->bind(sock, (struct sockaddr *)&usock->saddr, salen)) < 0) {
 			printk(KERN_ERR "ipt_NETFLOW: error binding socket %d\n", -error);
-			return NULL;
+			goto err_free_sock;
 		}
 	}
 
@@ -1970,10 +1970,12 @@ static struct socket *usock_open_sock(struct ipt_netflow_sock *usock)
 		printk(KERN_ERR "ipt_NETFLOW: error connecting UDP socket %d,"
 		    " don't worry, will try reconnect later.\n", -error);
 		/* ENETUNREACH when no interfaces */
-		sock_release(sock);
-		return NULL;
+		goto err_free_sock;
 	}
 	return sock;
+err_free_sock:
+	sock_release(sock);
+	return NULL;
 }
 
 static void usock_connect(struct ipt_netflow_sock *usock, const int sendmsg)
