@@ -325,6 +325,10 @@ static unsigned long ts_stat_last = 0; /* (jiffies) */
 static unsigned long ts_sysinf_last = 0; /* (jiffies) */
 static unsigned long ts_ifnames_last = 0; /* (jiffies) */
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,2,0)
+#define kstrtoul(s, base, res) ((*res=simple_strtoul(s, NULL, base)) && 0)
+#endif
+
 static inline __be32 bits2mask(int bits) {
 	return (bits? 0xffffffff << (32 - bits) : 0);
 }
@@ -2313,6 +2317,7 @@ static int add_destinations(const char *ptr)
 		struct sockaddr_storage sbind = {};
 		struct ipt_netflow_sock *usock;
 		const char *end;
+		unsigned long port;
 		int succ = 0;
 		char name[IFNAMSIZ] = { 0 };
 
@@ -2340,8 +2345,10 @@ static int add_destinations(const char *ptr)
 			if (succ && *ptr == '[' && *end == ']')
 				++end;
 			if (succ &&
-			    (*end == ':' || *end == '.' || *end == 'p' || *end == '#'))
-				sin6->sin6_port = htons(simple_strtoul(++end, (char **)&end, 0));
+			    (*end == ':' || *end == '.' || *end == 'p' || *end == '#')) {
+				if (!kstrtoul(++end, 0, &port))
+					sin6->sin6_port = htons(port);
+			}
 			if (succ && *end == '@') {
 				++end;
 				sout->sin6_family = AF_INET6;
@@ -2355,8 +2362,10 @@ static int add_destinations(const char *ptr)
 			sin->sin_family = AF_INET;
 			sin->sin_port = htons(2055);
 			succ = in4_pton(ptr, len, (u8 *)&sin->sin_addr, -1, &end);
-			if (succ && *end == ':')
-				sin->sin_port = htons(simple_strtoul(++end, (char **)&end, 0));
+			if (succ && *end == ':') {
+				if (!kstrtoul(++end, 0, &port))
+					sin->sin_port = htons(port);
+			}
 			if (succ && *end == '@') {
 				++end;
 				sout->sin_family = AF_INET;
