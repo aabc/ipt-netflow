@@ -679,4 +679,12 @@ static inline int is_vlan_dev(struct net_device *dev)
 }
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
+static inline struct nf_bridge_info *
+nf_bridge_info_get(const struct sk_buff *skb)
+{
+	return skb->nf_bridge;
+}
+#endif
+
 #endif /* COMPAT_NETFLOW_H */

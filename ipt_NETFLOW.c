@@ -50,6 +50,7 @@
 #include <net/addrconf.h>
 #include <net/dst.h>
 #include <linux/netfilter_ipv4/ip_tables.h>
+#include <linux/netfilter_bridge.h>
 #ifndef ENABLE_NAT
 # undef CONFIG_NF_NAT_NEEDED
 #endif
@@ -75,9 +76,6 @@
 #include "compat.h"
 #include "ipt_NETFLOW.h"
 #include "murmur3.h"
-#ifdef CONFIG_BRIDGE_NETFILTER
-# include <linux/netfilter_bridge.h>
-#endif
 #ifdef CONFIG_SYSCTL
 # include <linux/sysctl.h>
 #endif
@@ -4962,8 +4960,8 @@ static unsigned int netflow_target(
 	memset(&tuple, 0, sizeof(tuple));
 	tuple.l3proto = family;
 #ifdef ENABLE_PHYSDEV_OVER
-	if (skb->nf_bridge && skb->nf_bridge->physindev)
-		tuple.i_ifc = skb->nf_bridge->physindev->ifindex;
+	if (nf_bridge_info_get(skb) && nf_bridge_info_get(skb)->physindev)
+		tuple.i_ifc = nf_bridge_info_get(skb)->physindev->ifindex;
 	else /* FALLTHROUGH */
 #endif
 	tuple.i_ifc	= if_in? if_in->ifindex : -1;
@@ -5227,8 +5225,8 @@ do_protocols:
 		nf->tcp_flags = tcp_flags;
 		nf->o_ifc = if_out? if_out->ifindex : -1;
 #ifdef ENABLE_PHYSDEV_OVER
-		if (skb->nf_bridge && skb->nf_bridge->physoutdev)
-			nf->o_ifc = skb->nf_bridge->physoutdev->ifindex;
+		if (nf_bridge_info_get(skb) && nf_bridge_info_get(skb)->physoutdev)
+			nf->o_ifc = nf_bridge_info_get(skb)->physoutdev->ifindex;
 #endif
 
 #ifdef SNMP_RULES
@@ -5238,8 +5236,8 @@ do_protocols:
 #endif
 /* copy and snmp-resolve device with physdev overriding normal dev */
 #define copy_dev(out, physdev, dev) \
-		if (skb->nf_bridge && skb->nf_bridge->physdev) \
-			out = resolve_snmp(skb->nf_bridge->physdev); \
+		if (nf_bridge_info_get(skb) && nf_bridge_info_get(skb)->physdev) \
+			out = resolve_snmp(nf_bridge_info_get(skb)->physdev); \
 		else \
 			out = resolve_snmp(dev);
 #ifdef ENABLE_PHYSDEV
