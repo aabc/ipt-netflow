@@ -206,7 +206,9 @@ err:
 }
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,11,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
+#define num_physpages	totalram_pages()
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,11,0)
 #define num_physpages	totalram_pages
 #endif
 
