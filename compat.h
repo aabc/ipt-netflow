@@ -687,4 +687,14 @@ nf_bridge_info_get(const struct sk_buff *skb)
 }
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
+static inline void do_gettimeofday(struct timeval *tv)
+{
+	struct timespec64 ts64;
+	ktime_get_real_ts64(&ts64);
+	tv->tv_sec = ts64.tv_sec;
+	tv->tv_usec = ts64.tv_nsec/1000;
+}
+#endif
+
 #endif /* COMPAT_NETFLOW_H */
