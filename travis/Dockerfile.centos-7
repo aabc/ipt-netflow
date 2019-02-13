@@ -1,0 +1,13 @@
+FROM centos:7
+
+RUN yum -y install \
+    gcc \
+    make \
+    kernel-devel \
+    iptables-devel \
+    net-snmp \
+    net-snmp-devel \
+    which
+
+CMD ./configure --kdir=$(echo /usr/src/kernels/*) && make all
+
