@@ -206,7 +206,9 @@ err:
 }
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,11,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
+#define num_physpages	totalram_pages()
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,11,0)
 #define num_physpages	totalram_pages
 #endif
 
@@ -674,6 +676,24 @@ int dev_get_alias(const struct net_device *dev, char *name, size_t len)
 static inline int is_vlan_dev(struct net_device *dev)
 {
 	return dev->priv_flags & IFF_802_1Q_VLAN;
+}
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
+static inline struct nf_bridge_info *
+nf_bridge_info_get(const struct sk_buff *skb)
+{
+	return skb->nf_bridge;
+}
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
+static inline void do_gettimeofday(struct timeval *tv)
+{
+	struct timespec64 ts64;
+	ktime_get_real_ts64(&ts64);
+	tv->tv_sec = ts64.tv_sec;
+	tv->tv_usec = ts64.tv_nsec/1000;
 }
 #endif
 
