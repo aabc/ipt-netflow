@@ -84,7 +84,7 @@
 # undef CONFIG_NF_NAT_NEEDED
 #endif
 
-#define IPT_NETFLOW_VERSION "2.2"   /* Note that if you are using git, you
+#define IPT_NETFLOW_VERSION "2.3"   /* Note that if you are using git, you
 				       will see version in other format. */
 #include "version.h"
 #ifdef GITVERSION
