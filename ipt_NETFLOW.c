@@ -1940,7 +1940,13 @@ static struct socket *usock_open_sock(struct ipt_netflow_sock *usock)
 		struct net_device *dev = dev_get_by_name(&init_net, usock->sdev);
 
 		if (dev) {
-			sock->sk->sk_bound_dev_if = dev->ifindex;
+			struct sock *sk = sock->sk;
+
+			/* SO_BINDTOIFINDEX */
+			sk->sk_bound_dev_if = dev->ifindex;
+			if (sk->sk_prot->rehash)
+				sk->sk_prot->rehash(sk);
+			sk_dst_reset(sk);
 			dev_put(dev);
 		} else {
 			printk(KERN_ERR "ipt_NETFLOW: error binding to device %s, errno %d\n",
