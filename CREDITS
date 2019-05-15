@@ -61,6 +61,7 @@ Patch authors and submitters:
    Eric W. Biederman [2010]
    Giedrius Liubavičius [2010]
    Igor Alov [2010]
+   Valentin V. Yankin [2011] prototype for SNMP-index
    Alexey Osipov [2011]
    Pavel Boldin [2012]
    Alexander Demenshin [2013]
@@ -72,11 +73,6 @@ Patch authors and submitters:
    xtaran [2018]
    Thadeu Lima de Souza Cascardo @ Canonical [2019]
    dbugnar [2019]
-
-
-Reference or prototype code authors:
-
-   Valentin V. Yankin [2011] SNMP-index
 
 
 Project supporters:
