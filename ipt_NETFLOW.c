@@ -5723,7 +5723,11 @@ static void __exit ipt_netflow_fini(void)
 	netflow_scan_and_export(AND_FLUSH);
 	del_timer_sync(&rate_timer);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,1,0)
 	synchronize_sched();
+#else
+	synchronize_rcu();
+#endif
 
 	free_templates();
 	destination_removeall();
