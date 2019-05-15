@@ -93,7 +93,7 @@
 #endif
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("<abc@telekom.ru>");
+MODULE_AUTHOR("<abc@openwall.com>");
 MODULE_DESCRIPTION("iptables NETFLOW target module");
 MODULE_VERSION(IPT_NETFLOW_VERSION);
 MODULE_ALIAS("ip6t_NETFLOW");
