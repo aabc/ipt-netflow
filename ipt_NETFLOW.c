@@ -1944,8 +1944,10 @@ static struct socket *usock_open_sock(struct ipt_netflow_sock *usock)
 
 			/* SO_BINDTOIFINDEX */
 			sk->sk_bound_dev_if = dev->ifindex;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)
 			if (sk->sk_prot->rehash)
 				sk->sk_prot->rehash(sk);
+#endif
 			sk_dst_reset(sk);
 			dev_put(dev);
 		} else {
