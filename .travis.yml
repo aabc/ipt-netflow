@@ -21,38 +21,34 @@ matrix:
       os: linux
     - name: ppc64le Ubuntu 16.04.4 LTS Xenial
       os: linux-ppc64le
-    - name: x86_64 CentOS 7.1810
-      OS_NAME: centos
-      OS_VERSION: 7.1810
-    - name: x86_64 CentOS 7.1708
-      OS_NAME: centos
-      OS_VERSION: 7.1708
-    - name: x86_64 CentOS 7.1611
-      OS_NAME: centos
-      OS_VERSION: 7.1611
+    - name: x86_64 CentOS 7.6.1810
+      env: OS_NAME=centos OS_VERSION=7.6.1810
+    - name: x86_64 CentOS 7.4.1708
+      env: OS_NAME=centos OS_VERSION=7.4.1708
+    - name: x86_64 CentOS 7.3.1611
+      env: OS_NAME=centos OS_VERSION=7.3.1611
     - name: x86_64 CentOS 6.10
-      OS_NAME: centos
-      OS_VERSION: 6.10
+      env: OS_NAME=centos OS_VERSION=6.10
     - name: x86_64 CentOS 6.9
-      OS_NAME: centos
-      OS_VERSION: 6.9
+      env: OS_NAME=centos OS_VERSION=6.9
     - name: x86_64 CentOS 6.8
-      OS_NAME: centos
-      OS_VERSION: 6.8
+      env: OS_NAME=centos OS_VERSION=6.8
 
 
 install:
   - if [ -z "$OS_NAME" ]; then
-      sudo m-a prepare;
+      ( set -x; sudo m-a prepare );
     else
-      sudo docker pull ${OS_NAME}:${OS_VERSION};
-      sudo docker build --no-cache --rm --file=travis/Dockerfile.${OS_NAME}-${OS_VERSION} --tag=${OS_NAME}-${OS_VERSION}:test .;
+      ( set -x;
+        sudo docker pull ${OS_NAME}:${OS_VERSION};
+        sudo docker build --no-cache --rm --file=travis/Dockerfile.${OS_NAME} --build-arg=OS_VERSION=${OS_VERSION} --tag=${OS_NAME}-${OS_VERSION}:test .;
+      );
     fi
 
 script:
   - if [ -z "$OS_NAME" ]; then
-      ./configure && make all && sudo make install;
+      ( set -x; ./configure && make all && sudo make install );
     else
-      sudo docker run -v $PWD:$PWD -w $PWD ${OS_NAME}-${OS_VERSION}:test;
+      ( set -x; sudo docker run -v $PWD:$PWD -w $PWD ${OS_NAME}-${OS_VERSION}:test );
     fi
 

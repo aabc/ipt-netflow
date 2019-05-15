@@ -1,4 +1,8 @@
-FROM centos:7
+# https://hub.docker.com/_/centos/
+
+ARG OS_VERSION
+
+FROM centos:$OS_VERSION
 
 RUN yum -y install \
     gcc \
