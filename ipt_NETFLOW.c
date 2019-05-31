@@ -5274,8 +5274,13 @@ do_protocols:
 		nf->hooknumx = hooknum + 1;
 #endif
 		if (likely(family == AF_INET)) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,2,0)
 			if (rt)
 				nf->nh.ip = rt->rt_gateway;
+#else
+			if (rt && rt->rt_gw_family == AF_INET)
+				nf->nh.ip = rt->rt_gw4;
+#endif
 		} else {
 			if (rt)
 				nf->nh.in6 = ((struct rt6_info *)rt)->rt6i_gateway;
