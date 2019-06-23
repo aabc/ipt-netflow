@@ -1,6 +1,11 @@
 ipt-netflow NEWS
 ================
 
+2.4 (2019-06-23)
+    * Minor maintenance release.
+      - Compilation compatibility with kernels up to 5.2.
+      - README, CREDITS update.
+
 2.3 (2018-03-19)
 
     * Minor feature and Maintenance release.
