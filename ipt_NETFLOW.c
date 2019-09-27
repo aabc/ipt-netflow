@@ -4577,11 +4577,10 @@ static int netflow_conntrack_event(struct notifier_block *this, unsigned long ev
 		return ret;
 	}
 
-	if (!(nel = kmalloc(sizeof(struct nat_event), GFP_ATOMIC))) {
+	if (!(nel = kzalloc(sizeof(struct nat_event), GFP_ATOMIC))) {
 		printk(KERN_ERR "ipt_NETFLOW: can't kmalloc nat event\n");
 		return ret;
 	}
-	memset(nel, 0, sizeof(struct nat_event));
 	nel->ts_ktime = ktime_get_real();
 	nel->ts_jiffies = jiffies;
 	t = &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple;
