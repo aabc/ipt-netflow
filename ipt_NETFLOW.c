@@ -83,6 +83,9 @@
 /* No conntrack events in the kernel imply no natevents. */
 # undef CONFIG_NF_NAT_NEEDED
 #endif
+#if defined(CONFIG_NF_NAT_NEEDED) && LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)
+# include <net/netfilter/nf_conntrack_timestamp.h>
+#endif
 
 #define IPT_NETFLOW_VERSION "2.4"   /* Note that if you are using git, you
 				       will see version in other format. */
@@ -4548,6 +4551,9 @@ static int netflow_conntrack_event(struct notifier_block *this, unsigned long ev
 {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
 	struct nf_conn *ct = item->ct;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)
+	struct nf_conn_tstamp *tstamp = nf_conn_tstamp_find(ct);
+#endif
 #else
 	struct nf_conn *ct = (struct nf_conn *)ptr;
 #endif
@@ -4581,7 +4587,6 @@ static int netflow_conntrack_event(struct notifier_block *this, unsigned long ev
 		printk(KERN_ERR "ipt_NETFLOW: can't kmalloc nat event\n");
 		return ret;
 	}
-	nel->ts_ktime = ktime_get_real();
 	nel->ts_jiffies = jiffies;
 	t = &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple;
 	nel->protocol = t->dst.protonum;
@@ -4598,10 +4603,20 @@ static int netflow_conntrack_event(struct notifier_block *this, unsigned long ev
 	if (events & (1 << IPCT_DESTROY)) {
 		nel->nat_event = NAT_DESTROY;
 		nat_events_stop++;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)
+		if (likely(tstamp))
+			nel->ts_ktime = tstamp->stop;
+#endif /* after 2.6.38 */
 	} else {
 		nel->nat_event = NAT_CREATE;
 		nat_events_start++;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)
+		if (likely(tstamp))
+			nel->ts_ktime = tstamp->start;
+#endif /* after 2.6.38 */
 	}
+	if (!nel->ts_ktime)
+		nel->ts_ktime = ktime_get_real();
 
 	spin_lock_bh(&nat_lock);
 	list_add_tail(&nel->list, &nat_list);
