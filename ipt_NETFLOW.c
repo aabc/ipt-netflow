@@ -4329,6 +4329,9 @@ static int netflow_scan_and_export(const int flush)
 #ifdef ENABLE_SAMPLER
 	unsigned char mode;
 #endif
+#ifdef CONFIG_NF_NAT_NEEDED
+	LIST_HEAD(nat_list_export); /* nat events to export */
+#endif
 
 	if (protocol >= 9) {
 		netflow_export_stats();
@@ -4411,16 +4414,15 @@ static int netflow_scan_and_export(const int flush)
 
 #ifdef CONFIG_NF_NAT_NEEDED
 	spin_lock_bh(&nat_lock);
-	while (!list_empty(&nat_list)) {
+	list_splice_init(&nat_list, &nat_list_export);
+	spin_unlock_bh(&nat_lock);
+	while (!list_empty(&nat_list_export)) {
 		struct nat_event *nel;
 
-		nel = list_entry(nat_list.next, struct nat_event, list);
+		nel = list_first_entry(&nat_list_export, struct nat_event, list);
 		list_del(&nel->list);
-		spin_unlock_bh(&nat_lock);
 		export_nat_event(nel);
-		spin_lock_bh(&nat_lock);
 	}
-	spin_unlock_bh(&nat_lock);
 #endif
 	/* flush flows stored in pdu if there no new flows for too long */
 	/* Note: using >= to allow flow purge on zero timeout */
