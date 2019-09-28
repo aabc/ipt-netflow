@@ -4605,17 +4605,17 @@ static int netflow_conntrack_event(struct notifier_block *this, unsigned long ev
 		nat_events_stop++;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)
 		if (likely(tstamp))
-			nel->ts_ktime = tstamp->stop;
+			nel->ts_ktime = ktime_set(0, tstamp->stop);
 #endif /* after 2.6.38 */
 	} else {
 		nel->nat_event = NAT_CREATE;
 		nat_events_start++;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)
 		if (likely(tstamp))
-			nel->ts_ktime = tstamp->start;
+			nel->ts_ktime = ktime_set(0, tstamp->start);
 #endif /* after 2.6.38 */
 	}
-	if (!nel->ts_ktime)
+	if (ktime_to_ns(nel->ts_ktime) == 0)
 		nel->ts_ktime = ktime_get_real();
 
 	spin_lock_bh(&nat_lock);
