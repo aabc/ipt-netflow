@@ -6,7 +6,7 @@
 
 #ifndef COMPAT_NETFLOW_H
 #define COMPAT_NETFLOW_H
-
+#include "compat_def.h"
 
 #ifndef NIPQUAD
 # define NIPQUAD(addr) \
@@ -612,7 +612,7 @@ out:
 #endif
 
 /* Offset changes made in 613dbd95723aee7abd16860745691b6c7bda20dc */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,28) && LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
+#ifndef HAVE_XT_FAMILY
 # if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
 #  define xt_action_param xt_target_param
 # endif
