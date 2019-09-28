@@ -470,6 +470,7 @@ kernel_check_config() {
   kconfig CONFIG_NF_CONNTRACK_EVENTS	"natevents"
   kconfig CONFIG_IPV6			"IPv6"
   kconfig CONFIG_IP6_NF_IPTABLES	"ip6tables target"
+  kconfig CONFIG_BRIDGE_NETFILTER	"physdev override"
 }
 
 kernel_check_include() {

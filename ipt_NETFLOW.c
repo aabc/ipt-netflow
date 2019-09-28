@@ -86,6 +86,11 @@
 #if defined(CONFIG_NF_NAT_NEEDED) && LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)
 # include <net/netfilter/nf_conntrack_timestamp.h>
 #endif
+#ifdef ENABLE_PHYSDEV_OVER
+# ifndef CONFIG_BRIDGE_NETFILTER
+#  undef ENABLE_PHYSDEV_OVER
+# endif
+#endif
 
 #define IPT_NETFLOW_VERSION "2.4"   /* Note that if you are using git, you
 				       will see version in other format. */
