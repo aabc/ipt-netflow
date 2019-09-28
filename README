@@ -206,7 +206,7 @@ ipt_NETFLOW linux 2.6.x-5.x kernel module by <abc@openwall.com> -- 2008-2019.
      --enable-macaddress
          enables exporting of src and dst MAC addresses for every flow
          in v9/IPFIX. Difference in any of MAC address will be accounted
-         as differnt flow. I.e. MAC addresses will be part of flow key.
+         as different flow. I.e. MAC addresses will be part of flow key.
 
      --enable-vlan
          enables exporting of dot1q VLAN Ids and Priorities for every flow

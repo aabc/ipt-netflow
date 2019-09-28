@@ -1310,7 +1310,7 @@ static int promisc6_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 	if (hdr->nexthdr == NEXTHDR_HOP) {
 		int optlen;
 		/* ipv6_parse_hopopts() is not exported by kernel.
-		 * I dont really need to parse hop options, since packets
+		 * I don't really need to parse hop options, since packets
 		 * are not routed, nor terminated, but I keep calculations
 		 * in case other code depend on it. */
 		if (!pskb_may_pull(skb, sizeof(struct ipv6hdr) + 8) ||
@@ -2012,7 +2012,7 @@ static void usock_close(struct ipt_netflow_sock *usock)
 
 ktime_t ktime_get_real(void);
 
-// return numbers of sends succeded, 0 if none
+// return numbers of sends succeeded, 0 if none
 /* only called in scan worker path */
 static void netflow_sendmsg(void *buffer, const int len)
 {
@@ -2072,7 +2072,7 @@ static void netflow_sendmsg(void *buffer, const int len)
 	}
 	mutex_unlock(&sock_lock);
 	if (retok == 0) {
-		/* not least one send succeded, account stat for dropped packets */
+		/* not least one send succeeded, account stat for dropped packets */
 		NETFLOW_STAT_ADD(pkt_lost, pdu_packets);
 		NETFLOW_STAT_ADD(traf_lost, pdu_traf);
 		NETFLOW_STAT_ADD(flow_lost, pdu_flow_records);
@@ -2154,7 +2154,7 @@ static void set_sampler(const unsigned char mode, const unsigned short interval)
 		printk(KERN_ERR "ipt_NETFLOW: flow sampling is disabled.\n");
 	} else {
 		sampling_ts.first = ktime_get_real();
-		/* no race here, becasue exporting process is stopped */
+		/* no race here, because exporting process is stopped */
 		samp.v32 = s.v32;
 		sprintf(sampler_buf, "%s:%u", sampler_mode_string(), interval);
 		printk(KERN_ERR "ipt_NETFLOW: flow sampling is enabled, mode %s one-out-of %u.\n",
@@ -2927,7 +2927,7 @@ static struct base_template template_vlan_inner = {
 static struct base_template template_mpls = {
 	.types = {
 		mplsTopLabelTTL,
-		/* do not just add element here, becasue this array
+		/* do not just add element here, because this array
 		 * is truncated in ipt_netflow_init() */
 #define MPLS_LABELS_BASE_INDEX 1
 		MPLS_LABEL_1,
@@ -4501,7 +4501,7 @@ static void rate_timer_calc(
 		dsrch = st->searched - st->old_searched;
 		dfnd  = st->found - st->old_found;
 		dnfnd = st->notfound - st->old_notfound;
-		/* zero values are not accounted, becasue only usage is interesting, not nonusage */
+		/* zero values are not accounted, because only usage is interesting, not nonusage */
 		metrt = (dfnd + dnfnd)? 100 * (dsrch + dfnd + dnfnd) / (dfnd + dnfnd) : st->metric;
 		CALC_RATE(st->metric, metrt, 1);
 		st->old_searched = st->searched;
