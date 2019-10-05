@@ -17,7 +17,7 @@ eval $(grep ^KDIR Makefile | tr -d ' ')
 
 WD=cc-test-build
 mkdir -p $WD
-cd $WD || fatal "cannot cd to $WD"
+cd ./$WD || fatal "cannot cd to $WD"
 
 kbuild_test_compile() {
   local cmd
