@@ -95,7 +95,7 @@ echo "! Installing $MVERSION into DKMS..."
 rm -rf /usr/src/ipt-netflow-$MVERSION
 
 mkdir -p /usr/src/ipt-netflow-$MVERSION
-cp -p *.[ch] Make* READ* conf* irq* *.sh *.conf /usr/src/ipt-netflow-$MVERSION/
+cp -p *.[ch] Make* READ* conf* gen* irq* *.sh *.conf /usr/src/ipt-netflow-$MVERSION/
 if [ -d .git ]; then
   cp -pr .git /usr/src/ipt-netflow-$MVERSION/
 fi
