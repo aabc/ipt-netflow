@@ -32,8 +32,8 @@ static inline uint32_t murmur3(const void *key, const uint32_t len, const uint32
 	}
 	tail = (const uint8_t*)blocks;
 	switch (len & 3) {
-		case 3: k1 ^= tail[2] << 16;
-		case 2: k1 ^= tail[1] << 8;
+		case 3: k1 ^= tail[2] << 16; /* FALLTHROUGH */
+		case 2: k1 ^= tail[1] << 8;  /* FALLTHROUGH */
 		case 1: k1 ^= tail[0];
 			h1 ^= rotl32(k1 * c1, 15) * c2;
 	}
