@@ -18,140 +18,6 @@ error() {
   exit 1
 }
 
-iptables_src_version() {
-  test "$IPTSRC" || return 1
-
-  echo -n "Checking iptables sources version: "
-  SRC="$IPTSRC/Makefile"
-  test -s "$SRC" || error "Please build iptables first."
-  VER=`sed -n 's/^\(IPTABLES_\)\?VERSION[ :]= \?//p' "$SRC"`
-  test "$VER" || error "Unknown version of iptables."
-  if [ "$VER" = "$IPTVER" ]; then
-    echo "$VER (ok)"
-  else
-    echo "$VER"
-    error "Source version ($VER) doesn't match binary ($IPTVER)"
-  fi
-}
-
-get_lib_dir() {
-  test -s "$1" && LIB=`sed -n 's/.*_LIB_DIR "\(.*\)"/\1/p' "$1"`
-  if [ "$LIB" ]; then
-    IPTLIB=$LIB
-    echo "$IPTLIB (from sources)"
-    return 0
-  fi
-  return 1
-}
-
-get_lib_from_bin() {
-  LIB=`strings $IPTBIN | grep ^/.*lib.*/.*tables`
-  if [ "$LIB" ]; then
-    IPTLIB=$LIB
-    echo "$IPTLIB (from binary)"
-    return 0
-  fi
-  return 1
-}
-
-get_lib_from_lib() {
-  XLIB=`/usr/bin/ldd $IPTBIN | grep libxtables | sed -n 's!.* \(/[^ ]\+\).*!\1!p'`
-  test "$XLIB" || return 1
-  LIB=`strings $XLIB | grep ^/.*lib.*/.*tables`
-  if [ "$LIB" ]; then
-    IPTLIB=$LIB
-    echo "$IPTLIB (from libxtables.so, from binary)"
-    return 0
-  fi
-  return 1
-}
-
-iptables_inc() {
-  echo -n "Iptables include flags: "
-  if [ "$IPTINC" ]; then
-    echo "$IPTINC (user specified)"
-  elif [ "$PKGVER" ]; then
-    IPTINC="$PKGINC"
-    echo "$IPTINC (pkg-config)"
-  elif [ "$NOIPTSRC" ]; then
-    IPTINC=
-    echo "none (default)"
-  else
-    IPTINC="$IPTSRC/include"
-    IPTINC="-I$IPTINC"
-    echo "$IPTINC (from source)"
-  fi
-}
-
-iptables_modules() {
-  echo -n "Iptables module path: "
-  if [ "$IPTLIB" ]; then
-    echo "$IPTLIB (user specified)"
-  else
-    if [ "$PKGLIB" ]; then
-      IPTLIB="$PKGLIB"
-      echo "$IPTLIB (pkg-config)"
-    else
-      get_lib_dir "$IPTSRC/include/iptables.h" && return 0
-      get_lib_dir "$IPTSRC/include/xtables.h" && return 0
-      get_lib_dir "$IPTSRC/xtables/internal.h" && return 0
-      get_lib_from_bin && return 0
-      get_lib_from_lib && return 0
-      error "can not find, try setting it with --ipt-lib="
-    fi
-  fi
-}
-
-try_dir() {
-  if [ -d "$1/include" ]; then
-    echo "Found iptables sources at $1"
-    IPTSRC=$1
-    return 0
-  fi
-  return 1
-}
-
-try_dirg() {
-  try_dir "$1" && return 0
-  try_dir "$1.git" && return 0
-}
-
-try_dir2() {
-  test -d "$1" && try_dir `dirname $1` && return 0
-}
-
-check_pkg_config() {
-  test "$PKGWARN" && return 1
-  if ! which pkg-config >/dev/null 2>&1; then
-    echo "! You don't have pkg-config, it may be useful to install it."
-    PKGWARN=1
-    return 1
-  fi
-  return 0
-}
-iptables_find_version() {
-  echo -n "Iptables binary version: "
-  if [ "$IPTVER" ]; then
-    echo "$IPTVER (user specified)"
-  else
-    IPTVER=`$IPTBIN -V 2>/dev/null | sed -n s/iptables.v//p`
-    if [ "$IPTVER" ]; then
-      echo "$IPTVER (detected from $IPTBIN)"
-      return
-    else
-      echo "no iptables binary found"
-    fi
-    check_pkg_config
-    PKGVER=`pkg-config --modversion xtables 2>/dev/null`
-    if [ "$PKGVER" ]; then
-      IPTVER="$PKGVER"
-      echo "Xtables version: $IPTVER (detected from `which pkg-config`)"
-      return
-    fi
-    error "Can not find iptables version, try setting it with --ipt-ver="
-  fi
-}
-
 compiler_presence_test() {
   echo -n "Check for working gcc: "
   $CC -v >/dev/null 2>&1
@@ -180,122 +46,10 @@ compiler_presence_test() {
   fi
 }
 
-compile_libitp_test() {
-  local FLAGS
-  local MSG
-  echo -n "Checking for presence of $@... "
-  if [ "$IPTINC" ]; then
-    FLAGS=$IPTINC
-    MSG="(using ipt-inc)"
-  elif [ "$PKGINC" ]; then
-    FLAGS=$PKGINC
-    MSG="(using pkg-config)"
-  else
-    FLAGS=
-    MSG=
-  fi
-  echo "
-#define __EXPORTED_HEADERS__
-#include <$*>" > test.c
-  $CC -c test.c $FLAGS >/dev/null 2>&1
-  RET=$?
-  if [ $RET = 0 ]; then
-    echo Yes $MSG;
-  else
-    echo No;
-  fi
-  rm -f test.c test.o
-  return $RET
-}
-
-iptables_try_pkgconfig() {
-  if [ ! "$PKGVER" ]; then
-    check_pkg_config
-    PKGVER=`pkg-config --modversion xtables 2>/dev/null`
-    TRYPKGVER=`pkg-config --modversion xtables 2>/dev/null`
-    echo -n "pkg-config for version $IPTVER exists: "
-    pkg-config --exact-version=$IPTVER xtables 2>/dev/null
-    if [ $? = 0 ]; then
-      echo "Yes"
-      PKGVER=$TRYPKGVER
-    else
-      if [ "$TRYPKGVER" ]; then
-	echo "No (reported: $TRYPKGVER)"
-      else
-	echo "No"
-      fi
-      PKGVER=
-    fi
-  fi
-  if [ "$PKGVER" ]; then
-    check_pkg_config
-    PKGVER=`pkg-config --modversion xtables 2>/dev/null`
-    PKGINC=`pkg-config --cflags xtables`
-    PKGLIB=`pkg-config --variable=xtlibdir xtables`
-  elif expr "$IPTVER" : '^1\.3' >/dev/null; then
-    echo "! This version of iptables ($IPTVER) will be treated as old version."
-    # Newer versions of iptables should not have -I/kernel/include!
-    # So I assume that newer version will have correct pkg-config set up
-    # and if not, then it's older who need it.
-    IPTCFLAGS="-I$KDIR/include -DIPTABLES_VERSION=\\\\\"$IPTVER\\\\\""
-  fi
-  compiler_presence_test
-  if compile_libitp_test xtables.h; then
-    IPTCFLAGS="-DXTABLES $IPTCFLAGS"
-  elif ! compile_libitp_test iptables.h; then
-    echo "! Iptables headers not found. You may need to specify --ipt-inc=..."
-    if [ -s /etc/debian_version ]; then
-      echo "! "
-      echo "! Under Debian simply run this:"
-      if apt-cache policy libxtables-dev 2>&1 | fgrep -q "Candidate:"; then
-        echo "!   root# apt-get install libxtables-dev pkg-config"
-      else
-        echo "!   root# apt-get install iptables-dev pkg-config"
-      fi
-    elif [ -s /etc/redhat-release ]; then
-      echo "! "
-      arch=.`uname -m`
-      echo "! Under Centos simply run this:"
-      echo "!   root# yum install iptables-devel$arch pkgconfig"
-    fi
-    exit 1
-  fi
-
-}
-
-iptables_find_src() {
-  test "$IPTINC" && return 1
-  test "$PKGVER" && return 1
-
-  VER="iptables-$IPTVER"
-  if [ "$IPTSRC" ]; then
-    echo "User specified source directory: $IPTSRC"
-    try_dir $IPTSRC || error "Specified directory is not iptables source.."
-  else
-    echo "Searching for $VER sources.."
-    try_dir "./$VER" && return 0
-    try_dir "../$VER" && return 0
-    try_dir "/usr/src/$VER" && return 0
-    try_dirg "iptables" && return 0
-    try_dirg "../iptables" && return 0
-    try_dirg "/usr/src/iptables" && return 0
-    try_dir2 `locate $VER/extensions 2>/dev/null | head -1` && return 0
-    echo "! Can not find iptables source directory, you may try setting it with --ipt-src="
-    echo "! This is not fatal error, yet. Will be just using default include dir."
-    NOIPTSRC=1
-  fi
-}
-
 show_help() {
   echo "Possible options:"
-  echo "  --ipt-ver=..  iptables version (ex.: 1.4.2)"
-  echo "  --ipt-bin=..  iptables binary to use (ex.: /usr/sbin/iptables)"
-  echo "  --ipt-src=..  directory for iptable source (ex.: ../iptables-1.4.2)"
-  echo "  --ipt-lib=..  iptable modules path (ex.: /usr/libexec/xtables)"
-  echo "  --ipt-inc=..  directory for iptable headers (ex.: /usr/include)"
   echo "  --kver=..     kernel version (ex.: 2.6.30-std-def-alt15)"
   echo "  --kdir=..     directory for kernel source (ex.: /usr/src/kernel)"
-  echo "  --enable-natevents     enables natevents support"
   echo "  --enable-snmp-rules    enables SNMP-index conversion rules"
   echo "  --enable-macaddress    enables MAC address for v9/IPFIX"
   echo "  --enable-vlan          enables VLAN Ids for v9/IPFIX"
@@ -303,7 +57,6 @@ show_help() {
   echo "  --enable-sampler       enables Flow Sampling"
   echo "  --enable-sampler=hash  enables Hash sampler"
   echo "  --enable-aggregation   enables aggregation rules"
-  echo "  --enable-promisc       enables promisc hack mode"
   echo "  --promisc-mpls         decapsulate MPLS in promisc mode"
   echo "  --promisc-mpls=N       -- and record N labels (default 3)"
   echo "  --enable-physdev       enables physdev reporting"
@@ -323,21 +76,14 @@ do
   esac
 
   case "$ac_option" in
-    --ipt-bin=*) IPTBIN="$ac_optarg" ;;
-    --ipt-lib=*) IPTLIB="$ac_optarg" ;;
-    --ipt-src=*) IPTSRC="$ac_optarg" ;;
-    --ipt-ver=*) IPTVER="$ac_optarg" ;;
-    --ipt-inc=*) IPTINC="-I$ac_optarg" ;;
     --kver=*)  KVERSION="$ac_optarg" ;;
     --kdir=*)      KDIR="$ac_optarg" ;;
-    --enable-nat*)   KOPTS="$KOPTS -DENABLE_NAT" ;;
     --enable-mac*)   KOPTS="$KOPTS -DENABLE_MAC" ;;
     --enable-vlan*)  KOPTS="$KOPTS -DENABLE_VLAN" ;;
     --enable-direc*) KOPTS="$KOPTS -DENABLE_DIRECTION" ;;
     --enable-sampl*hash) KOPTS="$KOPTS -DENABLE_SAMPLER -DSAMPLING_HASH" ;;
     --enable-sampl*) KOPTS="$KOPTS -DENABLE_SAMPLER" ;;
     --enable-aggr*)  KOPTS="$KOPTS -DENABLE_AGGR" ;;
-    --enable-promi*)   ENABLE_PROMISC=1 ;;
     --promisc-mpls*)   ENABLE_PROMISC=1; PROMISC_MPLS=1; MPLS_DEPTH=${ac_optarg:-3} ;;
     --enable-snmp-r*)  KOPTS="$KOPTS -DSNMP_RULES" ;;
     --enable-physdev)       KOPTS="$KOPTS -DENABLE_PHYSDEV" ;;
@@ -354,7 +100,7 @@ do
   esac
 done
 
-if [ "$ENABLE_PROMISC" = 1 ]; then KOPTS="$KOPTS -DENABLE_PROMISC"; fi
+ENABLE_PROMISC=1
 if [ "$PROMISC_MPLS" = 1 ]; then
   KOPTS="$KOPTS -DPROMISC_MPLS"
   case "$MPLS_DEPTH" in (*[!0-9]*|"") MPLS_DEPTH=1 ;; esac
@@ -423,12 +169,12 @@ kernel_find_source() {
     echo "! "
     arch=.`uname -m`
     echo "! Under Centos simply run this:"
-    echo "!   root# yum install kernel-devel iptables-devel$arch pkgconfig"
+    echo "!   root# yum install kernel-devel"
   fi
   if grep -q -i debian /proc/version 2>/dev/null; then
     echo "! "
     echo "! Under Debian simply run this:"
-    echo "!   root# apt-get install module-assistant iptables-dev pkg-config"
+    echo "!   root# apt-get install module-assistant"
     echo "!   root# m-a prepare"
   fi
   exit 1
@@ -465,42 +211,10 @@ kconfig() {
   return 0
 }
 
-# Respond to change in https://github.com/torvalds/linux/commit/4806e975729f99
-nf_nat_needed() {
-  local INC=include/linux/netfilter.h
-
-  echo -n "Checking for presence of $INC... "
-  if [ "$KSRC" -a -e $KSRC/$INC ]; then
-    echo Yes
-    INC=$KSRC/$INC
-  elif [ -e $KDIR/$INC ]; then
-    echo Yes
-    INC=$KDIR/$INC
-  else
-    echo No
-    return 1
-  fi
-  echo -n "netfilter.h uses CONFIG_NF_NAT_NEEDED... "
-  if grep -q CONFIG_NF_NAT_NEEDED $INC; then
-    echo Yes
-  else
-    echo No
-    return 1
-  fi
-}
-
 kernel_check_config() {
   kconfig CONFIG_SYSCTL			"sysctl interface"
   kconfig CONFIG_PROC_FS		"proc interface"
-  if nf_nat_needed; then
-    kconfig CONFIG_NF_NAT_NEEDED	"natevents"
-  else
-    kconfig CONFIG_NF_NAT		"natevents" && KOPTS="$KOPTS -DCONFIG_NF_NAT_NEEDED"
-  fi
-  kconfig CONFIG_NF_CONNTRACK_EVENTS	"natevents"
   kconfig CONFIG_IPV6			"IPv6"
-  kconfig CONFIG_IP6_NF_IPTABLES	"ip6tables target"
-  kconfig CONFIG_BRIDGE_NETFILTER	"physdev override"
 }
 
 kernel_check_include() {
@@ -580,7 +294,7 @@ snmp_check() {
     return
   fi
 
-  SNMPTARGET=snmp_NETFLOW.so
+  SNMPTARGET=snmp_netflow.so
   SNMPINSTALL=sinstall
 }
 
@@ -611,7 +325,7 @@ dkms_check() {
   echo Yes.
   DKMSINSTALL=dinstall
   test "$FROMDKMSCONF" && return
-  if dkms status | grep ^ipt-netflow, >/dev/null; then
+  if dkms status | grep ^pkt-netflow, >/dev/null; then
     echo "! You are already have module installed via DKMS"
     echo "!   it will be uninstalled on 'make install' and"
     echo "!   current version of module installed afterwards."
@@ -629,14 +343,7 @@ kernel_check_config
 kernel_check_features
 
 CC=${CC:-gcc}
-test "$IPTBIN" || IPTBIN=`which iptables`
-
-iptables_find_version	#IPTVER
-iptables_try_pkgconfig	#try to configure from pkg-config
-iptables_find_src	#IPTSRC
-iptables_src_version	#check that IPTSRC match to IPTVER
-iptables_inc		#IPTINC
-iptables_modules	#IPTLIB
+compiler_presence_test
 
 snmp_check
 dkms_check
@@ -648,10 +355,7 @@ s!@KDIR@!$KDIR!;\
 s!@KOPTS@!$KOPTS!;\
 s!@SNMPTARGET@!$SNMPTARGET!;\
 s!@SNMPINSTALL@!$SNMPINSTALL!;\
-s!@DKMSINSTALL@!$DKMSINSTALL!;\
-s!@IPTABLES_VERSION@!$IPTVER!;\
-s!@IPTABLES_CFLAGS@!$IPTCFLAGS $IPTINC!;\
-s!@IPTABLES_MODULES@!$IPTLIB!"
+s!@DKMSINSTALL@!$DKMSINSTALL!"
 
 echo -n "Creating Makefile.. "
  sed "$REPLACE" Makefile.in > Makefile

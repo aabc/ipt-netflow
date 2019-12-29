@@ -24,15 +24,12 @@ echo
 readarray -t opts <<EOF
   --disable-snmp-agent
   --enable-aggregation
-  --enable-natevents
   --enable-snmp-rules
   --enable-macaddress
   --enable-vlan
   --promisc-mpls
-  --enable-direction
   --enable-sampler
   --enable-sampler=hash
-  --enable-promisc --promisc-mpls
   --enable-physdev
   --enable-physdev-override
 EOF

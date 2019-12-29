@@ -1,8 +1,8 @@
 /*
  * dlmod plugin for net-snmp for monitoring
- * ipt_NETFLOW module via IPT-NETFLOW-MIB.
+ * pkt_netflow module via IPT-NETFLOW-MIB.
  *
- * (c) 2014 <abc@telekom.ru>
+ * (c) 2014,2020 <abc@openwall.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -45,7 +45,7 @@ struct snmp_vars modinfos[] = {
 	{5, ASN_INTEGER,   "refcnt"},
 	{ 0 }
 };
-#define MODINFO_NAME "ipt_NETFLOW"
+#define MODINFO_NAME "pkt_netflow"
 #define MODINFO_NAME_ID 1
 #define MODINFO_DATE_ID 4
 
@@ -463,7 +463,7 @@ static void parse_table_row(
 	netsnmp_table_data_add_row(data_set->table, row);
 }
 
-static void grab_ipt_netflow_snmp(time_t now)
+static void grab_pkt_netflow_snmp(time_t now)
 {
 	static char buf[4096];
 	int fd;
@@ -473,7 +473,7 @@ static void grab_ipt_netflow_snmp(time_t now)
 	if ((now - totals_ts) < (TOTAL_INTERVAL + 1))
 		return;
 
-	if ((fd = open("/proc/net/stat/ipt_netflow_snmp", O_RDONLY)) < 0)
+	if ((fd = open("/proc/net/stat/pkt_netflow_snmp", O_RDONLY)) < 0)
 		return;
 
 	n = read(fd, buf, sizeof(buf) - 1);
@@ -529,7 +529,7 @@ static int iptNetflowTotals_handler(
 	int		 val32;
 	struct counter64 c64;
 
-	grab_ipt_netflow_snmp(now);
+	grab_pkt_netflow_snmp(now);
 
 	obj = request->requestvb->name[request->requestvb->name_length - 2];
 	sys = find_varinfo(totals, obj);
@@ -566,7 +566,7 @@ static int iptNetflowTotals_handler(
 
 static int stat_cache_load(netsnmp_cache *cache, void *x)
 {
-	grab_ipt_netflow_snmp(time(NULL));
+	grab_pkt_netflow_snmp(time(NULL));
 	return 0;
 }
 

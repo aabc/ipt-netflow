@@ -1,5 +1,8 @@
-ipt-netflow NEWS
+pkt-netflow NEWS
 ================
+
+3.0 (TBA)
+    * Standalone mode (with rename to pkt-netflow).
 
 2.4 (2019-06-23)
     * Minor maintenance release.

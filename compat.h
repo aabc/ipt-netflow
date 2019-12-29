@@ -29,20 +29,6 @@
 # endif /* __LITTLE_ENDIAN */
 #endif
 
-#ifndef IPT_CONTINUE
-# define IPT_CONTINUE XT_CONTINUE
-# define ipt_target xt_target
-#endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
-union nf_inet_addr {
-	__be32		ip;
-	__be32		ip6[4];
-	struct in_addr	in;
-	struct in6_addr	in6;
-};
-#endif
-
 #ifndef list_first_entry
 #define list_first_entry(ptr, type, member) \
 	list_entry((ptr)->next, type, member)
@@ -171,39 +157,6 @@ static int __ethtool_get_settings(struct net_device *dev, struct ethtool_cmd *cm
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)
 # define use_module	ref_module
-#endif
-
-#ifndef NF_IP_LOCAL_IN /* 2.6.25 */
-# define NF_IP_PRE_ROUTING	NF_INET_PRE_ROUTING
-# define NF_IP_LOCAL_IN		NF_INET_LOCAL_IN
-# define NF_IP_FORWARD		NF_INET_FORWARD
-# define NF_IP_LOCAL_OUT	NF_INET_LOCAL_OUT
-# define NF_IP_POST_ROUTING	NF_INET_POST_ROUTING
-#endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
-/* net/netfilter/x_tables.c */
-static void xt_unregister_targets(struct xt_target *target, unsigned int n)
-{
-	unsigned int i;
-
-	for (i = 0; i < n; i++)
-		xt_unregister_target(&target[i]);
-}
-static int xt_register_targets(struct xt_target *target, unsigned int n)
-{
-	unsigned int i;
-
-	int err = 0;
-	for (i = 0; i < n; i++)
-		if ((err = xt_register_target(&target[i])))
-			goto err;
-	return err;
-err:
-	if (i > 0)
-		xt_unregister_targets(target, i);
-	return err;
-}
 #endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
@@ -609,29 +562,6 @@ out:
 #else
 # define first_tv64	first
 # define last_tv64	last
-#endif
-
-/* Offset changes made in 613dbd95723aee7abd16860745691b6c7bda20dc */
-#ifndef HAVE_XT_FAMILY
-# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
-#  define xt_action_param xt_target_param
-# endif
-static inline u_int8_t xt_family(const struct xt_action_param *par)
-{
-	return par->family;
-}
-static inline const struct net_device *xt_in(const struct xt_action_param *par)
-{
-	return par->in;
-}
-static inline const struct net_device *xt_out(const struct xt_action_param *par)
-{
-	return par->out;
-}
-static inline unsigned int xt_hooknum(const struct xt_action_param *par)
-{
-	return par->hooknum;
-}
 #endif
 
 #ifndef SK_CAN_REUSE

@@ -16,8 +16,8 @@
  *
  */
 
-#ifndef _IPT_NETFLOW_H
-#define _IPT_NETFLOW_H
+#ifndef _PKT_NETFLOW_H
+#define _PKT_NETFLOW_H
 
 /*
  * Some tech info:
@@ -262,8 +262,7 @@ struct ipfix_pdu {
 #define MAX_VLAN_TAGS	2
 
 /* hashed data which identify unique flow */
-/* 16+16 + 2+2 + 2+1+1+1 = 41 */
-struct ipt_netflow_tuple {
+struct pkt_netflow_tuple {
 	union nf_inet_addr src;
 	union nf_inet_addr dst;
 	__be16		s_port; // Network byte order
@@ -278,6 +277,7 @@ struct ipt_netflow_tuple {
 	__u8		protocol;
 	__u8		tos;
 	__u8		l3proto;
+	__u8		pkt_type;
 #ifdef ENABLE_MAC
 	__u8		h_dst[ETH_ALEN];
 	__u8		h_src[ETH_ALEN];
@@ -285,11 +285,11 @@ struct ipt_netflow_tuple {
 } __attribute__ ((packed));
 
 /* hlist[2] + tuple[]: 8+8 + 41 = 57 (less than usual cache line, 64) */
-struct ipt_netflow {
+struct pkt_netflow {
 	struct hlist_node hlist; // hashtable search chain
 
 	/* unique per flow data (hashed, NETFLOW_TUPLE_SIZE) */
-	struct ipt_netflow_tuple tuple;
+	struct pkt_netflow_tuple tuple;
 
 	/* volatile data */
 	union nf_inet_addr nh;
@@ -309,9 +309,6 @@ struct ipt_netflow {
 	__u8		d_mask;
 	__u8		tcp_flags; /* `OR' of all tcp flags */
 	__u8		flowEndReason;
-#ifdef ENABLE_DIRECTION
-	__u8		hooknumx; /* hooknum + 1 */
-#endif
 	/* flow statistics */
 	u_int32_t	nr_packets;
 	u_int32_t	nr_bytes;
@@ -331,13 +328,8 @@ struct ipt_netflow {
 	u_int32_t	flow_label; /* IPv6 */
 	u_int32_t	options; /* IPv4(16) & IPv6(32) Options */
 	u_int32_t	tcpoptions;
-#ifdef CONFIG_NF_NAT_NEEDED
-	__be32		s_as;
-	__be32		d_as;
-	struct nat_event *nat;
-#endif
 	union {
-		struct list_head list; /* all flows in ipt_netflow_list */
+		struct list_head list; /* all flows in pkt_netflow_list */
 #ifdef HAVE_LLIST
 		struct llist_node llnode; /* purged flows */
 #endif
@@ -346,35 +338,13 @@ struct ipt_netflow {
 #define flows_llnode _flow_list.llnode
 };
 
-#ifdef CONFIG_NF_NAT_NEEDED
-enum {
-	NAT_CREATE = 1, NAT_DESTROY = 2, NAT_POOLEXHAUSTED = 3
-};
-struct nat_event {
-	struct list_head list;
-	struct {
-		__be32	s_addr;
-		__be32	d_addr;
-		__be16	s_port;
-		__be16	d_port;
-	} pre, post;
-	ktime_t		ts_ktime;
-	unsigned long	ts_jiffies;
-	__u8	protocol;
-	__u8	nat_event;
-};
-#define IS_DUMMY_FLOW(nf) (nf->nat)
-#else
-#define IS_DUMMY_FLOW(nf) 0
-#endif
-
-static inline int ipt_netflow_tuple_equal(const struct ipt_netflow_tuple *t1,
-				    const struct ipt_netflow_tuple *t2)
+static inline int pkt_netflow_tuple_equal(const struct pkt_netflow_tuple *t1,
+				    const struct pkt_netflow_tuple *t2)
 {
-	return (!memcmp(t1, t2, sizeof(struct ipt_netflow_tuple)));
+	return (!memcmp(t1, t2, sizeof(struct pkt_netflow_tuple)));
 }
 
-struct ipt_netflow_sock {
+struct pkt_netflow_sock {
 	struct list_head list;
 	struct socket *sock;
 	struct sockaddr_storage addr;	// destination
@@ -410,34 +380,34 @@ struct netflow_aggr_p {
 	__u16 aggr_port;
 };
 
-#define NETFLOW_STAT_INC(count) (__get_cpu_var(ipt_netflow_stat).count++)
-#define NETFLOW_STAT_ADD(count, val) (__get_cpu_var(ipt_netflow_stat).count += (unsigned long long)val)
-#define NETFLOW_STAT_SET(count, val) (__get_cpu_var(ipt_netflow_stat).count = (unsigned long long)val)
+#define NETFLOW_STAT_INC(count) (__get_cpu_var(pkt_netflow_stat).count++)
+#define NETFLOW_STAT_ADD(count, val) (__get_cpu_var(pkt_netflow_stat).count += (unsigned long long)val)
+#define NETFLOW_STAT_SET(count, val) (__get_cpu_var(pkt_netflow_stat).count = (unsigned long long)val)
 #define NETFLOW_STAT_TS(count)							 \
 	do {									 \
 		ktime_t kts = ktime_get_real();					 \
-		if (!(__get_cpu_var(ipt_netflow_stat)).count.first_tv64)	 \
-			__get_cpu_var(ipt_netflow_stat).count.first = kts;	 \
-		__get_cpu_var(ipt_netflow_stat).count.last = kts;		 \
+		if (!(__get_cpu_var(pkt_netflow_stat)).count.first_tv64)	 \
+			__get_cpu_var(pkt_netflow_stat).count.first = kts;	 \
+		__get_cpu_var(pkt_netflow_stat).count.last = kts;		 \
 	} while (0);
 
 #define NETFLOW_STAT_INC_ATOMIC(count)				\
 	do {							\
 		preempt_disable();				\
-		(__get_cpu_var(ipt_netflow_stat).count++);	\
+		(__get_cpu_var(pkt_netflow_stat).count++);	\
 		preempt_enable();				\
 	} while (0);
 
 #define NETFLOW_STAT_ADD_ATOMIC(count, val)			\
 	do {							\
 		preempt_disable();				\
-		(__get_cpu_var(ipt_netflow_stat).count += (unsigned long long)val); \
+		(__get_cpu_var(pkt_netflow_stat).count += (unsigned long long)val); \
 		preempt_enable();				\
 	} while (0);
 #define NETFLOW_STAT_READ(count) ({					\
 		unsigned int _tmp = 0, _cpu;				\
 		for_each_present_cpu(_cpu)				\
-			 _tmp += per_cpu(ipt_netflow_stat, _cpu).count;	\
+			 _tmp += per_cpu(pkt_netflow_stat, _cpu).count;	\
 		_tmp;							\
 	})
 
@@ -447,16 +417,14 @@ struct duration {
 };
 
 /* statistics */
-struct ipt_netflow_stat {
+struct pkt_netflow_stat {
 	u64 searched;			// hash stat
 	u64 found;			// hash stat
 	u64 notfound;			// hash stat (new flows)
 	u64  pkt_total;			// packets metered
 	u64 traf_total;			// traffic metered
-#ifdef ENABLE_PROMISC
 	u64 pkt_promisc;		// how much packets passed promisc code
 	u64 pkt_promisc_drop;		// how much packets discarded
-#endif
 	/* above is grouped for cache */
 	unsigned int truncated;		// packets stat (drop)
 	unsigned int frags;		// packets stat (drop)

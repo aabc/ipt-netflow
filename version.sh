@@ -4,7 +4,7 @@
 PATH=$PATH:/usr/local/bin:/usr/bin:/bin
 
 # Base version from the source.
-MVERSION=`sed -n 's/^#define.*IPT_NETFLOW_VERSION.*"\(.*\)".*/\1/p' ipt_NETFLOW.c`
+MVERSION=`sed -n 's/^#define.*PKT_NETFLOW_VERSION.*"\(.*\)".*/\1/p' pkt_netflow.c`
 
 # GITVERSION overrides base version.
 if [ -e version.h ] && grep -q GITVERSION version.h; then

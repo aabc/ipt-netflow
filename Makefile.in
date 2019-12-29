@@ -4,54 +4,50 @@ KVERSION = @KVERSION@
 KDIR = @KDIR@
 KINSTDIR = $(shell dirname @KDIR@)
 KOPTS = @KOPTS@
-IPTABLES_CFLAGS = @IPTABLES_CFLAGS@
-IPTABLES_MODULES = @IPTABLES_MODULES@
 DEPMOD = /sbin/depmod -a
 CARGS = @CARGS@
-SNMPTGSO = /usr/lib/snmp/dlmod/snmp_NETFLOW.so
+SNMPTGSO = /usr/lib/snmp/dlmod/snmp_netflow.so
 SNMPCONF = /etc/snmp/snmpd.conf
 SNMPLINE = dlmod netflow $(SNMPTGSO)
 CC = gcc
 
 # https://www.kernel.org/doc/Documentation/kbuild/modules.txt
 # https://www.kernel.org/doc/Documentation/kbuild/makefiles.txt
-obj-m = ipt_NETFLOW.o
+obj-m = pkt_netflow.o
 ccflags-y = @KOPTS@
 
-all: ipt_NETFLOW.ko libipt_NETFLOW.so libip6t_NETFLOW.so @SNMPTARGET@
+all: pkt_netflow.ko @SNMPTARGET@
 
-ipt_NETFLOW.ko: version.h ipt_NETFLOW.c ipt_NETFLOW.h compat_def.h compat.h Makefile
+pkt_netflow.ko: version.h pkt_netflow.c pkt_netflow.h compat_def.h compat.h Makefile
 	@echo Compiling for kernel $(KVERSION)
 	make -C $(KDIR) M=$(CURDIR) modules CONFIG_DEBUG_INFO=y
 	@touch $@
 compat_def.h: gen_compat_def
 	./gen_compat_def > $@
-sparse: | version.h ipt_NETFLOW.c ipt_NETFLOW.h compat.h Makefile
-	@rm -f ipt_NETFLOW.ko ipt_NETFLOW.o
+sparse: | version.h pkt_netflow.c pkt_netflow.h compat.h Makefile
+	@rm -f pkt_netflow.ko pkt_netflow.o
 	@echo Compiling for kernel $(KVERSION)
 	make -C $(KDIR) M=$(CURDIR) modules C=1
-	@touch ipt_NETFLOW.ko
+	@touch pkt_netflow.ko
 coverity:
 	coverity-submit -v
 
-minstall: | ipt_NETFLOW.ko
+minstall: | pkt_netflow.ko
 	@echo " *"
 	make -C $(KDIR) M=$(CURDIR) modules_install INSTALL_MOD_PATH=$(DESTDIR)
 	$(DEPMOD)
 mclean:
 	make -C $(KDIR) M=$(CURDIR) clean
-lclean:
-	-rm -f *.so *_sh.o
-clean: mclean lclean
+clean: mclean
 	-rm -f *.so *.o modules.order version.h compat_def.h
 
-snmp_NETFLOW.so: snmp_NETFLOW.c
+snmp_netflow.so: snmp_netflow.c
 	$(CC) -fPIC -shared -o $@ $< -lnetsnmp
 
-sinstall: | snmp_NETFLOW.so IPT-NETFLOW-MIB.my
+sinstall: | snmp_netflow.so IPT-NETFLOW-MIB.my
 	@echo " *"
 	install -D IPT-NETFLOW-MIB.my $(DESTDIR)/usr/share/snmp/mibs/IPT-NETFLOW-MIB.my
-	install -D snmp_NETFLOW.so $(DESTDIR)$(SNMPTGSO)
+	install -D snmp_netflow.so $(DESTDIR)$(SNMPTGSO)
 	@if ! egrep -qs "^ *$(SNMPLINE)" $(SNMPCONF); then \
 	echo " *"; \
 	echo " *  Add this line to $(SNMPCONF) to enable IPT-NETFLOW-MIB:"; \
@@ -65,29 +61,19 @@ sinstall: | snmp_NETFLOW.so IPT-NETFLOW-MIB.my
 	  echo " *  (snmpd is not started.)"; \
 	fi
 
-%_sh.o: libipt_NETFLOW.c
-	$(CC) $(CFLAGS) -O2 -Wall -Wunused $(IPTABLES_CFLAGS) -fPIC -o $@ -c libipt_NETFLOW.c
-
 %.so: %_sh.o
 	$(CC) -shared -o $@ $<
 
-version.h: ipt_NETFLOW.c ipt_NETFLOW.h compat.h Makefile
+version.h: pkt_netflow.c pkt_netflow.h compat.h Makefile
 	@./version.sh --define > version.h
-
-linstall: | libipt_NETFLOW.so libip6t_NETFLOW.so
-	@echo " *"
-	install -D libipt_NETFLOW.so $(DESTDIR)$(IPTABLES_MODULES)/libipt_NETFLOW.so
-	install -D libip6t_NETFLOW.so $(DESTDIR)$(IPTABLES_MODULES)/libip6t_NETFLOW.so
 
 dinstall:
 	@echo " *"
 	@./install-dkms.sh --install
 
-install: minstall linstall @DKMSINSTALL@ @SNMPINSTALL@
+install: minstall @DKMSINSTALL@ @SNMPINSTALL@
 
 uninstall:
-	-rm -f $(DESTDIR)$(IPTABLES_MODULES)/libipt_NETFLOW.so
-	-rm -f $(DESTDIR)$(IPTABLES_MODULES)/libip6t_NETFLOW.so
 	-rm -f $(DESTDIR)/usr/share/snmp/mibs/IPT-NETFLOW-MIB.my
 	-rm -f $(DESTDIR)$(SNMPTGSO)
 	@if egrep -qs "^ *$(SNMPLINE)" $(SNMPCONF); then \
@@ -98,24 +84,16 @@ uninstall:
 	echo " *"; \
 	fi
 	@if [ "@DKMSINSTALL@" = dinstall ]; then ./install-dkms.sh --uninstall; fi
-	-rm -f $(DESTDIR)$(KINSTDIR)/extra/ipt_NETFLOW.ko
+	-rm -f $(DESTDIR)$(KINSTDIR)/extra/pkt_netflow.ko
 
 Makefile: Makefile.in configure
 	./configure --make ${CARGS}
 
 load: all
-	-insmod ipt_NETFLOW.ko active_timeout=5 protocol=9
-	-iptables -I OUTPUT -j NETFLOW
-	-iptables -I INPUT -j NETFLOW
-	-ip6tables -I OUTPUT -j NETFLOW
-	-ip6tables -I INPUT -j NETFLOW
+	-insmod pkt_netflow.ko active_timeout=5 protocol=9
 
 unload:
-	-iptables -D OUTPUT -j NETFLOW
-	-iptables -D INPUT -j NETFLOW
-	-ip6tables -D OUTPUT -j NETFLOW
-	-ip6tables -D INPUT -j NETFLOW
-	-rmmod ipt_NETFLOW.ko
+	-rmmod pkt_netflow.ko
 
 reload: unload load
 
