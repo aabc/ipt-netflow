@@ -939,6 +939,14 @@ static int snmp_seq_open(struct inode *inode, struct file *file)
 	return single_open(file, snmp_seq_show, NULL);
 }
 
+#ifdef HAVE_PROC_OPS
+static struct proc_ops nf_seq_fops = {
+	.proc_open	= nf_seq_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+};
+#else
 static struct file_operations nf_seq_fops = {
 	.owner	 = THIS_MODULE,
 	.open	 = nf_seq_open,
@@ -946,7 +954,16 @@ static struct file_operations nf_seq_fops = {
 	.llseek	 = seq_lseek,
 	.release = single_release,
 };
+#endif
 
+#ifdef HAVE_PROC_OPS
+static struct proc_ops snmp_seq_fops = {
+	.proc_open	= snmp_seq_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+};
+#else
 static struct file_operations snmp_seq_fops = {
 	.owner	 = THIS_MODULE,
 	.open	 = snmp_seq_open,
@@ -954,6 +971,7 @@ static struct file_operations snmp_seq_fops = {
 	.llseek	 = seq_lseek,
 	.release = single_release,
 };
+#endif
 
 static inline int inactive_needs_export(const struct ipt_netflow *nf, const long i_timeout,
     const unsigned long jiff);
@@ -1206,6 +1224,14 @@ static int flows_seq_release(struct inode *inode, struct file *file)
 	return seq_release_private(inode, file);
 }
 
+#ifdef HAVE_PROC_OPS
+static struct proc_ops flows_seq_fops = {
+	.proc_open	= flows_seq_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= flows_seq_release,
+};
+#else
 static struct file_operations flows_seq_fops = {
 	.owner	 = THIS_MODULE,
 	.open	 = flows_seq_open,
@@ -1213,6 +1239,7 @@ static struct file_operations flows_seq_fops = {
 	.llseek	 = seq_lseek,
 	.release = flows_seq_release,
 };
+#endif
 #endif /* CONFIG_PROC_FS */
 
 #ifdef ENABLE_PROMISC
@@ -3638,7 +3665,7 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 
 #define PAD_SIZE 4 /* rfc prescribes flowsets to be padded */
 
-/* cache timeout_rate in jiffies */
+/* cache timeout_rate (minutes) in jiffies */
 static inline unsigned long timeout_rate_j(void)
 {
 	static unsigned int t_rate = 0;
@@ -5514,7 +5541,13 @@ static struct ipt_target ipt_netflow_reg[] __read_mostly = {
 };
 
 #ifdef CONFIG_PROC_FS
-static int register_stat(const char *name, struct file_operations *fops)
+static int register_stat(const char *name,
+# ifdef HAVE_PROC_OPS
+			 struct proc_ops *fops
+# else
+			 struct file_operations *fops
+# endif
+			 )
 {
 	struct proc_dir_entry *proc_stat;
 
