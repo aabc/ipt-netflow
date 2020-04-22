@@ -4166,11 +4166,12 @@ static void export_dev(struct net_device *dev)
 	/* encode all fields */
 	for (i = 0; ; ) {
 		int type = tpl->fields[i++];
-		int size = tpl->fields[i++];
+		int size;
 		int n;
 
 		if (!type)
 			break;
+		size = tpl->fields[i++];
 		switch (type) {
 		case observationDomainId:
 			put_unaligned_be32(engine_id, ptr);
