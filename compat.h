@@ -165,6 +165,22 @@ static int __ethtool_get_settings(struct net_device *dev, struct ethtool_cmd *cm
 #define num_physpages	totalram_pages
 #endif
 
+#ifndef HAVE_TIMEVAL
+/* timeval is only used internally, so we can use anything for it. */
+struct timeval {
+	long tv_sec;
+	long tv_usec; /* microseconds */
+};
+
+unsigned long timeval_to_jiffies(const struct timeval *tv)
+{
+	return timespec64_to_jiffies(&(struct timespec64){
+				     tv->tv_sec,
+				     tv->tv_usec * NSEC_PER_USEC
+				     });
+}
+#endif
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
 # ifdef ktime_to_timeval
 /* ktime_to_timeval is defined on 64bit and inline on 32bit cpu */
