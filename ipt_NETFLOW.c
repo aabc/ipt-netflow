@@ -1,6 +1,6 @@
 /*
  * This is NetFlow exporting module (NETFLOW target) for linux
- * (c) 2008-2019 <abc@openwall.com>
+ * (c) 2008-2020 <abc@openwall.com>
  *
  *
  *   This program is free software: you can redistribute it and/or modify
@@ -92,7 +92,7 @@
 # endif
 #endif
 
-#define IPT_NETFLOW_VERSION "2.4"   /* Note that if you are using git, you
+#define IPT_NETFLOW_VERSION "2.5"   /* Note that if you are using git, you
 				       will see version in other format. */
 #include "version.h"
 #ifdef GITVERSION

@@ -463,7 +463,7 @@ ipt_NETFLOW linux 2.6.x-5.x kernel module by <abc@openwall.com> -- 2008-2019.
        For NetFlow v5 protocol meaning of fields in dummy flows are such:
          Src IP, Src Port  is Pre-nat source address.
          Dst IP, Dst Port  is Post-nat destination address.
-           - These two fields made equal to data flows catched in FORWARD chain.
+           - These two fields made equal to data flows caught in FORWARD chain.
          Nexthop, Src AS  is Post-nat source address for SNAT. Or,
          Nexthop, Dst AS  is Pre-nat destination address for DNAT.
          TCP Flags is SYN+SCK for start event, RST+FIN for stop event.
@@ -472,7 +472,7 @@ ipt_NETFLOW linux 2.6.x-5.x kernel module by <abc@openwall.com> -- 2008-2019.
        Natevents are compilation disabled by default, to enable you will need to
        add --enable-natevents option to ./configure script.
 
-       For techical description of NAT Events see:
+       For technical description of NAT Events see:
          http://tools.ietf.org/html/draft-ietf-behave-ipfix-nat-logging-04
 
    inactive_timeout=15

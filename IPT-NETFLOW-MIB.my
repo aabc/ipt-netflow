@@ -29,7 +29,7 @@ iptNetflowMIB MODULE-IDENTITY
 
 	Copyright (c) 2014 <abc at telekom.ru>.
 
-	License: GPL"
+	License: GPL-2.0-only"
 
     REVISION	"201409110000Z"
     DESCRIPTION "Initial revision."
