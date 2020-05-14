@@ -3515,11 +3515,13 @@ static inline __u8 hook2dir(const __u8 hooknum)
 }
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,7,0)
 static inline void put_unaligned_be24(u32 val, unsigned char *p)
 {
 	*p++ = val >> 16;
 	put_unaligned_be16(val, p);
 }
+#endif
 
 static struct {
 	s64		ms;	 /* this much abs milliseconds */
