@@ -348,6 +348,8 @@ compiler_presence_test
 snmp_check
 dkms_check
 
+rm -f compat_def.h
+
 REPLACE="\
 s!@CARGS@!$CARGS!;\
 s!@KVERSION@!$KVERSION!;\
