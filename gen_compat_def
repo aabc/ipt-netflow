@@ -50,6 +50,7 @@ kbuild_test_compile() {
 
 # Test that symbol is defined.
 kbuild_test_symbol() {
+  echo "Test symbol $*" >&2
   kbuild_test_compile ${1^^} $1 ${2-} <<-EOF
 	#include <linux/module.h>
 	${2:+#include <$2>}
@@ -60,6 +61,7 @@ kbuild_test_symbol() {
 
 # Test that struct is defined.
 kbuild_test_struct() {
+  echo "Test struct $*" >&2
   kbuild_test_compile ${1^^} "struct $1" ${2-} <<-EOF
 	#include <linux/module.h>
 	${2:+#include <$2>}
