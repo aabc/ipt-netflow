@@ -5785,7 +5785,7 @@ static void __exit ipt_netflow_fini(void)
 	netflow_scan_and_export(AND_FLUSH);
 	del_timer_sync(&rate_timer);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,1,0)
+#ifdef HAVE_SYNCHRONIZE_SCHED
 	synchronize_sched();
 #else
 	synchronize_rcu();

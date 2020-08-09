@@ -77,6 +77,8 @@ kbuild_test_struct timeval linux/ktime.h
 # 97a32539b9568 proc: convert everything to "struct proc_ops"
 # d56c0d45f0e27 proc: decouple proc from VFS with "struct proc_ops"
 kbuild_test_struct proc_ops linux/proc_fs.h
+# No since v5.1, but present in CentOS-8's 4.18.0-227
+kbuild_test_symbol synchronize_sched linux/rcupdate.h
 
 echo "// End of compat_def.h"
 
