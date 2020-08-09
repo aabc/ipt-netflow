@@ -619,6 +619,8 @@ dkms_check() {
   fi
 }
 
+echo "Module version: $(./version.sh)"
+
 kernel_find_version	#KVERSION
 test "$KLIBMOD" || KLIBMOD=$KVERSION
 echo "Kernel version: $KVERSION ($KHOW)"
