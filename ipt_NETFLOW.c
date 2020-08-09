@@ -5238,7 +5238,7 @@ do_protocols:
 #else /* !SAMPLING_HASH */
 	hash = hash_netflow(&tuple);
 #endif
-	read_lock(&htable_rwlock);
+	read_lock_bh(&htable_rwlock);
 	stripe = &htable_stripes[hash & LOCK_COUNT_MASK];
 	spin_lock(&stripe->lock);
 	/* record */
@@ -5391,7 +5391,7 @@ do_protocols:
 
 unlock_return:
 	spin_unlock(&stripe->lock);
-	read_unlock(&htable_rwlock);
+	read_unlock_bh(&htable_rwlock);
 
 	return IPT_CONTINUE;
 }
