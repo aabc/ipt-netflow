@@ -3,14 +3,14 @@ ipt-netflow NEWS
 
 2.5 (2020-04-24)
     * Minor maintenance release.
-      - Compilation compatibility with kernels up to 5.6.
-      - Performance improvements by Vadim Fedorenko.
-      - Small code fixes and typo corrections.
+       - Compilation compatibility with kernels up to 5.6.
+       - Performance improvements by Vadim Fedorenko.
+       - Small code fixes and typo corrections.
 
 2.4 (2019-06-23)
     * Minor maintenance release.
-      - Compilation compatibility with kernels up to 5.2.
-      - README, CREDITS update.
+       - Compilation compatibility with kernels up to 5.2.
+       - README, CREDITS update.
 
 2.3 (2018-03-19)
 
