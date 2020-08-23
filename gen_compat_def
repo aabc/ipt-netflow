@@ -29,10 +29,12 @@ kbuild_test_compile() {
   cmd="make -s -C $KDIR M=$PWD modules"
   echo "$cmd" > log
   if $cmd >> log 2>&1; then
+    echo " declared" >&2
     [ "$2" ] && echo "// $2 is declared ${3:+in <$3>}"
     echo "#define HAVE_$1"
     echo
   else
+    echo " undeclared" >&2
     echo "#undef HAVE_$1"
     echo "// ${2:-symbol} is undeclared${3:+ in <$3>}. Compile:"
     sed  "s/^/\/\/   /" test.c
@@ -50,7 +52,7 @@ kbuild_test_compile() {
 
 # Test that symbol is defined.
 kbuild_test_symbol() {
-  echo "Test symbol $*" >&2
+  echo -n "Test symbol $* " >&2
   kbuild_test_compile ${1^^} $1 ${2-} <<-EOF
 	#include <linux/module.h>
 	${2:+#include <$2>}
@@ -61,7 +63,7 @@ kbuild_test_symbol() {
 
 # Test that struct is defined.
 kbuild_test_struct() {
-  echo "Test struct $*" >&2
+  echo -n "Test struct $* " >&2
   kbuild_test_compile ${1^^} "struct $1" ${2-} <<-EOF
 	#include <linux/module.h>
 	${2:+#include <$2>}
