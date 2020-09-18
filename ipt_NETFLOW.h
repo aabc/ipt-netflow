@@ -110,6 +110,7 @@ struct netflow5_pdu {
 	two(56,  SRC_MAC, sourceMacAddress, 6) \
 	two(57,  DST_MAC, postDestinationMacAddress, 6) \
 	two(58,  SRC_VLAN, vlanId, 2) \
+	two(60,  IP_VERSION, ipVersion, 1) \
 	two(61,  DIRECTION, flowDirection, 1) \
 	two(62,  IPV6_NEXT_HOP, ipNextHopIPv6Address, 16) \
 	two(64,  IPV6_OPTION_HEADERS, ipv6ExtensionHeaders, 2) \
