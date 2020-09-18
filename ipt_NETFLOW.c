@@ -2989,6 +2989,7 @@ static struct base_template template_ipv4 = {
 		IPV4_SRC_ADDR,
 		IPV4_DST_ADDR,
 		IPV4_NEXT_HOP,
+		IP_VERSION,
 		0
 	}
 };
@@ -3003,6 +3004,7 @@ static struct base_template template_ipv6 = {
 		IPV6_SRC_ADDR,
 		IPV6_DST_ADDR,
 		IPV6_NEXT_HOP,
+		IP_VERSION,
 		0
 	}
 };
@@ -3623,6 +3625,7 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 #ifdef ENABLE_DIRECTION
 	case DIRECTION:		       *ptr = hook2dir(nf->hooknumx - 1); break;
 #endif
+	case IP_VERSION:	       *ptr = (nf->tuple.l3proto == AF_INET ? 4 : 6); break;
 	case PROTOCOL:	               *ptr = nf->tuple.protocol; break;
 	case TCP_FLAGS:	               *ptr = nf->tcp_flags; break;
 	case TOS:	               *ptr = nf->tuple.tos; break;
