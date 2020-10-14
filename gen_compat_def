@@ -85,6 +85,8 @@ kbuild_test_struct proc_ops linux/proc_fs.h
 kbuild_test_symbol synchronize_sched linux/rcupdate.h
 # Fails on 3.10.0-957.10.1.el7.x86_64
 kbuild_test_symbol nf_bridge_info_get linux/netfilter_bridge.h
+# Stumbled on 5.9
+kbuild_test_struct vlan_dev_priv linux/if_vlan.h
 
 echo "// End of compat_def.h"
 

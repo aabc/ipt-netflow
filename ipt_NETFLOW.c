@@ -4874,7 +4874,7 @@ static void parse_l2_header(const struct sk_buff *skb, struct ipt_netflow_tuple 
 		tuple->tag[tag_num++] = htons(vlan_tx_tag_get(skb));
 	else if (skb->dev && is_vlan_dev(skb->dev)) {
 		struct net_device *vlan_dev = skb->dev;
-# if LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
+# ifdef HAVE_VLAN_DEV_PRIV
 		struct vlan_dev_priv *vlan = vlan_dev_priv(vlan_dev);
 
 		/* `if` condition is `#if`ed intentionally, and this is
