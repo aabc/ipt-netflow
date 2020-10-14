@@ -86,9 +86,14 @@
 #if defined(CONFIG_NF_NAT_NEEDED) && LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)
 # include <net/netfilter/nf_conntrack_timestamp.h>
 #endif
-#ifdef ENABLE_PHYSDEV_OVER
-# ifndef CONFIG_BRIDGE_NETFILTER
+#ifndef CONFIG_BRIDGE_NETFILTER
+# ifdef ENABLE_PHYSDEV_OVER
+#  warning "Requested physdev override is not compiled."
 #  undef ENABLE_PHYSDEV_OVER
+# endif
+# ifdef ENABLE_PHYSDEV
+#  warning "Requested physdev is not compiled."
+#  undef ENABLE_PHYSDEV
 # endif
 #endif
 
