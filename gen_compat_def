@@ -26,7 +26,7 @@ kbuild_test_compile() {
 
   cat > test.c
   echo obj-m = test.o > Makefile
-  cmd="make -s -C $KDIR M=$PWD modules"
+  cmd="make -s -B -C $KDIR M=$PWD modules"
   echo "$cmd" > log
   if $cmd >> log 2>&1; then
     echo " declared" >&2
