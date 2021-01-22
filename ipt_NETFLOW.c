@@ -329,6 +329,7 @@ enum {
 	DONT_FLUSH, AND_FLUSH
 };
 static int template_ids = FLOWSET_DATA_FIRST;
+static int tpl_gen_count = 0; /* how much templates */
 static int tpl_count = 0; /* how much active templates */
 #define STAT_INTERVAL	 (1*60)
 #define SYSINFO_INTERVAL (5*60)
@@ -704,7 +705,7 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		seq_printf(seq, " (netflow)");
 	if (protocol >= 9)
 		seq_printf(seq, ", refresh-rate %u, timeout-rate %u, (templates %d, active %d).\n",
-		    refresh_rate, timeout_rate, template_ids - FLOWSET_DATA_FIRST, tpl_count);
+		    refresh_rate, timeout_rate, tpl_gen_count, tpl_count);
 	else
 		seq_printf(seq, "\n");
 
@@ -3393,6 +3394,9 @@ static struct data_template *get_template(const unsigned int tmask)
 	tpl->length = length;
 	tpl->rec_size = 0;
 	tpl->template_id_n = htons(template_ids++);
+	tpl_gen_count++;
+	if (template_ids > 0x00010000)
+		template_ids = FLOWSET_DATA_FIRST;
 	tpl->exported_cnt = 0;
 	tpl->exported_ts = 0;
 
@@ -5708,6 +5712,10 @@ static int __init ipt_netflow_init(void)
 #ifdef SAMPLING_HASH
 	hash_seed = prandom_u32();
 #endif
+#endif
+
+#ifdef ENABLE_RANDOM_TEMPLATE_IDS
+	template_ids = FLOWSET_DATA_FIRST | prandom_u32_max(0x00010000);
 #endif
 
 #ifdef SNMP_RULES

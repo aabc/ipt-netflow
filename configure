@@ -302,6 +302,7 @@ show_help() {
   echo "  --enable-direction     enables flowDirection(61) Element"
   echo "  --enable-sampler       enables Flow Sampling"
   echo "  --enable-sampler=hash  enables Hash sampler"
+  echo "  --enable-rand-tpl-id   enables seeding the template IDs from a random number"
   echo "  --enable-aggregation   enables aggregation rules"
   echo "  --enable-promisc       enables promisc hack mode"
   echo "  --promisc-mpls         decapsulate MPLS in promisc mode"
@@ -337,6 +338,7 @@ do
     --enable-sampl*hash) KOPTS="$KOPTS -DENABLE_SAMPLER -DSAMPLING_HASH" ;;
     --enable-sampl*) KOPTS="$KOPTS -DENABLE_SAMPLER" ;;
     --enable-aggr*)  KOPTS="$KOPTS -DENABLE_AGGR" ;;
+    --enable-rand-tpl*)  KOPTS="$KOPTS -DENABLE_RANDOM_TEMPLATE_IDS" ;;
     --enable-promi*)   ENABLE_PROMISC=1 ;;
     --promisc-mpls*)   ENABLE_PROMISC=1; PROMISC_MPLS=1; MPLS_DEPTH=${ac_optarg:-3} ;;
     --enable-snmp-r*)  KOPTS="$KOPTS -DSNMP_RULES" ;;
