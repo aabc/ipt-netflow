@@ -21,7 +21,7 @@ ccflags-y = @KOPTS@
 all: ipt_NETFLOW.ko libipt_NETFLOW.so libip6t_NETFLOW.so @SNMPTARGET@
 
 ipt_NETFLOW.ko: version.h ipt_NETFLOW.c ipt_NETFLOW.h compat_def.h compat.h Makefile
-	@echo Compiling for kernel $(KVERSION)
+	@echo Compiling $(shell ./version.sh) for kernel $(KVERSION)
 	make -C $(KDIR) M=$(CURDIR) modules CONFIG_DEBUG_INFO=y
 	@touch $@
 compat_def.h: gen_compat_def
