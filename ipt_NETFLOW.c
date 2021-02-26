@@ -2098,8 +2098,13 @@ static void netflow_sendmsg(void *buffer, const int len)
 					suggestion = ": will reconnect.";
 				}
 			}
-			printk(KERN_ERR "ipt_NETFLOW: sendmsg[%d] error %d: data loss %llu pkt, %llu bytes%s\n",
-			       snum, ret, pdu_packets, pdu_traf, suggestion);
+			if (debug)
+				printk(KERN_ERR "ipt_NETFLOW: sendmsg[%d] error %d: data loss %llu pkt, %llu bytes%s\n",
+				       snum, ret, pdu_packets, pdu_traf, suggestion);
+			else
+				printk_ratelimited(KERN_ERR "ipt_NETFLOW: sendmsg[%d] error %d: %s\n",
+						   snum, ret, suggestion);
+
 		} else {
 			unsigned int wmem = compat_refcount_read(&usock->sock->sk->sk_wmem_alloc);
 			if (wmem > atomic_read(&usock->wmem_peak))
