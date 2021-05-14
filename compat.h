@@ -749,4 +749,29 @@ unsigned long long strtoul(const char *cp, char **endp, unsigned int base)
 	return result;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0)
+/*
+ * find_module() is unexported in v5.12:
+ *   089049f6c9956 ("module: unexport find_module and module_mutex")
+ * and module_mutex is replaced with RCU in
+ *   a006050575745 ("module: use RCU to synchronize find_module")
+ */
+#include <linux/rcupdate.h>
+struct module *find_module(const char *name)
+{
+	struct module *mod;
+
+	rcu_read_lock_sched();
+	/* Yes this is crazy, but should work. */
+	list_for_each_entry_rcu(mod, &THIS_MODULE->list, list) {
+		if (!strcmp(mod->name, name)) {
+			rcu_read_unlock_sched();
+			return mod;
+		}
+	}
+	rcu_read_unlock_sched();
+	return NULL;
+}
+#endif
+
 #endif /* COMPAT_NETFLOW_H */
