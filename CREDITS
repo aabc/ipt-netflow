@@ -45,7 +45,7 @@ Sign-off rule is that of the Linux kernel:
 
 Principal author and project maintainer:
 
-   ABC <abc@openwall.com> [2008-2019]
+   ABC <abc@openwall.com> [2008-2021]
 
 
 Compatibility layer is using code from Linux Kernel and should be
@@ -76,6 +76,9 @@ Patch authors and submitters:
    Vadim Fedorenko [2019]
    Paolo Pisati @ Canonical [2020]
    Jeroen Roovers @ Gentoo [2020]
+   Michael Hu [2020]
+   Sven Hartge [2020]
+   Simon Chopin [2021]
 
 
 Project supporters:

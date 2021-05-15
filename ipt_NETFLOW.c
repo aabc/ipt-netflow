@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only
  *
  * This is NetFlow exporting module (NETFLOW target) for linux
- * (c) 2008-2020 <abc@openwall.com>
+ * (c) 2008-2021 <abc@openwall.com>
  *
  *
  *   This program is free software: you can redistribute it and/or modify
@@ -98,8 +98,8 @@
 # endif
 #endif
 
-#define IPT_NETFLOW_VERSION "2.5.1" /* Note that if you are using git, you
-				       will see version in other format. */
+#define IPT_NETFLOW_VERSION "2.6" /* Note that if you are using git, you
+				     will see version in other format. */
 #include "version.h"
 #ifdef GITVERSION
 #undef IPT_NETFLOW_VERSION

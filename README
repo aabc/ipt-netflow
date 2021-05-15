@@ -1,4 +1,4 @@
-ipt_NETFLOW linux 2.6.x-5.x kernel module by <abc@openwall.com> -- 2008-2019.
+ipt_NETFLOW linux 2.6.x-5.x kernel module by <abc@openwall.com> -- 2008-2021.
 
    High performance NetFlow v5, v9, IPFIX flow data export module for Linux
    kernel. Created to be useful for linux routers in high-throughput networks.

@@ -4,7 +4,7 @@
 # Generate defines based on kernel having
 # some symbols declared
 #
-# Copyright (C) 2019,2020 <abc@openwall.com>
+# Copyright (C) 2019-2021 <abc@openwall.com>
 #
 
 export LANG=C LC_ALL=C LC_MESSAGES=C LC_CTYPE=C

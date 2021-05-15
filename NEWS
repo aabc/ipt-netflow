@@ -1,6 +1,13 @@
 ipt-netflow NEWS
 ================
 
+2.6 (2021-05-15)
+    * Minor feature and maintenance release.
+       - Compilation compatibility with kernel 5.12.
+       - Add ipVersion (60) support.
+       - Optionally seed initial template ID from PRNG.
+       - Compilation improvements.
+
 2.5.1 (2020-08-12)
     * Maintenance release.
        - Fix soft lockup on kernels with xtables targets used via nftables.
