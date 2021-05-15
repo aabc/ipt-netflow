@@ -1,4 +1,5 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0-only
+ *
  * This is NetFlow exporting module (NETFLOW target) for linux
  * (c) 2008-2020 <abc@openwall.com>
  *

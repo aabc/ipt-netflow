@@ -1,4 +1,5 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0-only
+ *
  * dlmod plugin for net-snmp for monitoring
  * ipt_NETFLOW module via IPT-NETFLOW-MIB.
  *

@@ -1,7 +1,8 @@
-/* This code is derived from the Linux Kernel sources intended
+/* SPDX-License-Identifier: GPL-2.0-only
+ *
+ * This code is derived from the Linux Kernel sources intended
  * to maintain compatibility with different Kernel versions.
  * Copyright of original source is of respective Linux Kernel authors.
- * License is GPL-2.0-only.
  */
 
 #ifndef COMPAT_NETFLOW_H

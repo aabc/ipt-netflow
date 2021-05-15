@@ -1,4 +1,6 @@
 #!/usr/bin/ruby
+# SPDX-License-Identifier: GPL-2.0-only
+#
 # Observe irq and softirq in top fashion
 # (c) 2014 <abc@telekom.ru>
 # License: GPL-2.0-only.

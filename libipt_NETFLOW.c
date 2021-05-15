@@ -1,4 +1,5 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0-only
+ *
  * iptables helper for NETFLOW target
  * <abc@telekom.ru>
  *

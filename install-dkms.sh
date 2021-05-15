@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+#
 # This script cleanly re-install module into DKMS tree.
 
 PATH=$PATH:/bin:/usr/bin:/usr/sbin:/sbin:/usr/local/sbin
