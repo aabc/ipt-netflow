@@ -170,10 +170,6 @@ static int __ethtool_get_settings(struct net_device *dev, struct ethtool_cmd *cm
 # define CHECK_OK	0
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)
-# define use_module	ref_module
-#endif
-
 #ifndef NF_IP_LOCAL_IN /* 2.6.25 */
 # define NF_IP_PRE_ROUTING	NF_INET_PRE_ROUTING
 # define NF_IP_LOCAL_IN		NF_INET_LOCAL_IN

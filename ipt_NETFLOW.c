@@ -5494,12 +5494,8 @@ static void register_ct_events(void)
 	}
 	/* Reference netlink module to prevent it's unsafe unload before us. */
 	if (!netlink_m && (netlink_m = find_module(NETLINK_M))) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,9,0)
-		use_module(THIS_MODULE, netlink_m);
-#else
 		if (!try_module_get(netlink_m))
 			netlink_m = NULL;
-#endif
 	}
 
 	/* Register ct events callback. */
@@ -5527,10 +5523,9 @@ static void unregister_ct_events(void)
 #else /* < v3.2 */
 	unset_notifier_cb();
 #endif /* v3.2 */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,9,0)
 	module_put(netlink_m);
 	netlink_m = NULL;
-#endif
+
 	rcu_assign_pointer(saved_event_cb, NULL);
 #else /* < v2.6.31 */
 	nf_conntrack_unregister_notifier(&ctnl_notifier);
