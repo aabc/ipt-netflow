@@ -1,8 +1,9 @@
 #!/bin/bash -efu
 # SPDX-License-Identifier: GPL-2.0-only
 #
-# Generate defines based on kernel having
-# some symbols declared
+# Generate defines based on kernel having some symbols declared.
+# Tests should work without linking, because kernel may not be
+# completely compiled (only prepared).
 #
 # Copyright (C) 2019-2021 <abc@openwall.com>
 #
@@ -41,7 +42,14 @@ kbuild_test_compile() {
     echo "// Output:"
     sed  "s/^/\/\/   /" log
     echo
-    if ! egrep -q 'has no member named|undeclared|storage size of .* isn.t known|No such file or directory' log; then
+    if ! egrep -q \
+	  -e 'has no member named' \
+	  -e 'undeclared' \
+	  -e 'storage size of .* isn.t known' \
+	  -e 'No such file or directory' \
+	  -e 'incompatible types when initializing' \
+	  -e 'initializer element is not constant' \
+	  log; then
       echo "Error: unexpected error from compiler" >&2
       cat log >&2
       echo >&2
@@ -50,9 +58,9 @@ kbuild_test_compile() {
   fi
 }
 
-# Test that symbol is defined.
+# Test that symbol is defined (will catch functions mostly).
 kbuild_test_symbol() {
-  echo -n "Test symbol $* " >&2
+  echo -n "Test function $* " >&2
   kbuild_test_compile ${1^^} $1 ${2-} <<-EOF
 	#include <linux/module.h>
 	${2:+#include <$2>}
@@ -61,6 +69,16 @@ kbuild_test_symbol() {
 	EOF
 }
 
+# Test that symbol is defined (functions and globals).
+kbuild_test_ref() {
+  echo -n "Test symbol $* " >&2
+  kbuild_test_compile ${1^^}_REF $1 ${2-} <<-EOF
+	#include <linux/module.h>
+	${2:+#include <$2>}
+	MODULE_LICENSE("GPL");
+	void *test = &$1;
+	EOF
+}
 # Test that struct is defined.
 kbuild_test_struct() {
   echo -n "Test struct $* " >&2
@@ -87,6 +105,11 @@ kbuild_test_symbol synchronize_sched linux/rcupdate.h
 kbuild_test_symbol nf_bridge_info_get linux/netfilter_bridge.h
 # Stumbled on 5.9
 kbuild_test_struct vlan_dev_priv linux/if_vlan.h
+# Kernel version check broken by centos8
+kbuild_test_symbol put_unaligned_be24 asm/unaligned.h
+# totalram_pages changed from atomic to inline function.
+kbuild_test_symbol totalram_pages linux/mm.h
+kbuild_test_ref    totalram_pages linux/mm.h
 
 echo "// End of compat_def.h"
 
