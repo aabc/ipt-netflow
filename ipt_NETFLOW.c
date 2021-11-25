@@ -2226,7 +2226,7 @@ static int parse_sampler(char *ptr)
 		printk(KERN_ERR "ipt_NETFLOW: sampler parse error (%s '%s').\n",
 		    "unknown mode", ptr);
 		ret = -EINVAL;
-		/* FALLTHROUGH */
+		fallthrough;
 	case '\0': /* empty */
 	case 'n':  /* none */
 	case 'o':  /* off */
@@ -3654,7 +3654,7 @@ static inline void add_tpl_field(__u8 *ptr, const int type, const struct ipt_net
 			      put_unaligned_be16(nf->options, ptr); break;
 	case SRC_MASK:	               *ptr = nf->s_mask; break;
 	case DST_MASK:	               *ptr = nf->d_mask; break;
-	case icmpTypeCodeIPv4:	/*FALLTHROUGH*/
+	case icmpTypeCodeIPv4:	fallthrough;
 	case icmpTypeCodeIPv6:	put_unaligned(nf->tuple.d_port, (__be16 *)ptr); break;
 	case MUL_IGMP_TYPE:            *ptr = nf->tuple.d_port; break;
 	case flowEndReason: 	       *ptr = nf->flowEndReason; break;
