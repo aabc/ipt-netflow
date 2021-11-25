@@ -27,7 +27,8 @@ ipt_NETFLOW.ko: version.h ipt_NETFLOW.c ipt_NETFLOW.h compat_def.h compat.h Make
 	make -C $(KDIR) M=$(CURDIR) modules
 	@touch $@
 compat_def.h: gen_compat_def
-	./gen_compat_def > $@
+	./gen_compat_def > $@-
+	mv $@- $@
 sparse: | version.h ipt_NETFLOW.c ipt_NETFLOW.h compat.h Makefile
 	@rm -f ipt_NETFLOW.ko ipt_NETFLOW.o
 	@echo Compiling for kernel $(KVERSION)
