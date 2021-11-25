@@ -4597,7 +4597,7 @@ static void rate_timer_calc(
 #ifdef CONFIG_NF_NAT_NEEDED
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
 static struct nf_ct_event_notifier *saved_event_cb __read_mostly = NULL;
-static int netflow_conntrack_event(const unsigned int events, struct nf_ct_event *item)
+static int netflow_conntrack_event(const unsigned int events, const struct nf_ct_event *item)
 #else
 static int netflow_conntrack_event(struct notifier_block *this, unsigned long events, void *ptr)
 #endif
@@ -4619,7 +4619,7 @@ static int netflow_conntrack_event(struct notifier_block *this, unsigned long ev
 	/* Call netlink first. */
 	notifier = rcu_dereference(saved_event_cb);
 	if (likely(notifier))
-		ret = notifier->fcn(events, item);
+		ret = notifier->ct_event(events, item);
 #endif
 	if (unlikely(!natevents))
 		return ret;
@@ -4684,7 +4684,7 @@ static struct notifier_block ctnl_notifier = {
 };
 #else
 static struct nf_ct_event_notifier ctnl_notifier = {
-	.fcn = netflow_conntrack_event
+	.ct_event = netflow_conntrack_event
 };
 #endif /* since 2.6.31 */
 #endif /* CONFIG_NF_NAT_NEEDED */
@@ -5451,9 +5451,15 @@ static void unset_notifier_cb(NET_STRUCT)
 
 	notifier = rcu_dereference(nf_conntrack_event_cb);
 	if (notifier == &ctnl_notifier) {
-		if (saved_event_cb == NULL)
+		if (saved_event_cb == NULL) {
+#ifdef HAVE_NF_CT_EVENT_NOTIFIER_CT_EVENT
+			/* b86c0e6429da ("netfilter: ecache: prepare for event
+			 * notifier merge") */
+			nf_conntrack_unregister_notifier(net);
+#else
 			nf_conntrack_unregister_notifier(NET_ARG &ctnl_notifier);
-		else
+#endif
+		} else
 			rcu_assign_pointer(nf_conntrack_event_cb, saved_event_cb);
 	} else
 		printk(KERN_ERR "ipt_NETFLOW: natevents already disabled.\n");

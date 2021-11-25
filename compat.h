@@ -781,4 +781,8 @@ struct module *find_module(const char *name)
 # endif
 #endif
 
+#ifndef HAVE_NF_CT_EVENT_NOTIFIER_CT_EVENT
+# define ct_event fcn
+#endif
+
 #endif /* COMPAT_NETFLOW_H */
