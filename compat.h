@@ -782,7 +782,14 @@ struct module *find_module(const char *name)
 #endif
 
 #ifndef HAVE_NF_CT_EVENT_NOTIFIER_CT_EVENT
+/*
+ * nat event callback parameter is constified in 5.15+
+ * but it prevents module building with previous kernel versions
+ */
+# define NF_CT_EVENT struct nf_ct_event
 # define ct_event fcn
+#else
+# define NF_CT_EVENT const struct nf_ct_event
 #endif
 
 #endif /* COMPAT_NETFLOW_H */

@@ -4597,7 +4597,7 @@ static void rate_timer_calc(
 #ifdef CONFIG_NF_NAT_NEEDED
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
 static struct nf_ct_event_notifier *saved_event_cb __read_mostly = NULL;
-static int netflow_conntrack_event(const unsigned int events, const struct nf_ct_event *item)
+static int netflow_conntrack_event(const unsigned int events, NF_CT_EVENT *item)
 #else
 static int netflow_conntrack_event(struct notifier_block *this, unsigned long events, void *ptr)
 #endif
