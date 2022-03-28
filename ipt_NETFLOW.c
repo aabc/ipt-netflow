@@ -4597,6 +4597,19 @@ static void rate_timer_calc(
 #ifdef CONFIG_NF_NAT_NEEDED
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
 static struct nf_ct_event_notifier *saved_event_cb __read_mostly = NULL;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,0)
+static int netflow_conntrack_expect_event(const unsigned int events, const struct nf_exp_event *item)
+{
+	struct nf_ct_event_notifier *notifier;
+
+	/* Call netlink first. */
+	notifier = rcu_dereference(saved_event_cb);
+	if (likely(notifier))
+		return notifier->exp_event(events, item);
+	else
+		return 0;
+}
+#endif
 static int netflow_conntrack_event(const unsigned int events, NF_CT_EVENT *item)
 #else
 static int netflow_conntrack_event(struct notifier_block *this, unsigned long events, void *ptr)
@@ -4684,7 +4697,10 @@ static struct notifier_block ctnl_notifier = {
 };
 #else
 static struct nf_ct_event_notifier ctnl_notifier = {
-	.ct_event = netflow_conntrack_event
+	.ct_event = netflow_conntrack_event,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,0)
+	.exp_event = netflow_conntrack_expect_event,
+#endif
 };
 #endif /* since 2.6.31 */
 #endif /* CONFIG_NF_NAT_NEEDED */
