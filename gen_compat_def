@@ -49,6 +49,7 @@ kbuild_test_compile() {
 	  -e 'No such file or directory' \
 	  -e 'incompatible types when initializing' \
 	  -e 'initializer element is not constant' \
+	  -e 'dereferencing pointer to incomplete type' \
 	  log; then
       echo "Error: unexpected error from compiler" >&2
       cat log >&2
