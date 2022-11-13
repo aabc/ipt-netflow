@@ -4821,7 +4821,7 @@ static inline __u32 ip4_options(const u_int8_t *p, const unsigned int optsize)
 			 *
 			 * Set proper bit for htonl later. */
 			if (ip4_opt_table[op])
-				ret |= 1 << (32 - ip4_opt_table[op]);
+				ret |= 1 << (31 - ip4_opt_table[op]);
 		}
 		if (likely(i >= optsize || op == 0))
 			break;
@@ -4842,26 +4842,24 @@ static inline __u32 tcp_options(const struct sk_buff *skb, const unsigned int pt
 	const unsigned int optsize = th->doff * 4 - sizeof(struct tcphdr);
 	__u8 _opt[TCPHDR_MAXSIZE];
 	const u_int8_t *p;
-	__u32 ret;
+	__u32 ret = 0;
 	unsigned int i;
 
 	p = skb_header_pointer(skb, ptr + sizeof(struct tcphdr), optsize, _opt);
 	if (unlikely(!p))
-		return 0;
-	ret = 0;
+		return ret;
+
 	for (i = 0; likely(i < optsize); ) {
 		u_int8_t opt = p[i++];
 
+		if (likely(opt == 0) || unlikely(p[i] < 2))
+			break;
 		if (likely(opt < 32)) {
 			/* IANA doc is messed up, see above. */
-			ret |= 1 << (32 - opt);
+			ret |= 1 << (31 - opt);
 		}
-		if (likely(i >= optsize || opt == 0))
-			break;
-		else if (unlikely(opt == 1))
+		if (unlikely(opt == 1))
 			continue;
-		else if (unlikely(p[i] < 2)) /* "silly options" */
-			break;
 		else
 			i += p[i] - 1;
 	}
