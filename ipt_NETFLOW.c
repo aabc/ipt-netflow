@@ -4852,12 +4852,16 @@ static inline __u32 tcp_options(const struct sk_buff *skb, const unsigned int pt
 	for (i = 0; likely(i < optsize); ) {
 		u_int8_t opt = p[i++];
 
-		if (likely(opt < 32))
+		if (likely(opt < 32)) {
+			/* IANA doc is messed up, see above. */
 			ret |= 1 << (31 - opt);
-		if (likely(opt == 0) || unlikely(p[i] < 2))
+		}
+		if (likely(i >= optsize || opt == 0))
 			break;
-		if (unlikely(opt == 1))
+		else if (unlikely(opt == 1))
 			continue;
+		else if (unlikely(p[i] < 2)) /* "silly options" */
+			break;
 		else
 			i += p[i] - 1;
 	}
