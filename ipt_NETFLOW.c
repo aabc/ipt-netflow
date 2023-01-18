@@ -4769,39 +4769,7 @@ static inline __u16 observed_hdrs(const __u8 currenthdr)
 	return SetXBit(3); /* Unknown header. */
 }
 
-/* http://www.iana.org/assignments/ip-parameters/ip-parameters.xhtml */
-static const __u8 ip4_opt_table[] = {
-	[7]	= 0,	/* RR */ /* parsed manually because of 0 */
-	[134]	= 1,	/* CIPSO */
-	[133]	= 2,	/* E-SEC */
-	[68]	= 3,	/* TS */
-	[131]	= 4,	/* LSR */
-	[130]	= 5,	/* SEC */
-	[1]	= 6,	/* NOP */
-	[0]	= 7,	/* EOOL */
-	[15]	= 8,	/* ENCODE */
-	[142]	= 9,	/* VISA */
-	[205]	= 10,	/* FINN */
-	[12]	= 11,	/* MTUR */
-	[11]	= 12,	/* MTUP */
-	[10]	= 13,	/* ZSU */
-	[137]	= 14,	/* SSR */
-	[136]	= 15,	/* SID */
-	[151]	= 16,	/* DPS */
-	[150]	= 17,	/* NSAPA */
-	[149]	= 18,	/* SDB */
-	[147]	= 19,	/* ADDEXT */
-	[148]	= 20,	/* RTRALT */
-	[82]	= 21,	/* TR */
-	[145]	= 22,	/* EIP */
-	[144]	= 23,	/* IMITD */
-	[30]	= 25,	/* EXP */
-	[94]	= 25,	/* EXP */
-	[158]	= 25,	/* EXP */
-	[222]	= 25,	/* EXP */
-	[25]	= 30,	/* QS */
-	[152]	= 31,	/* UMP */
-};
+/* https://www.iana.org/assignments/ip-parameters/ip-parameters.xhtml */
 /* Parse IPv4 Options array int ipv4Options IPFIX value. */
 static inline __u32 ip4_options(const u_int8_t *p, const unsigned int optsize)
 {
@@ -4810,20 +4778,22 @@ static inline __u32 ip4_options(const u_int8_t *p, const unsigned int optsize)
 
 	for (i = 0; likely(i < optsize); ) {
 		u_int8_t op = p[i++];
+		u_int8_t nn = op & 0x17; /* 5 bits  option number */
 
-		if (op == 7) /* RR: bit 0 */
-			ret |= 1;
-		else if (likely(op < ARRAY_SIZE(ip4_opt_table))) {
-			/* Btw, IANA doc is messed up in a crazy way:
-			 *   http://www.ietf.org/mail-archive/web/ipfix/current/msg06008.html (2011)
-			 * I decided to follow IANA _text_ description from
-			 *   http://www.iana.org/assignments/ipfix/ipfix.xhtml (2013-09-18)
-			 *
-			 * Set proper bit for htonl later. */
-			if (ip4_opt_table[op])
-				ret |= 1 << (31 - ip4_opt_table[op]);
-		}
-		if (likely(i >= optsize || op == 0))
+		/*
+		 * "Note that for identifying an option not just the 5-bit Option
+		 * Number, but all 8 bits of the Option Type need to match one
+		 * of the IPv4 options specified at
+		 * http://www.iana.org/assignments/ip-parameters.
+		 *
+		 * Options are mapped to bits according to their option numbers.
+		 * Option number X is mapped to bit X." - In inverted order, see
+		 * RFC 5102 Errata 2944.
+		 */
+
+		if (likely(nn < 32))
+			ret |= 1 << (31 - nn);
+		if (i >= optsize || op == 0) /* 0 is EOOL. */
 			break;
 		else if (unlikely(op == 1))
 			continue;
