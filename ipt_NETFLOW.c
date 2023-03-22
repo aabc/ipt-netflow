@@ -4600,12 +4600,9 @@ static struct nf_ct_event_notifier *saved_event_cb __read_mostly = NULL;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,0)
 static int netflow_conntrack_expect_event(const unsigned int events, const struct nf_exp_event *item)
 {
-	struct nf_ct_event_notifier *notifier;
-
 	/* Call netlink first. */
-	notifier = rcu_dereference(saved_event_cb);
-	if (likely(notifier))
-		return notifier->exp_event(events, item);
+	if (likely(saved_event_cb))
+		return saved_event_cb->exp_event(events, item);
 	else
 		return 0;
 }
@@ -4627,12 +4624,9 @@ static int netflow_conntrack_event(struct notifier_block *this, unsigned long ev
 	const struct nf_conntrack_tuple *t;
 	int ret = NOTIFY_DONE;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31)
-	struct nf_ct_event_notifier *notifier;
-
 	/* Call netlink first. */
-	notifier = rcu_dereference(saved_event_cb);
-	if (likely(notifier))
-		ret = notifier->ct_event(events, item);
+	if (likely(saved_event_cb))
+		ret = saved_event_cb->ct_event(events, item);
 #endif
 	if (unlikely(!natevents))
 		return ret;
