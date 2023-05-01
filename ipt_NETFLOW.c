@@ -1135,7 +1135,7 @@ static int flows_dump_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "%d %04x %x",
 	    st->pcache,
 	    hash_netflow(&nf->tuple),
-	    (!!inactive_needs_export(nf, i_timeout, jiffies)) | 
+	    (!!inactive_needs_export(nf, i_timeout, jiffies)) |
 	    (active_needs_export(nf, a_timeout, jiffies) << 1));
 	seq_printf(seq, " %hd,%hd",
 	    nf->tuple.i_ifc,
@@ -4503,7 +4503,11 @@ static void netflow_work_fn(struct work_struct *dummy)
 	wk_count = 0;
 	wk_trylock = 0;
 	wk_llist = 0;
+	#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,3,0)
 	wk_cpu = __smp_processor_id();
+	#else
+	wk_cpu = smp_processor_id();
+	#endif
 	wk_start = jiffies;
 
 	pdus = netflow_scan_and_export(DONT_FLUSH);
