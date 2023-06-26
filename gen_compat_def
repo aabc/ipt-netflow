@@ -127,6 +127,8 @@ kbuild_test_symbol totalram_pages linux/mm.h
 kbuild_test_ref    totalram_pages linux/mm.h
 # b86c0e6429da ("netfilter: ecache: prepare for event notifier merge")
 kbuild_test_member nf_ct_event_notifier.ct_event net/netfilter/nf_conntrack_ecache.h
+# 6.4: 0199849acd07 ("sysctl: remove register_sysctl_paths()")
+kbuild_test_symbol register_sysctl_paths linux/sysctl.h
 
 echo "// End of compat_def.h"
 

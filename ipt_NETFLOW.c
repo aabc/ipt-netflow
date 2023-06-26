@@ -1929,16 +1929,18 @@ static ctl_table netflow_net_table[] = {
 	{ }
 };
 #else /* >= 2.6.25 */
+# ifdef HAVE_REGISTER_SYSCTL_PATHS
 static struct ctl_path netflow_sysctl_path[] = {
 	{
 		.procname = "net",
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,33)
+#  if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,33)
 		.ctl_name = CTL_NET
-#endif
+#  endif
 	},
 	{ .procname = "netflow" },
 	{ }
 };
+# endif
 #endif /* 2.6.25 */
 #endif /* CONFIG_SYSCTL */
 
@@ -5666,7 +5668,11 @@ static int __init ipt_netflow_init(void)
 #endif
 						      );
 #else /* 2.6.25 */
+# ifdef HAVE_REGISTER_SYSCTL_PATHS
 	netflow_sysctl_header = register_sysctl_paths(netflow_sysctl_path, netflow_sysctl_table);
+# else
+	netflow_sysctl_header = register_sysctl("net/netflow", netflow_sysctl_table);
+# endif
 #endif
 	if (!netflow_sysctl_header) {
 		printk(KERN_ERR "netflow: can't register to sysctl\n");
