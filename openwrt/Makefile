@@ -113,6 +113,15 @@ CONFIGURE_ARGS += \
 
 #TODO: --enable-sampler=hash --promisc-mpls=N
 
+SRCARCH:=$(shell echo $(ARCH) | sed -e s'/-.*//' \
+        -e 's/i.86/x86/' \
+        -e 's/mips.*/mips/' \
+        -e 's/mipsel.*/mips/' \
+)
+
+MAKE_FLAGS+= \
+	SRCARCH="$(SRCARCH)"
+
 
 $(eval $(call KernelPackage,ipt-netflow))
 
