@@ -692,7 +692,7 @@ static inline int is_vlan_dev(struct net_device *dev)
 }
 #endif
 
-#ifdef CONFIG_BRIDGE_NETFILTER
+#if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)
 # ifndef HAVE_NF_BRIDGE_INFO_GET
 static inline struct nf_bridge_info *
 nf_bridge_info_get(const struct sk_buff *skb)

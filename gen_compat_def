@@ -116,7 +116,7 @@ kbuild_test_struct timeval linux/ktime.h
 kbuild_test_struct proc_ops linux/proc_fs.h
 # No since v5.1, but present in CentOS-8's 4.18.0-227
 kbuild_test_symbol synchronize_sched linux/rcupdate.h
-# Fails on 3.10.0-957.10.1.el7.x86_64
+# No since 5, but present in include/net/netfilter/br_netfilter.h >= linux v4.2 and < 5 (non-backports)
 kbuild_test_symbol nf_bridge_info_get linux/netfilter_bridge.h
 # Stumbled on 5.9
 kbuild_test_struct vlan_dev_priv linux/if_vlan.h
