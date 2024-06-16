@@ -129,6 +129,10 @@ kbuild_test_ref    totalram_pages linux/mm.h
 kbuild_test_member nf_ct_event_notifier.ct_event net/netfilter/nf_conntrack_ecache.h
 # 6.4: 0199849acd07 ("sysctl: remove register_sysctl_paths()")
 kbuild_test_symbol register_sysctl_paths linux/sysctl.h
+# 6.8: d26270061ae6 ("string: Remove strlcpy()")
+kbuild_test_symbol strscpy linux/string.h
+# 2.6.18 lacks in6_pton and in4_pton
+kbuild_test_symbol in6_pton linux/inet.h
 
 echo "// End of compat_def.h"
 

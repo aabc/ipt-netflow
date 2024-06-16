@@ -29,6 +29,10 @@
 #include <linux/in6.h>
 #include <linux/inet.h>
 #include <linux/kernel.h>
+#include <linux/version.h>
+#if LINUX_VERSION_CODE > KERNEL_VERSION(5,10,0)
+#include <linux/kstrtox.h>
+#endif
 #include <linux/ip.h>
 #include <linux/udp.h>
 #include <linux/icmp.h>
@@ -67,7 +71,6 @@
 # include <net/netfilter/nf_conntrack.h>
 # include <net/netfilter/nf_conntrack_core.h>
 #endif
-#include <linux/version.h>
 #include <asm/unaligned.h>
 #ifdef HAVE_LLIST
 	/* llist.h is officially defined since linux 3.1,
@@ -2396,7 +2399,7 @@ static int add_destinations(const char *ptr)
 				++end;
 			if (succ &&
 			    (*end == ':' || *end == '.' || *end == 'p' || *end == '#'))
-				sin6->sin6_port = htons(strtoul(++end, (char **)&end, 0));
+				sin6->sin6_port = htons(simple_strtoul(++end, (char **)&end, 0));
 			if (succ && *end == '@') {
 				++end;
 				sout->sin6_family = AF_INET6;
@@ -2411,7 +2414,7 @@ static int add_destinations(const char *ptr)
 			sin->sin_port = htons(2055);
 			succ = in4_pton(ptr, len, (u8 *)&sin->sin_addr, -1, &end);
 			if (succ && *end == ':')
-				sin->sin_port = htons(strtoul(++end, (char **)&end, 0));
+				sin->sin_port = htons(simple_strtoul(++end, (char **)&end, 0));
 			if (succ && *end == '@') {
 				++end;
 				sout->sin_family = AF_INET;
@@ -4087,7 +4090,7 @@ static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *d
 		ops->get_drvinfo(dev, &info);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,37)
 	else if (dev->dev.parent && dev->dev.parent->driver) {
-		strlcpy(info.driver, dev->dev.parent->driver->name, sizeof(info.driver));
+		strscpy(info.driver, dev->dev.parent->driver->name, sizeof(info.driver));
 	}
 #endif
 	n = scnprintf(ptr, len, "%s", info.driver);
@@ -5684,7 +5687,7 @@ static int __init ipt_netflow_init(void)
 	if (!destination)
 		destination = destination_buf;
 	if (destination != destination_buf) {
-		strlcpy(destination_buf, destination, sizeof(destination_buf));
+		strscpy(destination_buf, destination, sizeof(destination_buf));
 		destination = destination_buf;
 	}
 	if (add_destinations(destination) < 0)
@@ -5694,7 +5697,7 @@ static int __init ipt_netflow_init(void)
 	if (!aggregation)
 		aggregation = aggregation_buf;
 	if (aggregation != aggregation_buf) {
-		strlcpy(aggregation_buf, aggregation, sizeof(aggregation_buf));
+		strscpy(aggregation_buf, aggregation, sizeof(aggregation_buf));
 		aggregation = aggregation_buf;
 	}
 	add_aggregation(aggregation);
@@ -5704,7 +5707,7 @@ static int __init ipt_netflow_init(void)
 	if (!sampler)
 		sampler = sampler_buf;
 	if (sampler != sampler_buf) {
-		strlcpy(sampler_buf, sampler, sizeof(sampler_buf));
+		strscpy(sampler_buf, sampler, sizeof(sampler_buf));
 		sampler = sampler_buf;
 	}
 	parse_sampler(sampler);
@@ -5721,7 +5724,7 @@ static int __init ipt_netflow_init(void)
 	if (!snmp_rules)
 		snmp_rules = snmp_rules_buf;
 	if (snmp_rules != snmp_rules_buf) {
-		strlcpy(snmp_rules_buf, snmp_rules, sizeof(snmp_rules_buf));
+		strscpy(snmp_rules_buf, snmp_rules, sizeof(snmp_rules_buf));
 		snmp_rules = snmp_rules_buf;
 	}
 	add_snmp_rules(snmp_rules);
