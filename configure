@@ -614,7 +614,7 @@ dkms_check() {
   echo Yes.
   DKMSINSTALL=dinstall
   test "$FROMDKMSCONF" && return
-  if dkms status | grep ^ipt-netflow, >/dev/null; then
+  if dkms status ipt-netflow | grep ^ipt-netflow/ >/dev/null; then
     echo "! You are already have module installed via DKMS"
     echo "!   it will be uninstalled on 'make install' and"
     echo "!   current version of module installed afterwards."
