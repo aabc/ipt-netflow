@@ -6,6 +6,7 @@ PATH=$PATH:/bin:/usr/bin:/usr/sbin:/sbin:/usr/local/sbin
 case "$1" in
   --from-dkms-conf*)
     KDKMS=`echo "$1" | sed 's/[^=]*.//'`
+    KDIR="$KDKMS"
     # restore options from existing Makefile, if present
     if [ -e Makefile ]; then
       set -- `sed -n 's/^CARGS = \(.*\)/\1/p' Makefile`
