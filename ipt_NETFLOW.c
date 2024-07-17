@@ -4882,6 +4882,8 @@ static void parse_l2_header(const struct sk_buff *skb, struct ipt_netflow_tuple 
 		    && !(vlan->flags & VLAN_FLAG_REORDER_HDR)
 #  if LINUX_VERSION_CODE >= KERNEL_VERSION(4,3,0)
 		    && !netif_is_macvlan_port(vlan_dev)
+#  endif
+#  if LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,0)
 		    && !netif_is_bridge_port(vlan_dev)
 #  endif
 		   ))
