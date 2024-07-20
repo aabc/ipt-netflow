@@ -773,12 +773,13 @@ struct module *find_module(const char *name)
 
 /* Copy from 294f69e662d1 ("compiler_attributes.h: Add 'fallthrough' pseudo
  * keyword for switch/case use") */
-#ifndef fallthrough
-# if defined __has_attribute && __has_attribute(__fallthrough__)
+#if !defined(fallthrough) && defined(__has_attribute)
+# if __has_attribute(__fallthrough__)
 #  define fallthrough			__attribute__((__fallthrough__))
-# else
-#  define fallthrough			do {} while (0)  /* fallthrough */
 # endif
+#endif
+#ifndef fallthrough
+#  define fallthrough			do {} while (0)  /* fallthrough */
 #endif
 
 #ifndef HAVE_NF_CT_EVENT_NOTIFIER_CT_EVENT
