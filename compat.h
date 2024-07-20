@@ -746,9 +746,10 @@ unsigned long long strtoul(const char *cp, char **endp, unsigned int base)
 	return result;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0)
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0)) \
+    || ((LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,220)) && (LINUX_VERSION_CODE < KERNEL_VERSION(5,11,0)))
 /*
- * find_module() is unexported in v5.12:
+ * find_module() is unexported in v5.12 (backported to 5.10.220):
  *   089049f6c9956 ("module: unexport find_module and module_mutex")
  * and module_mutex is replaced with RCU in
  *   a006050575745 ("module: use RCU to synchronize find_module")
