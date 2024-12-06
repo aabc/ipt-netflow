@@ -1522,7 +1522,7 @@ unlock:
 
 #ifdef CONFIG_SYSCTL
 /* sysctl /proc/sys/net/netflow */
-static int hsize_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int hsize_procctl(s_ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret, hsize;
@@ -1539,7 +1539,7 @@ static int hsize_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 		return ret;
 }
 
-static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int sndbuf_procctl(s_ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
@@ -1574,7 +1574,7 @@ static int sndbuf_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fil
 }
 
 static void free_templates(void);
-static int destination_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int destination_procctl(s_ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
@@ -1591,7 +1591,7 @@ static int destination_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 }
 
 #ifdef ENABLE_AGGR
-static int aggregation_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int aggregation_procctl(s_ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
@@ -1606,7 +1606,7 @@ static int aggregation_procctl(ctl_table *ctl, int write, BEFORE2632(struct file
 #endif
 
 #ifdef ENABLE_PROMISC
-static int promisc_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int promisc_procctl(s_ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int newpromisc = promisc;
@@ -1623,7 +1623,7 @@ static int promisc_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fi
 
 #ifdef ENABLE_SAMPLER
 static int parse_sampler(char *ptr);
-static int sampler_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int sampler_procctl(s_ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
@@ -1656,7 +1656,7 @@ static int sampler_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *fi
 
 #ifdef SNMP_RULES
 static int add_snmp_rules(char *ptr);
-static int snmp_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int snmp_procctl(s_ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
        int ret;
@@ -1681,7 +1681,7 @@ static void clear_ipt_netflow_stat(void)
 	}
 }
 
-static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int flush_procctl(s_ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
@@ -1710,7 +1710,7 @@ static int flush_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp
 	return ret;
 }
 
-static int protocol_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int protocol_procctl(s_ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
@@ -1743,7 +1743,7 @@ static int protocol_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *f
 #ifdef CONFIG_NF_NAT_NEEDED
 static void register_ct_events(void);
 static void unregister_ct_events(void);
-static int natevents_procctl(ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
+static int natevents_procctl(s_ctl_table *ctl, int write, BEFORE2632(struct file *filp,)
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int ret;
@@ -1780,7 +1780,7 @@ static void ctl_table_renumber(ctl_table *table)
 #define _CTL_NAME(x)
 #define ctl_table_renumber(x)
 #endif
-static ctl_table netflow_sysctl_table[] = {
+static ctl_table_no_const netflow_sysctl_table[] = {
 	{
 		.procname	= "active_timeout",
 		.mode		= 0644,
@@ -1908,7 +1908,9 @@ static ctl_table netflow_sysctl_table[] = {
 		.proc_handler	= &natevents_procctl,
 	},
 #endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,11,0)
 	{ }
+#endif
 };
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)

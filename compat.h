@@ -76,12 +76,14 @@ union nf_inet_addr {
 #  define BEFORE2632(x,y)
 # endif
 
-# if LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
-#  define ctl_table struct ctl_table
+# if LINUX_VERSION_CODE >= KERNEL_VERSION(6,11,0)
+#  define s_ctl_table const struct ctl_table
+# elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
+#  define s_ctl_table struct ctl_table
 # endif
 
-# ifndef HAVE_GRSECURITY_H
-#  define ctl_table_no_const ctl_table
+# if !defined(HAVE_GRSECURITY_H) && LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
+#  define ctl_table_no_const struct ctl_table
 # endif
 #endif
 
