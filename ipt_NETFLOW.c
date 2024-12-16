@@ -71,7 +71,11 @@
 # include <net/netfilter/nf_conntrack.h>
 # include <net/netfilter/nf_conntrack_core.h>
 #endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0)
 #include <asm/unaligned.h>
+#else
+#include <linux/unaligned.h>
+#endif
 #ifdef HAVE_LLIST
 	/* llist.h is officially defined since linux 3.1,
 	 * but centos6 have it backported on its 2.6.32.el6 */
