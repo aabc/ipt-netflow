@@ -74,6 +74,7 @@
 	 * but centos6 have it backported on its 2.6.32.el6 */
 # include <linux/llist.h>
 #endif
+#include <linux/ratelimit.h>
 #include "compat.h"
 #include "ipt_NETFLOW.h"
 #include "murmur3.h"
