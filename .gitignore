@@ -1,0 +1,12 @@
+.*.cmd
+.*.o.d
+*.ko
+*.o
+*.mod
+*.mod.c
+*.so
+Makefile
+Module.symvers
+compat_def.h
+modules.order
+version.h
