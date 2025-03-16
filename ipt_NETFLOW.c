@@ -2402,7 +2402,7 @@ static int add_destinations(const char *ptr)
 				++end;
 			if (succ &&
 			    (*end == ':' || *end == '.' || *end == 'p' || *end == '#'))
-				sin6->sin6_port = htons(strtoul(++end, (char **)&end, 0));
+				sin6->sin6_port = htons(simple_strtoul(++end, (char **)&end, 0));
 			if (succ && *end == '@') {
 				++end;
 				sout->sin6_family = AF_INET6;
@@ -2417,7 +2417,7 @@ static int add_destinations(const char *ptr)
 			sin->sin_port = htons(2055);
 			succ = in4_pton(ptr, len, (u8 *)&sin->sin_addr, -1, &end);
 			if (succ && *end == ':')
-				sin->sin_port = htons(strtoul(++end, (char **)&end, 0));
+				sin->sin_port = htons(simple_strtoul(++end, (char **)&end, 0));
 			if (succ && *end == '@') {
 				++end;
 				sout->sin_family = AF_INET;

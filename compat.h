@@ -716,40 +716,6 @@ static inline void do_gettimeofday(struct timeval *tv)
 }
 #endif
 
-#define TOLOWER(x) ((x) | 0x20)
-unsigned long long strtoul(const char *cp, char **endp, unsigned int base)
-{
-	unsigned long long result = 0;
-
-	if (!base) {
-		if (cp[0] == '0') {
-			if (TOLOWER(cp[1]) == 'x' && isxdigit(cp[2]))
-				base = 16;
-			else
-				base = 8;
-		} else {
-			base = 10;
-		}
-	}
-
-	if (base == 16 && cp[0] == '0' && TOLOWER(cp[1]) == 'x')
-		cp += 2;
-
-	while (isxdigit(*cp)) {
-		unsigned int value;
-
-		value = isdigit(*cp) ? *cp - '0' : TOLOWER(*cp) - 'a' + 10;
-		if (value >= base)
-			break;
-		result = result * base + value;
-		cp++;
-	}
-	if (endp)
-		*endp = (char *)cp;
-
-	return result;
-}
-
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0)) \
     || ((LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,220)) && (LINUX_VERSION_CODE < KERNEL_VERSION(5,11,0)))
 /*
