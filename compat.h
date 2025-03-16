@@ -178,6 +178,10 @@ static int __ethtool_get_settings(struct net_device *dev, struct ethtool_cmd *cm
 # define NF_IP_POST_ROUTING	NF_INET_POST_ROUTING
 #endif
 
+#ifndef HAVE_SIZED_STRSCPY
+#define strscpy strlcpy
+#endif
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
 /* net/netfilter/x_tables.c */
 static void xt_unregister_targets(struct xt_target *target, unsigned int n)

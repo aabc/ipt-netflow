@@ -42,6 +42,7 @@
 #include <linux/spinlock_types.h>
 #include <linux/ktime.h>
 #include <linux/if_arp.h>
+#include <linux/string.h>
 #include <net/icmp.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
@@ -4092,7 +4093,7 @@ static int ethtool_drvinfo(unsigned char *ptr, size_t size, struct net_device *d
 		ops->get_drvinfo(dev, &info);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,37)
 	else if (dev->dev.parent && dev->dev.parent->driver) {
-		strlcpy(info.driver, dev->dev.parent->driver->name, sizeof(info.driver));
+		strscpy(info.driver, dev->dev.parent->driver->name, sizeof(info.driver));
 	}
 #endif
 	n = scnprintf(ptr, len, "%s", info.driver);
@@ -5691,7 +5692,7 @@ static int __init ipt_netflow_init(void)
 	if (!destination)
 		destination = destination_buf;
 	if (destination != destination_buf) {
-		strlcpy(destination_buf, destination, sizeof(destination_buf));
+		strscpy(destination_buf, destination, sizeof(destination_buf));
 		destination = destination_buf;
 	}
 	if (add_destinations(destination) < 0)
@@ -5701,7 +5702,7 @@ static int __init ipt_netflow_init(void)
 	if (!aggregation)
 		aggregation = aggregation_buf;
 	if (aggregation != aggregation_buf) {
-		strlcpy(aggregation_buf, aggregation, sizeof(aggregation_buf));
+		strscpy(aggregation_buf, aggregation, sizeof(aggregation_buf));
 		aggregation = aggregation_buf;
 	}
 	add_aggregation(aggregation);
@@ -5711,7 +5712,7 @@ static int __init ipt_netflow_init(void)
 	if (!sampler)
 		sampler = sampler_buf;
 	if (sampler != sampler_buf) {
-		strlcpy(sampler_buf, sampler, sizeof(sampler_buf));
+		strscpy(sampler_buf, sampler, sizeof(sampler_buf));
 		sampler = sampler_buf;
 	}
 	parse_sampler(sampler);
@@ -5728,7 +5729,7 @@ static int __init ipt_netflow_init(void)
 	if (!snmp_rules)
 		snmp_rules = snmp_rules_buf;
 	if (snmp_rules != snmp_rules_buf) {
-		strlcpy(snmp_rules_buf, snmp_rules, sizeof(snmp_rules_buf));
+		strscpy(snmp_rules_buf, snmp_rules, sizeof(snmp_rules_buf));
 		snmp_rules = snmp_rules_buf;
 	}
 	add_snmp_rules(snmp_rules);
