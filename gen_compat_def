@@ -61,7 +61,7 @@ kbuild_test_compile() {
 
 # Test that symbol is defined (will catch functions mostly).
 kbuild_test_symbol() {
-  echo -n "Test function $* " >&2
+  echo -n "Test function $1 $2" >&2
   kbuild_test_compile ${1^^} $1 ${2-} <<-EOF
 	#include <linux/module.h>
 	${3:-${2:+#include <$2>}}
