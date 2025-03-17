@@ -4460,7 +4460,7 @@ static int netflow_scan_and_export(const int flush)
 				val = nf->sampler_count % interval;
 				break;
 			case SAMPLER_RANDOM:
-				val = prandom_u32_max(interval);
+				val = get_random_u32_below(interval);
 				break;
 			default: /* SAMPLER_HASH */
 				val = 0;
@@ -5717,12 +5717,12 @@ static int __init ipt_netflow_init(void)
 	}
 	parse_sampler(sampler);
 #ifdef SAMPLING_HASH
-	hash_seed = prandom_u32();
+	hash_seed = get_random_u32();
 #endif
 #endif
 
 #ifdef ENABLE_RANDOM_TEMPLATE_IDS
-	template_ids = FLOWSET_DATA_FIRST | prandom_u32_max(0x00010000);
+	template_ids = FLOWSET_DATA_FIRST | get_random_u32_below(0x00010000);
 #endif
 
 #ifdef SNMP_RULES
