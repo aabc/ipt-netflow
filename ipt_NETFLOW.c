@@ -765,11 +765,11 @@ static int nf_seq_show(struct seq_file *seq, void *v)
 		    sampler_mode_string(),
 		    get_sampler_interval());
 		if (get_sampler_mode() != SAMPLER_HASH)
-			seq_printf(seq, " Flows selected %lu, discarded %lu.",
+			seq_printf(seq, " Flows selected %lld, discarded %llu.",
 			    atomic64_read(&flows_selected),
 			    atomic64_read(&flows_observed) - atomic64_read(&flows_selected));
 		else
-			seq_printf(seq, " Flows selected %lu.", atomic64_read(&flows_selected));
+			seq_printf(seq, " Flows selected %llu.", atomic64_read(&flows_selected));
 		seq_printf(seq, " Pkts selected %llu, discarded %llu.\n",
 		    t.pkts_selected,
 		    t.pkts_observed - t.pkts_selected);
