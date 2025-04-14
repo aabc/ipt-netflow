@@ -792,4 +792,11 @@ struct module *find_module(const char *name)
 # define NF_CT_EVENT const struct nf_ct_event
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,4,0)
+static inline bool netif_is_bridge_port(const struct net_device *dev)
+{
+	return dev->priv_flags & IFF_BRIDGE_PORT;
+}
+#endif
+
 #endif /* COMPAT_NETFLOW_H */
