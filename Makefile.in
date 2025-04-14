@@ -55,7 +55,7 @@ sinstall: | snmp_NETFLOW.so IPT-NETFLOW-MIB.my
 	@echo " *"
 	install -D IPT-NETFLOW-MIB.my $(DESTDIR)/usr/share/snmp/mibs/IPT-NETFLOW-MIB.my
 	install -D snmp_NETFLOW.so $(DESTDIR)$(SNMPTGSO)
-	@if ! egrep -qs "^ *$(SNMPLINE)" $(SNMPCONF); then \
+	@if ! grep -E -qs "^ *$(SNMPLINE)" $(SNMPCONF); then \
 	echo " *"; \
 	echo " *  Add this line to $(SNMPCONF) to enable IPT-NETFLOW-MIB:"; \
 	echo " *"; \
@@ -93,11 +93,11 @@ uninstall:
 	-rm -f $(DESTDIR)$(IPTABLES_MODULES)/libip6t_NETFLOW.so
 	-rm -f $(DESTDIR)/usr/share/snmp/mibs/IPT-NETFLOW-MIB.my
 	-rm -f $(DESTDIR)$(SNMPTGSO)
-	@if egrep -qs "^ *$(SNMPLINE)" $(SNMPCONF); then \
+	@if grep -E -qs "^ *$(SNMPLINE)" $(SNMPCONF); then \
 	echo " *"; \
 	echo " *  Remove this line from $(SNMPCONF):"; \
 	echo " *"; \
-	echo " *     "`egrep "^ *$(SNMPLINE)" $(SNMPCONF)`; \
+	echo " *     "`grep -E "^ *$(SNMPLINE)" $(SNMPCONF)`; \
 	echo " *"; \
 	fi
 	@if [ "@DKMSINSTALL@" = dinstall ]; then ./install-dkms.sh --uninstall; fi

@@ -248,7 +248,7 @@ iptables_try_pkgconfig() {
     if [ -s /etc/debian_version ]; then
       echo "! "
       echo "! Under Debian simply run this:"
-      if apt-cache policy libxtables-dev 2>&1 | fgrep -q "Candidate:"; then
+      if apt-cache policy libxtables-dev 2>&1 | grep -F -q "Candidate:"; then
         echo "!   root# apt-get install libxtables-dev pkg-config"
       else
         echo "!   root# apt-get install iptables-dev pkg-config"

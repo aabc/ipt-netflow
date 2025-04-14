@@ -42,7 +42,7 @@ kbuild_test_compile() {
     echo "// Output:"
     sed  "s/^/\/\/   /" log
     echo
-    if ! egrep -q \
+    if ! grep -E -q \
 	  -e 'has no member named' \
 	  -e 'undeclared' \
 	  -e 'storage size of .* isn.t known' \
