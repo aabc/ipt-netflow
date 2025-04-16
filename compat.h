@@ -76,12 +76,14 @@ union nf_inet_addr {
 #  define BEFORE2632(x,y)
 # endif
 
-# if LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
-#  define ctl_table struct ctl_table
+# if LINUX_VERSION_CODE >= KERNEL_VERSION(6,11,0)
+#  define s_ctl_table const struct ctl_table
+# elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
+#  define s_ctl_table struct ctl_table
 # endif
 
-# ifndef HAVE_GRSECURITY_H
-#  define ctl_table_no_const ctl_table
+# if !defined(HAVE_GRSECURITY_H) && LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
+#  define ctl_table_no_const struct ctl_table
 # endif
 #endif
 
@@ -216,13 +218,17 @@ struct timeval {
 	long tv_usec; /* microseconds */
 };
 
-unsigned long timeval_to_jiffies(const struct timeval *tv)
+static inline unsigned long timeval_to_jiffies(const struct timeval *tv)
 {
 	return timespec64_to_jiffies(&(struct timespec64){
 				     tv->tv_sec,
 				     tv->tv_usec * NSEC_PER_USEC
 				     });
 }
+#endif
+
+#if !defined(HAVE_STRSCPY) && !defined(strscpy)
+#define strscpy strlcpy
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
@@ -380,10 +386,10 @@ static int sockaddr_cmp(const struct sockaddr_storage *sa1, const struct sockadd
 	return 0;
 }
 
-#ifndef IN6PTON_XDIGIT
+#ifndef HAVE_IN6_PTON
 #define hex_to_bin compat_hex_to_bin
 /* lib/hexdump.c */
-int hex_to_bin(char ch)
+static inline int hex_to_bin(char ch)
 {
 	if ((ch >= '0') && (ch <= '9'))
 		return ch - '0';
@@ -593,7 +599,7 @@ out:
 		*end = s;
 	return ret;
 }
-#endif /* IN6PTON_XDIGIT */
+#endif /* HAVE_IN6_PTON */
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,2,0)
 # define sock_create_kern(f, t, p, s) sock_create_kern(&init_net, f, t, p, s)
@@ -711,40 +717,6 @@ static inline void do_gettimeofday(struct timeval *tv)
 	tv->tv_usec = ts64.tv_nsec/1000;
 }
 #endif
-
-#define TOLOWER(x) ((x) | 0x20)
-unsigned long long strtoul(const char *cp, char **endp, unsigned int base)
-{
-	unsigned long long result = 0;
-
-	if (!base) {
-		if (cp[0] == '0') {
-			if (TOLOWER(cp[1]) == 'x' && isxdigit(cp[2]))
-				base = 16;
-			else
-				base = 8;
-		} else {
-			base = 10;
-		}
-	}
-
-	if (base == 16 && cp[0] == '0' && TOLOWER(cp[1]) == 'x')
-		cp += 2;
-
-	while (isxdigit(*cp)) {
-		unsigned int value;
-
-		value = isdigit(*cp) ? *cp - '0' : TOLOWER(*cp) - 'a' + 10;
-		if (value >= base)
-			break;
-		result = result * base + value;
-		cp++;
-	}
-	if (endp)
-		*endp = (char *)cp;
-
-	return result;
-}
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0)
 /*

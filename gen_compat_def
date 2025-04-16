@@ -80,6 +80,15 @@ kbuild_test_ref() {
 	void *test = &$1;
 	EOF
 }
+
+# Test symbol if include exists
+kbuild_test_symbol_include() {
+  echo "Test file exists $KDIR/include/$2" >&2
+  if [ -f $KDIR/include/$2 ]; then
+    kbuild_test_symbol $*
+  fi
+}
+
 # Test that struct is defined.
 kbuild_test_struct() {
   echo -n "Test struct $* " >&2
@@ -121,7 +130,9 @@ kbuild_test_symbol nf_bridge_info_get linux/netfilter_bridge.h
 # Stumbled on 5.9
 kbuild_test_struct vlan_dev_priv linux/if_vlan.h
 # Kernel version check broken by centos8
-kbuild_test_symbol put_unaligned_be24 asm/unaligned.h
+kbuild_test_symbol_include put_unaligned_be24 asm-generic/unaligned.h
+kbuild_test_symbol_include put_unaligned_be24 linux/unaligned/generic.h
+kbuild_test_symbol_include put_unaligned_be24 linux/unaligned.h
 # totalram_pages changed from atomic to inline function.
 kbuild_test_symbol totalram_pages linux/mm.h
 kbuild_test_ref    totalram_pages linux/mm.h
@@ -129,6 +140,10 @@ kbuild_test_ref    totalram_pages linux/mm.h
 kbuild_test_member nf_ct_event_notifier.ct_event net/netfilter/nf_conntrack_ecache.h
 # 6.4: 0199849acd07 ("sysctl: remove register_sysctl_paths()")
 kbuild_test_symbol register_sysctl_paths linux/sysctl.h
+# 6.8: d26270061ae6 ("string: Remove strlcpy()")
+kbuild_test_symbol strscpy linux/string.h
+# 2.6.18 lacks in6_pton and in4_pton
+kbuild_test_symbol in6_pton linux/inet.h
 
 echo "// End of compat_def.h"
 
