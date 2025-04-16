@@ -108,17 +108,34 @@ union nf_inet_addr {
 # define time_is_after_jiffies(a) time_before(jiffies, a)
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,14,0)
-# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
-#  define prandom_u32 get_random_int
-# elif LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0)
-#  define prandom_u32 random32
-#endif
-#define prandom_u32_max compat_prandom_u32_max
-static inline u32 prandom_u32_max(u32 ep_ro)
-{
-	return (u32)(((u64) prandom_u32() * ep_ro) >> 32);
+#ifndef HAVE_GET_RANDOM_U32
+# ifdef HAVE_PRANDOM_U32
+#  ifdef HAVE_PRANDOM_H
+#   include <linux/prandom.h>
+#  endif
+static inline u32 get_random_u32() {
+	return prandom_u32();
 }
+# else
+#  pragma error Need fallback for get_random_u32
+# endif
+#endif
+
+#ifndef HAVE_GET_RANDOM_U32_BELOW
+# ifdef HAVE_PRANDOM_U32_MAX
+#  ifdef HAVE_PRANDOM_H
+#   include <linux/prandom.h>
+#  endif
+static inline u32 get_random_u32_below(u32 ep_ro)
+{
+	return prandom_u32_max(ep_ro);
+}
+# else
+static inline u32 get_random_u32_below(u32 ep_ro)
+{
+	return (u32)(((u64) get_random_u32() * ep_ro) >> 32);
+}
+# endif
 #endif
 
 #ifndef min_not_zero
@@ -178,6 +195,10 @@ static int __ethtool_get_settings(struct net_device *dev, struct ethtool_cmd *cm
 # define NF_IP_POST_ROUTING	NF_INET_POST_ROUTING
 #endif
 
+#ifndef HAVE_SIZED_STRSCPY
+#define strscpy strlcpy
+#endif
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
 /* net/netfilter/x_tables.c */
 static void xt_unregister_targets(struct xt_target *target, unsigned int n)
@@ -216,7 +237,7 @@ struct timeval {
 	long tv_usec; /* microseconds */
 };
 
-unsigned long timeval_to_jiffies(const struct timeval *tv)
+static inline unsigned long timeval_to_jiffies(const struct timeval *tv)
 {
 	return timespec64_to_jiffies(&(struct timespec64){
 				     tv->tv_sec,
@@ -383,7 +404,7 @@ static int sockaddr_cmp(const struct sockaddr_storage *sa1, const struct sockadd
 #ifndef IN6PTON_XDIGIT
 #define hex_to_bin compat_hex_to_bin
 /* lib/hexdump.c */
-int hex_to_bin(char ch)
+static inline int hex_to_bin(char ch)
 {
 	if ((ch >= '0') && (ch <= '9'))
 		return ch - '0';
@@ -712,43 +733,10 @@ static inline void do_gettimeofday(struct timeval *tv)
 }
 #endif
 
-#define TOLOWER(x) ((x) | 0x20)
-unsigned long long strtoul(const char *cp, char **endp, unsigned int base)
-{
-	unsigned long long result = 0;
-
-	if (!base) {
-		if (cp[0] == '0') {
-			if (TOLOWER(cp[1]) == 'x' && isxdigit(cp[2]))
-				base = 16;
-			else
-				base = 8;
-		} else {
-			base = 10;
-		}
-	}
-
-	if (base == 16 && cp[0] == '0' && TOLOWER(cp[1]) == 'x')
-		cp += 2;
-
-	while (isxdigit(*cp)) {
-		unsigned int value;
-
-		value = isdigit(*cp) ? *cp - '0' : TOLOWER(*cp) - 'a' + 10;
-		if (value >= base)
-			break;
-		result = result * base + value;
-		cp++;
-	}
-	if (endp)
-		*endp = (char *)cp;
-
-	return result;
-}
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0)
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0)) \
+    || ((LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,220)) && (LINUX_VERSION_CODE < KERNEL_VERSION(5,11,0)))
 /*
- * find_module() is unexported in v5.12:
+ * find_module() is unexported in v5.12 (backported to 5.10.220):
  *   089049f6c9956 ("module: unexport find_module and module_mutex")
  * and module_mutex is replaced with RCU in
  *   a006050575745 ("module: use RCU to synchronize find_module")
@@ -773,12 +761,13 @@ struct module *find_module(const char *name)
 
 /* Copy from 294f69e662d1 ("compiler_attributes.h: Add 'fallthrough' pseudo
  * keyword for switch/case use") */
-#ifndef fallthrough
-# if defined __has_attribute && __has_attribute(__fallthrough__)
+#if !defined(fallthrough) && defined(__has_attribute)
+# if __has_attribute(__fallthrough__)
 #  define fallthrough			__attribute__((__fallthrough__))
-# else
-#  define fallthrough			do {} while (0)  /* fallthrough */
 # endif
+#endif
+#ifndef fallthrough
+#  define fallthrough			do {} while (0)  /* fallthrough */
 #endif
 
 #ifndef HAVE_NF_CT_EVENT_NOTIFIER_CT_EVENT
