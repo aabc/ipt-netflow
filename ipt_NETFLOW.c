@@ -68,12 +68,17 @@
 # include <net/netfilter/nf_conntrack_core.h>
 #endif
 #include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
+#include <linux/unaligned.h>
+#else
 #include <asm/unaligned.h>
+#endif
 #ifdef HAVE_LLIST
 	/* llist.h is officially defined since linux 3.1,
 	 * but centos6 have it backported on its 2.6.32.el6 */
 # include <linux/llist.h>
 #endif
+#include <linux/ratelimit.h>
 #include "compat.h"
 #include "ipt_NETFLOW.h"
 #include "murmur3.h"
@@ -4885,6 +4890,8 @@ static void parse_l2_header(const struct sk_buff *skb, struct ipt_netflow_tuple 
 		    && !(vlan->flags & VLAN_FLAG_REORDER_HDR)
 #  if LINUX_VERSION_CODE >= KERNEL_VERSION(4,3,0)
 		    && !netif_is_macvlan_port(vlan_dev)
+#  endif
+#  if LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,0)
 		    && !netif_is_bridge_port(vlan_dev)
 #  endif
 		   ))

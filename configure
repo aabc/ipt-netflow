@@ -6,6 +6,7 @@ PATH=$PATH:/bin:/usr/bin:/usr/sbin:/sbin:/usr/local/sbin
 case "$1" in
   --from-dkms-conf*)
     KDKMS=`echo "$1" | sed 's/[^=]*.//'`
+    KDIR="$KDKMS"
     # restore options from existing Makefile, if present
     if [ -e Makefile ]; then
       set -- `sed -n 's/^CARGS = \(.*\)/\1/p' Makefile`
@@ -348,7 +349,7 @@ do
     --disable-snmp-a*)   SKIPSNMP=1 ;;
     --disable-net-snmp*) SKIPSNMP=1 ;;
     --disable-dkms*)     SKIPDKMS=1 ;;
-    --from-dkms-conf*) ;;
+    --from-dkms-conf*)   SKIPDKMS=1 ;;
     --make) echo called from make; CARGS=`echo $CARGS | sed s/--make//g` ;;
     -Werror) KOPTS="$KOPTS -Werror" ;;
     --help|-h) show_help ;;
@@ -614,7 +615,7 @@ dkms_check() {
   echo Yes.
   DKMSINSTALL=dinstall
   test "$FROMDKMSCONF" && return
-  if dkms status | grep ^ipt-netflow, >/dev/null; then
+  if dkms status ipt-netflow | grep ^ipt-netflow/ >/dev/null; then
     echo "! You are already have module installed via DKMS"
     echo "!   it will be uninstalled on 'make install' and"
     echo "!   current version of module installed afterwards."
